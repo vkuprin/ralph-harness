@@ -276,6 +276,66 @@ check "the unjudged commit is kept under refs/ralph/dropped/" \
   bash -c 'git -C "$1" log --format=%s $(git -C "$1" for-each-ref --format="%(refname)" refs/ralph/dropped/) | grep -q interrupted' _ "$W"
 
 # ---------------------------------------------------------------------------
+section "a reviewer limit that never clears"
+
+# Waiting out a reviewer limit is right; waiting for ever is not. Some limits
+# never clear on their own (a spent credit balance), and while the loop waits it
+# is holding a commit no gate has judged: MAX_ITER never advances, results.tsv
+# gets no row, and a restart throws that commit away as unjudged. The ceiling
+# hands the iteration to the "reviewer unavailable" fallback, which already
+# knows what to do with a review it cannot get.
+
+# Thirty limits in a row: more than any ceiling, and the stub answers ACCEPT
+# once the queue runs dry, so an unbounded retry ends in a plain `keep`.
+limit_verdicts() { local i=0; : > "$1"; while [ "$i" -lt 30 ]; do echo LIMIT >> "$1"; i=$((i + 1)); done; }
+
+make_repo "$T/app-rl1" "$T/remote-rl1.git"
+S="$T/stub-rl1"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+limit_verdicts "$S/verdicts"
+make_loop "$T/loops/rl1" "$T/app-rl1" \
+  'WORKTREE=1 REVIEW=1 MAX_ITER=1 REVIEW_LIMIT_TRIES=3' 'VERIFY_CMD="./measure.sh"'
+run_loop "$T/loops/rl1" "$S"
+
+check "the reviewer is asked REVIEW_LIMIT_TRIES times and then no more" \
+  test "$(cat "$S/review_calls")" = 3
+check "the limit was waited out before giving up, not given up on at the first one" \
+  bash -c 'test "$(cat "$1")" -gt 1' _ "$S/review_calls"
+check "giving up reaches the reviewer-unavailable fallback, not a silent keep" \
+  test "$(statuses "$T/loops/rl1")" = "keep:unreviewed"
+check "the row says the reviewer was stuck on a limit" \
+  grep -q 'gave up at try 3 of 3' "$T/loops/rl1/results.tsv"
+check "the ceiling is reported in the log while it waits" \
+  grep -q 'try 1 of 3' "$T/loops/rl1/ralph.log"
+
+# With no VERIFY_CMD the reviewer is the only gate, so giving up must not ship.
+make_repo "$T/app-rl2" "$T/remote-rl2.git"
+S="$T/stub-rl2"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+limit_verdicts "$S/verdicts"
+make_loop "$T/loops/rl2" "$T/app-rl2" 'WORKTREE=1 REVIEW=1 MAX_ITER=1 REVIEW_LIMIT_TRIES=2'
+run_loop "$T/loops/rl2" "$S"
+
+check "with no other gate, a reviewer stuck on a limit ships nothing" \
+  test "$(statuses "$T/loops/rl2")" = "revert:review-unavailable"
+check "the commit it could not review was reverted, not left on the branch" \
+  bash -c '! git -C "$1" log --format=%s ralph/rl2 | grep -q "stub: work"' _ "$T/app-rl2-ralph-rl2"
+
+# A ceiling that cannot be switched off would be a new way to lose work, so an
+# unset or nonsense REVIEW_LIMIT_TRIES keeps the old unbounded wait.
+make_repo "$T/app-rl3" "$T/remote-rl3.git"
+S="$T/stub-rl3"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+printf '%s\n' LIMIT LIMIT LIMIT ACCEPT > "$S/verdicts"
+make_loop "$T/loops/rl3" "$T/app-rl3" \
+  'WORKTREE=1 REVIEW=1 MAX_ITER=1 REVIEW_LIMIT_TRIES=nonsense' 'VERIFY_CMD="./measure.sh"'
+run_loop "$T/loops/rl3" "$S"
+
+check "a nonsense REVIEW_LIMIT_TRIES falls back to waiting, and the review still lands" \
+  test "$(statuses "$T/loops/rl3")" = "keep"
+check "that loop really did wait out every limit" test "$(cat "$S/review_calls")" = 4
+
+# ---------------------------------------------------------------------------
 section "CLI: usage, and a status with nothing to show"
 
 mkdir -p "$T/home-f/notaloop"

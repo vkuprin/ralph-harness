@@ -75,6 +75,13 @@ VERIFY_CMD=""
 VERIFY_TIMEOUT=1800
 FROZEN=()
 REVIEW=0
+# How many times running into a limit the reviewer is asked again before the
+# iteration gives up and takes the "reviewer unavailable" path. Unlike the
+# agent's limit, this one is waited out while holding a commit no gate has
+# judged, so it needs a ceiling: 12 tries at the default sleep is six hours,
+# past a session limit's reset and well short of a weekly one. 0 or a
+# non-number means no ceiling, which is how this behaved before.
+REVIEW_LIMIT_TRIES=12
 RATE_LIMIT_SLEEP=1800
 ERROR_SLEEP=300
 ERROR_STOP=0
@@ -486,8 +493,12 @@ verify() {
 # review <before>: a fresh, read-only claude judges the new commits.
 # Sets REVIEW_STATUS to accept, reject or unavailable.
 REVIEW_STATUS=""
+# Set only when the review was abandoned at the REVIEW_LIMIT_TRIES ceiling, so
+# the recorded reason says a limit rather than blaming the reviewer's exit code.
+REVIEW_LIMIT_TRIED=0
 review() {
   local before="$1" job steering
+  REVIEW_LIMIT_TRIED=0
   { git diff --stat "$before" HEAD; echo; git diff "$before" HEAD; } | head -c 200000 > "$DIR/review.diff"
   job="$(awk '/^## The job/{f=1; next} /^## /{f=0} f' "$DIR/PROMPT.md")"
   # A PROMPT.md written without that heading is still the job. Better the
@@ -529,7 +540,7 @@ or
 
 VERDICT: REJECT: <one sentence saying why>
 EOF
-  local verdict
+  local verdict tries=0
   while :; do
     : > "$DIR/review.out"
     run_bounded "$ITER_TIMEOUT" "$DIR/.review-prompt" "$DIR/review.out" \
@@ -538,10 +549,23 @@ EOF
     cat "$DIR/review.out" >> "$LOG"
     verdict="$(grep -a '^VERDICT:' "$DIR/review.out" | tail -n 1)"
     # A limit is not an answer: wait it out and ask again, rather than ship the
-    # commit unreviewed or throw it away.
+    # commit unreviewed or throw it away. But bounded, unlike the agent's limit.
+    # The agent hits its limit with nothing pending, so waiting costs nothing;
+    # the reviewer hits it holding a commit that passed verify and that no gate
+    # has judged. While we wait there is no results.tsv row, MAX_ITER does not
+    # advance, and a restart sets that commit aside as unjudged — so a limit
+    # that never clears (a spent credit balance) parks the loop for good. After
+    # REVIEW_LIMIT_TRIES, hand it to the unavailable path below, which is the
+    # harness's existing answer to a reviewer it cannot get.
     if [ -z "$verdict" ] && [ "$RC" -ne 0 ] && [ "$TIMED_OUT" = 0 ] \
       && tail -n 20 "$DIR/review.out" | grep -Eqi "$RATE_LIMIT_RE"; then
-      log "reviewer hit a limit — asking again in ${RATE_LIMIT_SLEEP}s"
+      tries=$((tries + 1))
+      if [ "$REVIEW_LIMIT_TRIES" -gt 0 ] 2>/dev/null \
+        && [ "$tries" -ge "$REVIEW_LIMIT_TRIES" ]; then
+        REVIEW_LIMIT_TRIED=$tries
+        break
+      fi
+      log "reviewer hit a limit — asking again in ${RATE_LIMIT_SLEEP}s (try $tries of ${REVIEW_LIMIT_TRIES})"
       nap "$RATE_LIMIT_SLEEP"
       continue
     fi
@@ -557,7 +581,11 @@ EOF
       ;;
     *)
       REVIEW_STATUS=unavailable
-      GATE_REASON="reviewer gave no verdict (exit $RC, timed out $TIMED_OUT)"
+      if [ "$REVIEW_LIMIT_TRIED" -gt 0 ]; then
+        GATE_REASON="reviewer hit a limit; gave up at try $REVIEW_LIMIT_TRIED of $REVIEW_LIMIT_TRIES"
+      else
+        GATE_REASON="reviewer gave no verdict (exit $RC, timed out $TIMED_OUT)"
+      fi
       ;;
   esac
 }

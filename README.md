@@ -129,7 +129,12 @@ Limits heal on their own. When a run ends on a plan limit, an overloaded API or 
 API key out of credit, the loop sleeps `RATE_LIMIT_SLEEP` and tries the same
 iteration again, as often as it takes. A limited call fails at once without using
 quota, so the retries are free, and they do not count toward `MAX_ITER`. The
-reviewer waits the same way instead of letting a commit through unreviewed. If
+reviewer waits the same way instead of letting a commit through unreviewed, but
+only `REVIEW_LIMIT_TRIES` times: it waits holding a commit that no gate has
+judged, and a limit that never clears (a spent credit balance) would park the
+loop on it for good. After that the iteration takes the reviewer-unavailable
+path above — `keep:unreviewed` if `VERIFY_CMD` vouched for it, otherwise
+`revert:review-unavailable`. If
 the loop itself is killed (a reboot, `ralph stop` mid-iteration), commits the
 unfinished iteration made are set aside at the next start rather than pushed
 unjudged.
@@ -242,6 +247,7 @@ the same.
 | `ITER_TIMEOUT` | `7200` | `7200` | seconds one agent run may take |
 | `RATE_LIMIT_SLEEP` | `1800` | `1800` | wait before retrying after a limit |
 | `RATE_LIMIT_RE` | | see `ralph.sh` | what counts as a limit; extend it with `RATE_LIMIT_RE="$RATE_LIMIT_RE\|your proxy's message"` |
+| `REVIEW_LIMIT_TRIES` | `12` | `12` | times a limited reviewer is asked again before the iteration gives up on the review; `0` waits forever |
 | `ERROR_SLEEP` | `300` | `300` | wait after a failure or reset, doubling in a row up to an hour |
 | `ERROR_STOP` | `0` | `0` | stop after this many crashes or timeouts in a row; `0` never stops |
 | `ESCALATE_AFTER` | `3` | `3` | failures in a row before the prompt says pivot |

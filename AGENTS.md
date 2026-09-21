@@ -32,6 +32,11 @@ No `wait -n`, `${x,,}`, `mapfile`, `declare -A` or other bash-4-only syntax.
   what goes into the prompt has a bound that holds whatever it writes
   (`PROGRESS_MAX_BYTES`). A loop that fills its context dies, so that bound
   belongs outside the model like every other gate.
+- A wait that holds work no gate has judged is bounded; a wait with nothing
+  pending need not be. The agent's limit is waited out for ever on purpose — it
+  costs nothing. The reviewer's is not, so it has a ceiling
+  (`REVIEW_LIMIT_TRIES`): while it waits, the commit is ungated, `MAX_ITER` does
+  not advance, and a restart sets that commit aside. Do not unify the two.
 - Loop state lives in `$RALPH_HOME/<name>/`, never in the target repository.
 - Anything that can discard commits runs only in the harness-owned worktree
   (`WORKTREE=1`), never in the user's own checkout.

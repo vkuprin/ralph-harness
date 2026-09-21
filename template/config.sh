@@ -81,6 +81,13 @@ RATE_LIMIT_SLEEP=1800
 # To recognise another message as a limit (a proxy, a gateway), extend the pattern:
 # RATE_LIMIT_RE="$RATE_LIMIT_RE|quota window closed"
 
+# The reviewer's limit is waited out the same way, but not forever: it waits
+# holding a commit no gate has judged, so a limit that never clears (a spent
+# credit balance) would park the loop on that commit for good. After this many
+# tries the iteration gives up on the review and falls back to VERIFY_CMD
+# (keep:unreviewed) or, with no VERIFY_CMD, reverts. 0 waits forever.
+REVIEW_LIMIT_TRIES=12
+
 # Pause after a failed or reverted iteration, doubling each time in a row, up
 # to an hour.
 ERROR_SLEEP=300
