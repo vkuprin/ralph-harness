@@ -1,0 +1,31 @@
+ralph.sh
+  s_efc28c126bc5b9::t_b91722d2349527 252-280,282,284-302,395-398,400,403-404,555-556,775-776,779-783,785-792,1014-1020,1022-1032,1098-1100,1105,1111
+  s_efc28c126bc5b9::t_7d2a6bf7b78a31 784,932,1021
+  s_efc28c126bc5b9::t_e609c86c6f5d8b 281,283
+tests/stub/claude
+  s_efc28c126bc5b9::t_02a54587195c83 29
+  s_efc28c126bc5b9::t_20192ec748d10c 30-44,49-52
+  s_efc28c126bc5b9::t_2fdbac69e7b51e 25-28,45-48,53
+ralph
+  s_efc28c126bc5b9::t_be5e65bbba1c18 453-470,502-503
+  s_efc28c126bc5b9::t_d6cc40b36232fe 575-576
+tests/run.sh
+  s_efc28c126bc5b9::t_2fdbac69e7b51e 1926-1967
+  s_efc28c126bc5b9::t_75bf573d01e1c3 1925
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "2c5fa887e56a205dc1643eb543079061cb9404dc",
+  "prompts": {},
+  "sessions": {
+    "s_efc28c126bc5b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9dfe7d39-b0c9-412c-bdf8-b4710d1b8016",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
