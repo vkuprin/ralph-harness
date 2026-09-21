@@ -91,6 +91,8 @@ check "human commit survived; conflicting agent commit was dropped" \
   bash -c 'grep -q "human: edit work.txt" <<<"$1" && ! grep -q "stub: conflicting" <<<"$1"' _ "$remote_log"
 check "dropped commit saved under refs/ralph/dropped/" test -n "$(git -C "$W" for-each-ref refs/ralph/dropped/)"
 check "the agent's own git push failed" test "$(cat "$S/push-attempt.rc")" != 0
+check "the agent can still push in an unrelated repository with an origin of its own" \
+  test "$(cat "$S/push-other.rc")" = 0
 check "your checkout was never touched" test "$(git -C "$T/app" rev-parse HEAD)" = "$app_head"
 check "your checkout is clean" test -z "$(git -C "$T/app" status --porcelain)"
 check "worktree is clean after the run" test -z "$(git -C "$W" status --porcelain)"

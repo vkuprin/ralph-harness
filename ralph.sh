@@ -532,8 +532,16 @@ while :; do
 
   envs=("RALPH_STEER_FILE=$DIR/STEER.md")
   if [ "$WORKTREE" = 1 ] && [ "$PUSH" = 1 ]; then
-    # The agent's own `git push origin` fails; only the harness pushes.
-    envs+=(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0=no-push://disabled)
+    # The agent's own push to this repository fails; only the harness pushes.
+    # Keyed on the URL, not on remote.origin.pushurl: git applies a setting from
+    # the environment to every repository the process touches, so naming the
+    # remote would also break a push to an unrelated `origin` — the throwaway
+    # remotes a test suite makes for itself, for one. The URL is this loop's
+    # alone, and it catches a push that spells the URL out as well.
+    push_url="$(git remote get-url --push origin 2>/dev/null)"
+    [ -n "$push_url" ] && envs+=(GIT_CONFIG_COUNT=1 \
+      "GIT_CONFIG_KEY_0=url.no-push://disabled.pushInsteadOf" \
+      "GIT_CONFIG_VALUE_0=$push_url")
   fi
 
   offset=$(wc -c < "$LOG" | tr -d ' ')

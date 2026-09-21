@@ -63,7 +63,19 @@ case "$mode" in
   nothing)      echo "Measured again; nothing new." ;;
   push-attempt) commit pushed
                 git push -q origin HEAD:main >/dev/null 2>&1
-                echo "$?" > "$d/push-attempt.rc" ;;
+                echo "$?" > "$d/push-attempt.rc"
+                # Another repository entirely, with an origin of its own. Only
+                # this loop's own origin is out of bounds, so this must work:
+                # an agent whose test suite pushes to a throwaway remote has to
+                # be able to run it.
+                rm -rf "$d/other" "$d/other.git"
+                ( git init -q --bare -b main "$d/other.git" \
+                  && git init -q -b main "$d/other" \
+                  && cd "$d/other" \
+                  && git commit -q --allow-empty -m probe \
+                  && git remote add origin "$d/other.git" \
+                  && git push -q origin main ) >/dev/null 2>&1
+                echo "$?" > "$d/push-other.rc" ;;
   conflict)     # a human pushes to main meanwhile, rewriting the same file
                 (
                   unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0

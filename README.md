@@ -217,8 +217,10 @@ user can. The harness narrows what that can do to your code, not to your machine
 
 - With `WORKTREE=1` it never touches your own checkout, and everything that
   resets commits happens only inside its own worktree.
-- With `PUSH=1` the agent's own `git push origin` fails; only the harness
-  pushes, and only what passed the gates.
+- With `PUSH=1` the agent's own push to this repository fails, however it spells
+  it; only the harness pushes, and only what passed the gates. The block is keyed
+  on the remote's URL, so a push to some other repository — the throwaway remote
+  a test suite makes for itself, say — still works.
 - The reviewer runs with `claude -p --restricted --tools "Read,Grep,Glob"`: no
   shell, no settings or MCP servers from your machine or from the repository, and
   permission prompts are denied rather than left hanging.
