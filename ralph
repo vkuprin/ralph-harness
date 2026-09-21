@@ -137,7 +137,24 @@ old_repo() {
 # Quoting is what makes it literal in both bash 3.2 and 5.x — dropping the
 # quotes reads tidier and is the bug.
 old_pid() {
-  local dir="$1" pid cmd first
+  local dir="$1" f pid
+  # A shell running a script keeps the script open for as long as it runs,
+  # however it was started: by full path, as ./ralph.sh from the loop directory,
+  # through a symlink. The command line does not say so for `bash ./ralph.sh`,
+  # and the working directory does not either, because the old scripts cd into
+  # the repo. So ask who has the file open. Missing this is what let migrate
+  # rename ralph.sh out from under a live loop.
+  for f in "$dir"/ralph*.sh; do
+    [ -f "$f" ] || continue
+    for pid in $(open_by "$f"); do
+      [ "$pid" = "$$" ] && continue
+      case "$(ps -p "$pid" -o comm= 2>/dev/null)" in
+        *bash|*sh) echo "$pid"; return 0 ;;
+      esac
+    done
+  done
+  # Only where no process's open files can be read: match the command line.
+  local cmd first
   for pid in $(pgrep -f 'ralph.*\.sh' 2>/dev/null); do
     [ "$pid" = "$$" ] && continue
     cmd="$(ps -p "$pid" -o command= 2>/dev/null)"
@@ -151,6 +168,27 @@ old_pid() {
     esac
   done
   return 1
+}
+
+# open_by <file>: the PIDs that have <file> open. lsof where it is installed
+# (macOS always); otherwise the /proc/*/fd links Linux keeps, compared with the
+# file's physical path because that is what the links hold.
+open_by() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -t -- "$1" 2>/dev/null
+    return 0
+  fi
+  [ -d /proc/self/fd ] || return 0
+  local real p link
+  real="$(cd -P "$(dirname "$1")" 2>/dev/null && pwd)/$(basename "$1")" || return 0
+  for p in /proc/[0-9]*; do
+    for link in "$p"/fd/*; do
+      if [ "$(readlink "$link" 2>/dev/null)" = "$real" ]; then
+        echo "${p#/proc/}"
+        break
+      fi
+    done
+  done 2>/dev/null
 }
 
 loop_pid() {

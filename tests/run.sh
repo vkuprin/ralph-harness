@@ -478,6 +478,17 @@ check "status finds the process running an old-layout loop" \
 kill "$legacy_pid" 2>/dev/null
 wait "$legacy_pid" 2>/dev/null
 
+# Started the way people start these loops by hand: from the loop directory, as
+# ./ralph.sh. Neither the command line (`bash ./ralph.sh`) nor the working
+# directory (the old scripts cd into the repo) names the loop, and status used
+# to call it stopped while it ran.
+(cd "$T/home-old/legacy" && exec "$RALPH_BASH" ./ralph.sh) & legacy_pid=$!
+wait_proc "$legacy_pid" "./ralph.sh"
+check "status finds an old-layout loop started as ./ralph.sh" \
+  grep -q 'running.*PID' <<<"$(RALPH_HOME="$T/home-old" "$ROOT/ralph" status legacy)"
+kill "$legacy_pid" 2>/dev/null
+wait "$legacy_pid" 2>/dev/null
+
 # ---------------------------------------------------------------------------
 section "ralph migrate: an old-layout loop becomes a current one"
 
@@ -508,6 +519,14 @@ check "migrate refuses while the loop is running" \
   bash -c '! RALPH_HOME="$1/home-m" "$2" migrate legacy' _ "$T" "$ROOT/ralph"
 check "and left the running loop's ralph.sh where it was" test -f "$T/home-m/legacy/ralph.sh"
 check "and wrote no config.sh" test ! -e "$T/home-m/legacy/config.sh"
+kill "$legacy_pid" 2>/dev/null
+wait "$legacy_pid" 2>/dev/null
+
+(cd "$T/home-m/legacy" && exec "$RALPH_BASH" ./ralph.sh) & legacy_pid=$!
+wait_proc "$legacy_pid" "./ralph.sh"
+check "migrate refuses a loop started as ./ralph.sh while it runs" \
+  bash -c '! RALPH_HOME="$1/home-m" "$2" migrate legacy' _ "$T" "$ROOT/ralph"
+check "and left that loop's ralph.sh in place" test -f "$T/home-m/legacy/ralph.sh"
 kill "$legacy_pid" 2>/dev/null
 wait "$legacy_pid" 2>/dev/null
 
