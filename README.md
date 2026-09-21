@@ -222,7 +222,9 @@ A loop from before `config.sh` existed keeps its settings as variables near the 
 of its own `ralph.sh` and writes no `ralph.pid`. `ralph status` and the guide list
 one anyway, marked `old layout`, with the repository it works in, its iteration
 counts, and whether a process is running it — found in the process list, since
-there is no PID file. The other commands need `config.sh`.
+there is no PID file. That search compares the loop's directory as text: a name
+holding a regex character (`my.app`, `c++`) used to answer with a sibling's PID
+or with nothing at all. The other commands need `config.sh`.
 
 `ralph migrate <name>` gives it one. It copies the settings that loop actually had
 (`REPO`, `MAX_ITER`, `QUIET_STOP`) into `config.sh` and renames the old script to
@@ -230,7 +232,9 @@ there is no PID file. The other commands need `config.sh`.
 added since keeps its harness default, which is what that loop already did: no
 worktree, no gates, no push. So the migrated loop behaves as before, and turning
 the gates on afterwards is a matter of editing `config.sh`. It refuses while the
-loop is running, and refuses a loop that already has a `config.sh`.
+loop is running — which is the reason the search above has to name the right
+directory: a running loop read as stopped would have had its script renamed out
+from under it. It also refuses a loop that already has a `config.sh`.
 
 ## Configuration
 

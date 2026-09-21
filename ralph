@@ -124,11 +124,27 @@ old_repo() {
 # With no ralph.pid, the loop is whatever process is running its own script.
 # The agent it starts carries the same directory on its command line
 # (`claude -p --add-dir <dir>`), so only a shell, or the script itself, counts.
+#
+# `pgrep -f` takes a *regex*, and the loop's directory used to be interpolated
+# into it, so a name holding a regex metacharacter was read as syntax. Measured
+# over twelve names: a `.` matches any character, so `my.app` was reported
+# running with `myXapp`'s PID and `ralph migrate my.app` refused for ever,
+# telling the reader to `kill` that stranger; `+ ? * [ ( ^ $ \ {` match
+# something the path does not contain, so a running loop read as stopped and
+# `ralph migrate` renamed its ralph.sh out from under the live process. The
+# pattern below is a constant that only narrows the process list; the directory
+# is matched literally, by a quoted `case` pattern, the way `pid_of` does it.
+# Quoting is what makes it literal in both bash 3.2 and 5.x — dropping the
+# quotes reads tidier and is the bug.
 old_pid() {
   local dir="$1" pid cmd first
-  for pid in $(pgrep -f "$dir/ralph.*\.sh" 2>/dev/null); do
+  for pid in $(pgrep -f 'ralph.*\.sh' 2>/dev/null); do
     [ "$pid" = "$$" ] && continue
     cmd="$(ps -p "$pid" -o command= 2>/dev/null)"
+    case "$cmd" in
+      *"$dir"/ralph*.sh*) ;;
+      *) continue ;;
+    esac
     first="${cmd%% *}"
     case "${first##*/}" in
       bash|sh|zsh|dash|ralph*.sh) echo "$pid"; return 0 ;;

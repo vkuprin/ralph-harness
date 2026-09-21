@@ -45,6 +45,21 @@ prefix of the long one. There are **two** writers of `REPO` into `config.sh` and
 both go through `shq`: `fill`, and the `printf` in `cmd_migrate`. Fixing one and
 documenting both is the shape of a partial fix.
 
+Nor a path interpolated into a `pgrep -f` pattern, which is a *regex*: a loop
+directory holding a `.` matched a sibling's path, so `ralph status` reported
+`my.app` as running with `myXapp`'s PID and `ralph migrate my.app` sent the
+reader to `kill` that stranger — while `+ ? * [ ( ^ $ \` and a valid `{n}`
+matched something no path holds, so a running loop read as *stopped* and
+`ralph migrate` renamed its `ralph.sh` out from under the live process. Measured
+over thirteen names. `old_pid` now greps a constant and matches the directory
+with a **quoted** `case` pattern, `*"$dir"/ralph*.sh*`; the quotes are what make
+it literal, in 3.2 and 5.x alike, and dropping them reads tidier and is the bug.
+The other two command-line guards were already safe and are the shape to copy:
+`pid_of` quotes its `" $dir"`, and `lock_held` in `ralph.sh` matches a constant.
+Old-layout names are the ones that reach this, because `ralph new`'s gate never
+saw them — but `$RALPH_HOME` is in the path too and nothing vets that, so a
+pattern built from either is wrong.
+
 ## Invariants: do not change these
 
 - Every iteration is a new `claude -p`. Nothing but files crosses iterations.

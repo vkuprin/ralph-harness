@@ -1380,6 +1380,113 @@ check "the SETUP_CMD hint still shows the path as the reader would type it" \
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------
+section "an old-layout loop is found by its directory, not by a regex"
+
+# An old-layout loop writes no ralph.pid, so it has to be found in the process
+# list, and `old_pid` interpolated its directory into a `pgrep -f` pattern —
+# which is a regex. A `.` in the name matched any character, so a loop was
+# reported running with a *sibling's* PID and `ralph migrate` sent the reader
+# to `kill` that stranger; the metacharacters below matched something the path
+# does not contain, so a running loop read as stopped and `ralph migrate`
+# renamed its script out from under the live process it had failed to see.
+export RALPH_HOME="$T/home-pg"
+make_repo "$T/app-pg" "$T/remote-pg.git"
+
+# make_old <name> [script]: the layout before config.sh — the settings are
+# variables near the top of the loop's own script, and there is no ralph.pid.
+# loop_kind wants a ralph.sh, so a loop running a variant script has both, the
+# way the loops that predate config.sh on this machine do.
+make_old() {
+  local d="$RALPH_HOME/$1" s="${2:-ralph.sh}"
+  mkdir -p "$d"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'REPO="%s"\n' "$T/app-pg"
+    printf 'MAX_ITER="${MAX_ITER:-9}"\n'
+    printf 'while :; do sleep 0.3; done\n'
+  } > "$d/ralph.sh"
+  [ "$s" = ralph.sh ] || cp "$d/ralph.sh" "$d/$s"
+  chmod +x "$d/ralph.sh" "$d/$s"
+}
+
+# start_old <name> [script]: run it, and wait until ps can see it. The wait
+# looks at this run's own PID and compares with grep -F, so it says nothing
+# about any other process on the machine.
+start_old() {
+  local d="$RALPH_HOME/$1" s="${2:-ralph.sh}" i
+  "$RALPH_BASH" "$d/$s" >/dev/null 2>&1 &
+  old_bg=$!
+  for i in $(seq 1 25); do
+    ps -p "$old_bg" -o command= 2>/dev/null | grep -qF "$d/$s" && break
+    sleep 0.1
+  done
+}
+stop_old() { kill "$old_bg" 2>/dev/null; wait "$old_bg" 2>/dev/null; }
+# state_line colours "running", so the escape has to come off before the PID
+# beside it can be read. BSD sed has no \x1b, so the byte is printf's.
+pg_esc="$(printf '\033')"
+pgstate() { "$ROOT/ralph" status "$1" 2>&1 | sed "s/$pg_esc\[[0-9;]*m//g" | head -1; }
+
+# A `.` matches any character, so pgXone's process answered for pg.one too.
+make_old pg.one
+make_old pgXone
+start_old pgXone
+check "a running old-layout loop is found by its own directory" \
+  grep -q "running  PID $old_bg" <<<"$(pgstate pgXone)"
+check "and a dot in a sibling's name does not make that sibling running too" \
+  grep -q 'stopped' <<<"$(pgstate pg.one)"
+check "migrate converts the stopped loop the running sibling used to answer for" \
+  bash -c 'RALPH_HOME="$1" "$2" migrate pg.one' _ "$RALPH_HOME" "$ROOT/ralph"
+check "and it wrote that loop a config.sh" test -f "$RALPH_HOME/pg.one/config.sh"
+check "and moved only its own script aside" test -f "$RALPH_HOME/pg.one/ralph.sh.old"
+check "leaving the running sibling's script exactly where it was" \
+  test -f "$RALPH_HOME/pgXone/ralph.sh"
+stop_old
+
+# A name that is a prefix of the running one must not match either: the `/`
+# after the directory is what stops it, so a fix that drops it fails here.
+make_old pg3
+make_old pg3x
+start_old pg3x
+check "a loop whose name is a prefix of the running one is still stopped" \
+  grep -q 'stopped' <<<"$(pgstate pg3)"
+stop_old
+
+# The other direction, and the dangerous one: metacharacters that match
+# something a path cannot hold, so the loop reads as stopped while it is
+# running. `pg{h}` is in the list as a guard rather than a repro: `{h}` is not
+# a valid interval expression, so the regex read it literally and that one
+# name worked by accident. `pg{2}` is the same character doing the damage.
+for pgname in 'pg+a' 'pg?b' 'pg*c' 'pg[d]' 'pg(e)' 'pg^f' 'pg$g' 'pg{2}' 'pg{h}' 'pg\i'; do
+  make_old "$pgname"
+  start_old "$pgname"
+  check "a running loop named $pgname is not hidden by its own name" \
+    grep -q "running  PID $old_bg" <<<"$(pgstate "$pgname")"
+  stop_old
+done
+
+# What being reported stopped costs: migrate renames the script the live
+# process is running, and writes it a config.sh it will never read.
+make_old 'pg+mig'
+start_old 'pg+mig'
+check "migrate refuses to convert a loop whose name holds a metacharacter" \
+  bash -c '! RALPH_HOME="$1" "$2" migrate "pg+mig"' _ "$RALPH_HOME" "$ROOT/ralph"
+check "so its script is still where the live process is reading it" \
+  test -f "$RALPH_HOME/pg+mig/ralph.sh"
+check "and no config.sh was written underneath it" \
+  test ! -e "$RALPH_HOME/pg+mig/config.sh"
+stop_old
+
+# A loop running a variant script is still found: the basename half of the
+# match is `ralph*.sh` and pinning it to exactly ralph.sh would break it.
+make_old pgvar ralph-v2.sh
+start_old pgvar ralph-v2.sh
+check "a loop running a ralph-v2.sh is still found" \
+  grep -q "running  PID $old_bg" <<<"$(pgstate pgvar)"
+stop_old
+unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
 echo
 if [ "$fails" -eq 0 ]; then
   printf '\033[32mall tests passed\033[0m\n'
