@@ -25,7 +25,7 @@ bump() {
 case " $* " in
   *" --restricted "*)
     n="$(bump review_calls)"
-    printf '%s\n' "$*" > "$d/argv.review.$n"
+    printf '%s\n' "$@" > "$d/argv.review.$n"
     cat > "$d/prompt.review.$n"
     v="$(pop verdicts ACCEPT)"
     if [ "$v" = LIMIT ]; then echo "You've hit your limit · resets 3am"; exit 1; fi
@@ -36,7 +36,7 @@ case " $* " in
 esac
 
 n="$(bump agent_calls)"
-printf '%s\n' "$*" > "$d/argv.agent.$n"
+printf '%s\n' "$@" > "$d/argv.agent.$n"
 cat > "$d/prompt.agent.$n"
 env | grep '^BOUNDED_' >> "$d/leaked-env"
 mode="$(pop modes nothing)"
@@ -61,6 +61,7 @@ nap() {
 
 case "$mode" in
   commit)       commit work ;;
+  finish)       echo "finished" > FINISHED; commit finish ;;
   commit-bad)   touch BAD; commit bad ;;
   touch-frozen) echo "# edited" >> measure.sh; commit frozen ;;
   cheat)        # commits a failing change, then quietly defangs the check without committing it

@@ -118,6 +118,21 @@ REVIEW=0
 # past a session limit's reset and well short of a weekly one. 0 or a
 # non-number means no ceiling, which is how this behaved before.
 REVIEW_LIMIT_TRIES=12
+# A check the human owns that says the job is done: run in the work directory
+# at the top of every iteration, after the push of the last one; exit 0 stops
+# the loop. It is how a loop whose list is finished stops instead of wandering
+# off into unrelated work.
+DONE_CMD=""
+# Local hours the loop may start iterations in, as "22-08" (end hour excluded,
+# wrapping past midnight). Empty means any hour. The loop shares a plan limit
+# with its human; this keeps it to the hours the human is not using.
+ACTIVE_HOURS=""
+ACTIVE_POLL=300
+# Tool patterns the agent may not use, such as "Bash(ssh *)". Each becomes a
+# --disallowedTools flag, which claude enforces ahead of
+# --dangerously-skip-permissions. A guard against accidents, not against an
+# agent set on getting round it: `bash -c` and scripts are still there.
+DENY=()
 # The reviewer's model. Empty means MODEL. A cheaper one saves the plan limit
 # the loop shares with its human.
 REVIEW_MODEL=""
@@ -514,6 +529,28 @@ shipped_recently() {
   printf '\n---\n\n# What this loop shipped recently (from git, newest first)\n\n%s\n' "$lines"
 }
 
+in_active_hours() {
+  [ -n "$ACTIVE_HOURS" ] || return 0
+  local h s e
+  h=$((10#$(date +%H)))
+  s=$((10#${ACTIVE_HOURS%-*}))
+  e=$((10#${ACTIVE_HOURS#*-}))
+  if [ "$s" -lt "$e" ]; then
+    [ "$h" -ge "$s" ] && [ "$h" -lt "$e" ]
+  else
+    [ "$h" -ge "$s" ] || [ "$h" -lt "$e" ]
+  fi
+}
+
+# Before an iteration, never during one: a running agent is not cut off. The
+# wait is not an iteration and does not count toward MAX_ITER.
+wait_for_active_hours() {
+  in_active_hours && return 0
+  log "outside ACTIVE_HOURS=$ACTIVE_HOURS — waiting for the window to open"
+  until in_active_hours; do nap "$ACTIVE_POLL"; done
+  log "inside ACTIVE_HOURS=$ACTIVE_HOURS — going on"
+}
+
 build_prompt() {
   INJECT_NOTE=""
   {
@@ -872,6 +909,22 @@ sync_once() {
 [ -n "${REPO:-}" ] || refuse "ralph: config.sh must set REPO" 2
 [ -e "$REPO/.git" ] || refuse "ralph: REPO is not a git checkout: $REPO" 2
 
+# ACTIVE_HOURS is read as numbers with 10# everywhere: bash takes a leading
+# zero for octal, so $((08)) is an error that ends the script, at 08:00 and
+# 09:00 every day. A window that opens and closes at once is refused rather
+# than guessed at.
+if [ -n "$ACTIVE_HOURS" ]; then
+  case "$ACTIVE_HOURS" in
+    [0-9]-[0-9]|[0-9][0-9]-[0-9]|[0-9]-[0-9][0-9]|[0-9][0-9]-[0-9][0-9]) ;;
+    *) refuse "ralph: ACTIVE_HOURS=$ACTIVE_HOURS is not hours like 22-08" 2 ;;
+  esac
+  if [ $((10#${ACTIVE_HOURS%-*})) -gt 23 ] || [ $((10#${ACTIVE_HOURS#*-})) -gt 23 ] \
+    || [ $((10#${ACTIVE_HOURS%-*})) -eq $((10#${ACTIVE_HOURS#*-})) ]; then
+    refuse "ralph: ACTIVE_HOURS=$ACTIVE_HOURS must be two different hours from 0 to 23" 2
+  fi
+fi
+[ "$ACTIVE_POLL" -ge 1 ] 2>/dev/null || ACTIVE_POLL=300
+
 # PUSH with nowhere to push. Every sync would fetch, fail, and copy git's
 # four-line complaint into the log; over days that is the whole log. Say it
 # once and keep the commits local, which is what PUSH=0 does anyway.
@@ -909,6 +962,7 @@ stop_why=""
 # what an agent of this run writes is.
 decisions > "$DECISION_SEEN"
 while :; do
+  wait_for_active_hours
   iter=$((iter + 1))
   if [ "$iter" -gt "$MAX_ITER" ]; then
     iter=$((iter - 1))   # this one never ran; do not count it
@@ -935,6 +989,25 @@ while :; do
   # iteration reads; the live file is only for the iteration in flight.
   [ "$LIVE_STEER" = 1 ] && : > "$DIR/STEER.md" && : > "$DIR/STEER.md.delivered"
 
+  # After the sync, so a push that failed after the last keep has been retried
+  # and nothing DONE_CMD approves can still be dropped by it.
+  if [ -n "$DONE_CMD" ]; then
+    : > "$DIR/done.out"
+    run_bounded 300 /dev/null "$DIR/done.out" \
+      env "RALPH_DIR=$DIR" "RALPH_LOOP=$NAME" bash -c "$DONE_CMD"
+    if [ "$RC" -eq 0 ] && [ "$TIMED_OUT" = 0 ]; then
+      iter=$((iter - 1))   # this one never ran; do not count it
+      unpushed=""
+      if [ "$WORKTREE" = 1 ] && [ "$PUSH" = 1 ]; then
+        unpushed="$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null)"
+        [ "${unpushed:-0}" -gt 0 ] 2>/dev/null || unpushed=""
+      fi
+      stop_why="DONE_CMD says the job is done${unpushed:+ — $unpushed kept commits are still not pushed}"
+      log "stopping: $stop_why"
+      break
+    fi
+  fi
+
   before=$(git rev-parse HEAD)
   [ "$WORKTREE" = 1 ] && mark_gated
   started=$(date +%s)
@@ -949,6 +1022,9 @@ while :; do
     args+=(--add-dir "$d")
   done
   [ "$LIVE_STEER" = 1 ] && args+=(--settings "$DIR/.agent-settings.json")
+  for d in ${DENY[@]+"${DENY[@]}"}; do
+    args+=(--disallowedTools "$d")
+  done
 
   envs=("RALPH_STEER_FILE=$DIR/STEER.md")
   if [ "$WORKTREE" = 1 ] && [ "$PUSH" = 1 ]; then

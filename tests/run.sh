@@ -1965,7 +1965,7 @@ run_loop "$T/loops/done" "$S" "$T/remote-done.git"
 
 check "the reviewer is shown what done looks like" grep -qF "$done_text" "$S/prompt.review.1"
 check "and told a step toward it is not a reason to reject" grep -qi 'not the finished result yet' "$S/prompt.review.1"
-check "the reviewer runs on REVIEW_MODEL" grep -q -- '--model haiku-for-review' "$S/argv.review.1"
+check "the reviewer runs on REVIEW_MODEL" grep -qx 'haiku-for-review' "$S/argv.review.1"
 check "the agent still runs on MODEL" bash -c '! grep -q haiku-for-review "$1"' _ "$S/argv.agent.1"
 check "the third prompt lists what the loop shipped, from git" \
   bash -c 'sed -n "/^# What this loop shipped recently/,\$p" "$1" | grep -q "stub: work (agent call 2)"' _ "$S/prompt.agent.3"
@@ -1980,7 +1980,98 @@ make_loop "$T/loops/done2" "$T/app-done2" 'WORKTREE=1 PUSH=1 REVIEW=1 MAX_ITER=1
 run_loop "$T/loops/done2" "$S" "$T/remote-done2.git"
 check "a Done looks like left as the template's placeholder is not shown" \
   bash -c '! grep -q "What done looks like" "$1"' _ "$S/prompt.review.1"
-check "without REVIEW_MODEL the reviewer runs on MODEL" grep -q -- '--model opus' "$S/argv.review.1"
+check "without REVIEW_MODEL the reviewer runs on MODEL" \
+  bash -c 'grep -A1 -x -- --model "$1" | grep -qx opus' _ "$S/argv.review.1"
+
+# ---------------------------------------------------------------------------
+section "DONE_CMD: a finished job stops the loop"
+
+# A loop whose list was done wandered into unrelated work. DONE_CMD is the
+# human's own check of "done", run by the harness, never the model's say-so.
+make_repo "$T/app-fin" "$T/remote-fin.git"
+S="$T/stub-fin"; mkdir -p "$S"
+printf '%s\n' commit finish commit commit > "$S/modes"
+make_loop "$T/loops/fin" "$T/app-fin" 'WORKTREE=1 PUSH=1 MAX_ITER=5' 'DONE_CMD="test -f FINISHED"'
+run_loop "$T/loops/fin" "$S" "$T/remote-fin.git"
+check "the loop stops once DONE_CMD says done" test "$(statuses "$T/loops/fin")" = "keep keep"
+check "it says why" grep -q 'DONE_CMD says the job is done' "$T/loops/fin/ralph.log"
+check "the commit that finished the job was pushed before it stopped" \
+  grep -q 'stub: finish' <(git -C "$T/remote-fin.git" log --format=%s main)
+check "the check that stopped it is not counted as an iteration" \
+  grep -q 'finished after 2 iterations' "$T/loops/fin/ralph.log"
+
+make_repo "$T/app-fin2" "$T/remote-fin2.git"
+S="$T/stub-fin2"; mkdir -p "$S"
+printf '%s\n' commit commit > "$S/modes"
+make_loop "$T/loops/fin2" "$T/app-fin2" 'WORKTREE=1 PUSH=1 MAX_ITER=2' \
+  "DONE_CMD='test -f BACKLOG.md && ! grep -q \"^- \\[ \\]\" BACKLOG.md'"
+run_loop "$T/loops/fin2" "$S" "$T/remote-fin2.git"
+check "a DONE_CMD that fails (no backlog file yet) never stops the loop" \
+  test "$(statuses "$T/loops/fin2")" = "keep keep"
+
+# ---------------------------------------------------------------------------
+section "ACTIVE_HOURS: the loop keeps to its window"
+
+# The loop shares the plan limit with its human; ACTIVE_HOURS keeps it to the
+# hours the human is not using it. The hour comes from this `date`, so the test
+# does not wait for night. 08 and 09 are in the list on purpose: bash reads a
+# leading zero as octal, and $((08)) is an error that ends the script.
+H="$T/fakehour"; mkdir -p "$H"
+cat > "$H/date" <<'EOF'
+#!/bin/sh
+if [ "$1" = "+%H" ] && [ -n "${FAKE_HOUR:-}" ] && [ -f "$FAKE_HOUR" ]; then
+  cat "$FAKE_HOUR"
+else
+  exec /bin/date "$@"
+fi
+EOF
+chmod +x "$H/date"
+make_repo "$T/app-hrs" "$T/remote-hrs.git"
+S="$T/stub-hrs"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+make_loop "$T/loops/hrs" "$T/app-hrs" 'MAX_ITER=1 ACTIVE_HOURS="22-08" ACTIVE_POLL=1'
+echo 08 > "$T/hour-hrs"
+# shellcheck disable=SC2030,SC2031  # the subshell is the point: only this run sees it
+( export PATH="$H:$PATH" FAKE_HOUR="$T/hour-hrs"
+  STUB_DIR="$S" "$RALPH_BASH" "$ROOT/ralph.sh" "$T/loops/hrs" > "$T/loops/hrs/ralph.out" 2>&1 ) & hrs_pid=$!
+for _ in $(seq 1 50); do grep -q 'outside ACTIVE_HOURS' "$T/loops/hrs/ralph.log" 2>/dev/null && break; sleep 0.1; done
+sleep 1.5
+check "outside the window (08, end hour excluded) no agent runs" test ! -e "$S/agent_calls"
+echo 09 > "$T/hour-hrs"
+sleep 1.5
+check "at 08 and 09 the loop is waiting, not dead of octal" kill -0 "$hrs_pid"
+check "and still no agent has run" test ! -e "$S/agent_calls"
+echo 23 > "$T/hour-hrs"
+wait "$hrs_pid"
+check "inside the window (23) the iteration runs" test "$(statuses "$T/loops/hrs")" = "keep"
+check "the wait was logged once, not once per poll" \
+  test "$(grep -c 'outside ACTIVE_HOURS' "$T/loops/hrs/ralph.log")" = 1
+
+make_loop "$T/loops/hrs-bad" "$T/app-hrs" 'ACTIVE_HOURS="7-7"'
+run_loop "$T/loops/hrs-bad" "$S"
+check "an ACTIVE_HOURS that opens and closes at once refuses the start" \
+  grep -q 'ACTIVE_HOURS' "$T/loops/hrs-bad/ralph.log"
+check "and runs nothing" test ! -e "$T/loops/hrs-bad/results.tsv"
+make_loop "$T/loops/hrs-bad2" "$T/app-hrs" 'ACTIVE_HOURS="25-3"'
+run_loop "$T/loops/hrs-bad2" "$S"
+check "an hour past 23 refuses the start" test ! -e "$T/loops/hrs-bad2/results.tsv"
+
+# ---------------------------------------------------------------------------
+section "DENY: tool patterns the agent may not use"
+
+make_repo "$T/app-deny" "$T/remote-deny.git"
+S="$T/stub-deny"; mkdir -p "$S"
+printf '%s\n' nothing > "$S/modes"
+make_loop "$T/loops/deny" "$T/app-deny" 'MAX_ITER=1' 'DENY=("Bash(ssh *)" "Bash(psql *)")'
+run_loop "$T/loops/deny" "$S"
+check "every DENY pattern reaches claude as its own --disallowedTools" \
+  test "$(grep -A1 -x -- --disallowedTools "$S/argv.agent.1" | grep -cxE 'Bash\((ssh|psql) \*\)')" = 2
+S="$T/stub-deny0"; mkdir -p "$S"
+printf '%s\n' nothing > "$S/modes"
+make_loop "$T/loops/deny0" "$T/app-deny" 'MAX_ITER=1' 'DENY=()'
+run_loop "$T/loops/deny0" "$S"
+check "an empty DENY passes nothing and breaks nothing" \
+  bash -c '! grep -qx -- --disallowedTools "$1" && grep -q "finished after 1" "$2"' _ "$S/argv.agent.1" "$T/loops/deny0/ralph.log"
 
 # ---------------------------------------------------------------------------
 echo

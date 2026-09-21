@@ -70,6 +70,29 @@ FROZEN=()
 
 # A second, read-only claude reads each new commit's diff and can reject it.
 REVIEW=1
+# The reviewer's model; empty means MODEL. A cheaper one saves the plan limit
+# the loop shares with you.
+# REVIEW_MODEL="sonnet"
+
+# Tool patterns the agent may never use, enforced by claude even under
+# --dangerously-skip-permissions. A guard against accidents, not against an agent
+# set on getting round it (`bash -c`, scripts): keep production credentials away
+# from the loop as well.
+# DENY=("Bash(ssh *)" "Bash(psql *)" "Bash(git push *)")
+DENY=()
+
+# ---------------------------------------------------------------- when to stop, when to run
+
+# Your own check that the job is done, run in the work directory before every
+# iteration; exit 0 stops the loop. A loop whose list is finished otherwise
+# wanders into unrelated work. A missing file must not read as "done":
+# DONE_CMD='test -f BACKLOG.md && ! grep -q "^- \[ \]" BACKLOG.md'
+DONE_CMD=""
+
+# Local hours the loop may start iterations in, end hour excluded, wrapping past
+# midnight: "22-08" runs at night and leaves your daytime limit to you. An
+# iteration already running is never cut off. Empty means any hour.
+ACTIVE_HOURS=""
 
 # ---------------------------------------------------------------- reliability
 
