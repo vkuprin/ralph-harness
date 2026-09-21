@@ -253,10 +253,10 @@ parse is judged, not what sourcing returns: a config ending in a false test, lik
 | `PUSH` | `1` | `0` | push kept commits to `origin/$BRANCH`; with `0` they wait on `ralph/<name>` for you. With no `origin` it says so once and behaves as `0` |
 | `SETUP_CMD` | | | run once in a new worktree (`npm ci`, copy `.env`). If it fails the worktree and its branch go, so the next start runs it again |
 | `VERIFY_CMD` | | | your check, run after every commit; failing resets the commit |
-| `VERIFY_TIMEOUT` | `1800` | `1800` | seconds `VERIFY_CMD` may take |
+| `VERIFY_TIMEOUT` | `1800` | `1800` | seconds `VERIFY_CMD` may take, counted awake |
 | `FROZEN` | `()` | `()` | paths a commit may not touch |
 | `REVIEW` | `1` | `0` | a read-only reviewer judges each commit |
-| `ITER_TIMEOUT` | `7200` | `7200` | seconds one agent run may take |
+| `ITER_TIMEOUT` | `7200` | `7200` | seconds one agent run may take, counted awake |
 | `RATE_LIMIT_SLEEP` | `1800` | `1800` | wait before retrying after a limit |
 | `RATE_LIMIT_RE` | | see `ralph.sh` | what counts as a limit; extend it with `RATE_LIMIT_RE="$RATE_LIMIT_RE\|your proxy's message"` |
 | `REVIEW_LIMIT_TRIES` | `12` | `12` | times a limited reviewer is asked again before the iteration gives up on the review; `0` waits forever |
@@ -268,6 +268,7 @@ parse is judged, not what sourcing returns: a config ending in a false test, lik
 | `LOG_MAX_BYTES` | `10000000` | `10000000` | rotate `ralph.log` once it passes this between iterations; `0` never rotates |
 | `LOG_KEEP` | `3` | `3` | rotated logs kept, `ralph.log.1` up, no ceiling; lowering it prunes the rest; `0` throws the old one away |
 | `REF_KEEP` | `20` | `20` | thrown-away commits kept under `refs/ralph/reverted/` and `refs/ralph/dropped/`, newest first, each counted separately; `0` keeps every ref and `git gc` can never reclaim them |
+| `POLL_GAP_MAX` | `60` | `60` | longest gap between two polls of a running command that still counts against its timeout; a longer one is the machine having been suspended. Not an opt-out: a value that is not a number of seconds, `0` included, falls back to `60` |
 | `LIVE_STEER` | `1` | `1` | let `ralph steer` reach the iteration in flight |
 | `CLOSING` | | see `ralph.sh` | the last line of every prompt |
 

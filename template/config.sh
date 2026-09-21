@@ -72,6 +72,8 @@ REVIEW=1
 # ---------------------------------------------------------------- reliability
 
 # Seconds one agent run may take before its whole process group is killed.
+# Seconds the machine was awake for, not wall clock: a laptop suspended in the
+# middle of an iteration used to kill a healthy agent the moment it woke.
 ITER_TIMEOUT=7200
 
 # Pause before retrying an iteration that hit a limit (5-hour, weekly, credit,

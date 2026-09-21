@@ -105,6 +105,10 @@ LIVE_STEER=1
 LOG_MAX_BYTES=10000000
 LOG_KEEP=3
 REF_KEEP=20
+# The longest gap between two polls of a running command that is counted as
+# time the command had. Every timeout is a budget of seconds the machine was
+# awake for, not of wall clock: see run_bounded.
+POLL_GAP_MAX=60
 # What claude prints when a limit ends a run: plan limits (5-hour, weekly), an
 # overloaded API, or an API key out of credit. Only consulted when claude exited
 # non-zero, and only on its last lines, so an audit whose own output mentions
@@ -201,8 +205,13 @@ kill_group() {
 # (as this repo's own tests do) would inherit it. Never call it inside
 # $(...): the command would become a grandchild that `ralph stop` cannot see.
 run_bounded() {
-  local secs="$1" input="$2" output="$3" start polls=0
+  local secs="$1" input="$2" output="$3" last now gap elapsed=0 polls=0 cap
   shift 3
+  # Not an opt-out: a value the harness cannot read as a tolerance, 0 included,
+  # falls back to the default rather than to no cap, because no cap is the
+  # defect below and not a setting anyone would want.
+  cap="$POLL_GAP_MAX"
+  [ "$cap" -ge 1 ] 2>/dev/null || cap=60
   TIMED_OUT=0
   if [ -n "$PERL" ]; then
     # The command becomes the leader of a new process group, with pid == pgid.
@@ -217,9 +226,25 @@ run_bounded() {
     set +m
   fi
   CHILD=$!
-  start=$(date +%s)
+  last=$(date +%s)
   while kill -0 "$CHILD" 2>/dev/null; do
-    if [ $(( $(date +%s) - start )) -ge "$secs" ]; then
+    # The budget is seconds the machine was awake, not wall clock. A suspended
+    # machine stops polling and `date` jumps by the whole nap, so comparing
+    # now - start kills a healthy agent on the first poll after the wake: seen
+    # on a Mac asleep 09:52 to 15:40, recorded as 22710s with the reason
+    # "timed out after 3600s" in the same row. Summing the gaps instead is the
+    # same arithmetic while the machine is awake — consecutive readings
+    # telescope to now - start exactly — and a gap longer than any poll asks
+    # for is a suspend, so it costs the budget POLL_GAP_MAX seconds, no more. A
+    # negative gap is the clock being set back; it counts as nothing rather
+    # than handing time back.
+    now=$(date +%s)
+    gap=$(( now - last ))
+    last=$now
+    [ "$gap" -lt 0 ] && gap=0
+    [ "$gap" -gt "$cap" ] && gap=$cap
+    elapsed=$(( elapsed + gap ))
+    if [ "$elapsed" -ge "$secs" ]; then
       TIMED_OUT=1
       kill_group "$CHILD"
       break

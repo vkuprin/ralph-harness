@@ -37,6 +37,14 @@ No `wait -n`, `${x,,}`, `mapfile`, `declare -A` or other bash-4-only syntax.
   costs nothing. The reviewer's is not, so it has a ceiling
   (`REVIEW_LIMIT_TRIES`): while it waits, the commit is ungated, `MAX_ITER` does
   not advance, and a restart sets that commit aside. Do not unify the two.
+- A timeout is a budget of seconds the machine was awake, not of wall clock.
+  `run_bounded` sums the gaps between its polls, each capped at
+  `POLL_GAP_MAX`, instead of comparing `now - start`. The two are the same
+  arithmetic while the machine stays awake — consecutive readings telescope —
+  and only the sum survives a suspend, which otherwise kills a healthy agent
+  on the first poll after the wake. `POLL_GAP_MAX` is a tolerance and not an
+  opt-out: unlike `REF_KEEP` or `PROGRESS_MAX_BYTES`, a `0` or unreadable
+  value falls back to the default, because no cap is the defect itself.
 - Loop state lives in `$RALPH_HOME/<name>/`, never in the target repository.
 - Anything that can discard commits runs only in the harness-owned worktree
   (`WORKTREE=1`), never in the user's own checkout.

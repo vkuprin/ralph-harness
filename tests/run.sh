@@ -570,6 +570,97 @@ check "and its commit reached origin" \
   grep -q 'stub: work' <(git -C "$T/remote-n.git" log --format=%s main)
 
 # ---------------------------------------------------------------------------
+section "time asleep is not time worked"
+
+# Every timeout was wall clock, so a laptop suspended mid-iteration killed a
+# healthy agent on the first poll after the wake. Seen for real: a Mac asleep
+# 09:52 to 15:40 and the row recorded as 22710 seconds with the reason "agent
+# timed out after 3600s" — two numbers that cannot both be work.
+#
+# A suspend cannot be waited for, so it is simulated: this `date` adds the
+# seconds in $FAKE_CLOCK to `date +%s` and passes every other format through,
+# and the stub writes that file from inside the iteration. Nothing else in the
+# suite sees it — it is on PATH for these runs alone.
+F="$T/fakeclock"; mkdir -p "$F"
+cat > "$F/date" <<'EOF'
+#!/bin/sh
+if [ "$1" = "+%s" ]; then
+  o=0
+  [ -n "${FAKE_CLOCK:-}" ] && [ -f "$FAKE_CLOCK" ] && o=$(cat "$FAKE_CLOCK")
+  echo $(( $(/bin/date +%s) + o ))
+else
+  exec /bin/date "$@"
+fi
+EOF
+chmod +x "$F/date"
+
+# run_slept <loop-dir> <stub-dir> [seconds the agent works after the wake]:
+# run_loop with the fake clock on PATH and an offset file of its own, named
+# after the loop and starting at 0.
+run_slept() {
+  local dir="$1" stub="$2" clock
+  clock="$T/clock-$(basename "$dir")"
+  echo 0 > "$clock"
+  # shellcheck disable=SC2030,SC2031  # the subshell is the point: only this run sees it
+  ( export PATH="$F:$PATH" FAKE_CLOCK="$clock" FAKE_WORK="${3:-1}"
+    run_loop "$dir" "$stub" )
+}
+
+make_repo "$T/app-susp" "$T/remote-susp.git"
+
+S="$T/stub-susp"; mkdir -p "$S"
+printf '%s\n' suspend > "$S/modes"
+make_loop "$T/loops/susp" "$T/app-susp" 'WORKTREE=1 MAX_ITER=1 ITER_TIMEOUT=600'
+run_slept "$T/loops/susp" "$S"
+
+check "an agent working across a 20000s suspend is not killed" \
+  test "$(statuses "$T/loops/susp")" = "keep"
+check "its commit survived the wake" \
+  grep -q 'stub: work' <(git -C "$T/app-susp-ralph-susp" log --format=%s)
+check "and no timeout is blamed in the reason either" \
+  bash -c '! grep -Eq "timed out|killed after" "$1/results.tsv"' _ "$T/loops/susp"
+# Guard: the clock really did jump, so the three checks above are not passing
+# because nothing happened. The recorded seconds stay wall clock on purpose —
+# that column is what told a human the machine had slept.
+check "the recorded seconds still show the wall clock the human sees" \
+  bash -c 'test "$(tail -n 1 "$1/results.tsv" | cut -f6)" -ge 20000' _ "$T/loops/susp"
+
+# Guard: the budget is spent by awake seconds, not refunded. An agent that
+# hangs after the suspend is still killed, or the fix would just be "never
+# time out" — which is how it would most plausibly be wrong.
+S="$T/stub-susp2"; mkdir -p "$S"
+printf '%s\n' suspend > "$S/modes"
+make_loop "$T/loops/susp2" "$T/app-susp" 'WORKTREE=1 MAX_ITER=1 ITER_TIMEOUT=2'
+run_slept "$T/loops/susp2" "$S" 999
+
+check "an agent that hangs after the suspend is still killed" \
+  test "$(statuses "$T/loops/susp2")" = "timeout"
+check "and its process group went with it" bash -c '! pgrep -f "sleep 99[9]" >/dev/null'
+
+# VERIFY_CMD runs through the same bound, and so does the push.
+S="$T/stub-susp3"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+make_loop "$T/loops/susp3" "$T/app-susp" 'WORKTREE=1 MAX_ITER=1 VERIFY_TIMEOUT=600' \
+  "VERIFY_CMD=\"echo 20000 > '$T/clock-susp3'; sleep 1; ./measure.sh\""
+run_slept "$T/loops/susp3" "$S"
+
+check "a VERIFY_CMD that runs across a suspend is not killed either" \
+  test "$(statuses "$T/loops/susp3")" = "keep"
+
+# POLL_GAP_MAX is a tolerance, not an opt-out: a value that is not one falls
+# back to the default instead of to no cap, and says nothing every poll.
+S="$T/stub-susp4"; mkdir -p "$S"
+printf '%s\n' suspend > "$S/modes"
+make_loop "$T/loops/susp4" "$T/app-susp" \
+  'WORKTREE=1 MAX_ITER=1 ITER_TIMEOUT=600 POLL_GAP_MAX=nonsense'
+run_slept "$T/loops/susp4" "$S"
+
+check "an unreadable POLL_GAP_MAX falls back to the default, not to no cap" \
+  test "$(statuses "$T/loops/susp4")" = "keep"
+check "and does not complain once per poll" \
+  bash -c '! grep -q "integer expression" "$1/ralph.log"' _ "$T/loops/susp4"
+
+# ---------------------------------------------------------------------------
 section "days, not minutes: a soak run over a rotating log"
 
 # Nothing had ever run here for longer than a dozen iterations. 200 of them with

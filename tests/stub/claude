@@ -61,6 +61,14 @@ case "$mode" in
   fail429)      echo "the audit found: upstream returned HTTP 429 on /login"
                 echo "then the agent crashed"; exit 1 ;;
   nothing)      echo "Measured again; nothing new." ;;
+  suspend)      # The machine is put to sleep for hours in the middle of the
+                # iteration and then woken: `date` jumps by the whole nap while
+                # the agent goes on working. Only meaningful with the fake
+                # clock the "time asleep" section puts on PATH. FAKE_WORK=999
+                # is the same jump with an agent that then really does hang.
+                echo "${FAKE_JUMP:-20000}" > "${FAKE_CLOCK:?FAKE_CLOCK not set}"
+                sleep "${FAKE_WORK:-1}"
+                commit work ;;
   grow-progress)
                 # PROGRESS.md is the agent's to rewrite, so the agent is what
                 # decides whether the shape the entry cap reads ('## Log' with
