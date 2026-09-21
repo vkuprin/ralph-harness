@@ -3,7 +3,7 @@
 # The checkout the loop works in. Required.
 REPO="__REPO__"
 
-# Which model runs an iteration.
+# Which model runs an iteration (and the reviewer).
 MODEL="opus"
 
 # Hard ceiling on iterations. The loop stops here whatever else is true.
@@ -24,6 +24,75 @@ STEP_SLEEP=30
 
 # Extra directories the agent may read, beyond the repo and the loop dir.
 # ADD_DIRS=("$HOME/.claude/plans")
+
+# ---------------------------------------------------------------- the gate
+
+# Work in a separate git worktree on branch ralph/__NAME__, so the harness can
+# reset rejected commits without ever touching your own checkout. Every gate
+# below needs it. The worktree sits next to the repo by default, so build tools
+# that look at parent directories see the same layout.
+WORKTREE=1
+# WORKTREE_DIR="/somewhere/else"
+
+# The branch the worktree starts from, and the one kept commits are pushed to.
+BRANCH="main"
+
+# 1: the harness pushes kept commits to origin/$BRANCH itself (the agent cannot).
+# 0: commits stay on ralph/__NAME__ for you to merge.
+PUSH=1
+
+# Runs once in a new worktree. Untracked files such as .env and node_modules do
+# not exist there until something puts them there.
+# SETUP_CMD="npm ci && cp __REPO__/.env ."
+SETUP_CMD=""
+
+# A check you own, run by the harness after every commit. If it fails, the
+# commit is reset. Keep it deterministic: this is the gate the model cannot talk
+# its way past. With it empty, an unavailable reviewer blocks the commit rather
+# than waving it through.
+# VERIFY_CMD="npm test --silent && ./scripts/measure.sh --max-defects 0"
+VERIFY_CMD=""
+VERIFY_TIMEOUT=1800
+
+# Paths a commit may not touch: the measurement script, fixtures, the tests
+# VERIFY_CMD relies on. A commit that edits one is reset, so the agent cannot
+# pass the gate by moving it.
+# FROZEN=("scripts/measure.sh" "test/fixtures")
+FROZEN=()
+
+# A second, read-only claude reads each new commit's diff and can reject it.
+REVIEW=1
+
+# ---------------------------------------------------------------- reliability
+
+# Seconds one agent run may take before its whole process group is killed.
+ITER_TIMEOUT=7200
+
+# Pause after an iteration that hit a usage limit. It is not an error and does
+# not count toward ERROR_STOP.
+RATE_LIMIT_SLEEP=1800
+
+# Pause after a failed or reverted iteration, doubling each time in a row, up
+# to an hour.
+ERROR_SLEEP=300
+
+# Consecutive failed iterations (crash, timeout) before the loop stops.
+# 0 means never: back off and keep trying.
+ERROR_STOP=0
+
+# After this many reverted or failed iterations in a row, the prompt tells the
+# agent to pivot; after twice as many, to record the blocker under "Needs a
+# decision" and move on.
+ESCALATE_AFTER=3
+
+# ---------------------------------------------------------------- memory
+
+# Log entries kept in PROGRESS.md. Older ones move to PROGRESS-archive.md, which
+# the agent can read but which is not put into every prompt. 0 keeps everything.
+PROGRESS_KEEP=8
+
+# `ralph steer` also reaches the iteration in flight, at its next tool call.
+LIVE_STEER=1
 
 # The last line of every prompt. Override it if PROGRESS.md is organised
 # differently — for example appended at the bottom rather than the top.

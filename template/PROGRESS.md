@@ -16,5 +16,7 @@ What the next iteration should check before it starts anything new.
 
 ## Log
 
-Newest entry first. One block per iteration: what was measured, what shipped, what
-turned out to be wrong.
+Newest entry first, one per iteration, each under its own heading:
+`### YYYY-MM-DD HH:MM — iteration N`. Say what was measured and how, what shipped,
+and what turned out to be wrong. Only the newest entries stay here; older ones are
+moved to PROGRESS-archive.md.

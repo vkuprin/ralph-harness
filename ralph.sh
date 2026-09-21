@@ -8,9 +8,11 @@
 # clean as iteration 1 and reads its predecessor's notes instead of dragging a
 # transcript behind it. A loop that keeps one context instead fills it and dies.
 #
-# The gate is a commit. If HEAD moved, the iteration shipped something; if it did
-# not, the iteration found nothing, and the loop looks less often rather than
-# giving up.
+# The gate is a commit, judged outside the model. If HEAD did not move, the
+# iteration found nothing, and the loop looks less often rather than giving up.
+# If it moved and WORKTREE=1, the harness checks the new commits (frozen files,
+# VERIFY_CMD, an optional read-only reviewer), resets the ones that fail, and
+# pushes the rest itself. The agent commits; it never pushes.
 #
 # Usage: ralph.sh <loop-dir>
 #
@@ -19,45 +21,440 @@
 
 set -uo pipefail
 
-DIR="${1:-${RALPH_LOOP:-}}"
-[ -n "$DIR" ] || { echo "usage: ralph.sh <loop-dir>" >&2; exit 2; }
-DIR="${DIR%/}"
-[ -d "$DIR" ] || { echo "ralph: no such loop directory: $DIR" >&2; exit 2; }
+arg="${1:-${RALPH_LOOP:-}}"
+[ -n "$arg" ] || { echo "usage: ralph.sh <loop-dir>" >&2; exit 2; }
+DIR="$(cd "${arg%/}" 2>/dev/null && pwd)" || { echo "ralph: no such loop directory: $arg" >&2; exit 2; }
 
 for f in config.sh PROMPT.md PROGRESS.md; do
   [ -f "$DIR/$f" ] || { echo "ralph: loop is missing $f: $DIR/$f" >&2; exit 2; }
 done
 
+HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# One loop process per loop directory. Two would share PROGRESS.md, the log and
+# the worktree, and each would take the other's commits for its own.
+LOCK="$DIR/ralph.lock"
+if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null; then
+  echo "ralph: this loop is already running as PID $(cat "$LOCK"): $DIR" >&2
+  exit 2
+fi
+echo $$ > "$LOCK"
+trap 'rm -f "$LOCK"' EXIT
+
 # ---------------------------------------------------------------- defaults
+# Every default keeps a loop written for the old harness behaving as it did.
 MODEL="opus"
 MAX_ITER=500
-QUIET_STOP=0        # consecutive iterations shipping nothing before stopping; 0 = never stop
-QUIET_SLEEP=1200    # pause after an iteration that shipped nothing
-STEP_SLEEP=30       # pause between iterations
+QUIET_STOP=0
+QUIET_SLEEP=1200
+STEP_SLEEP=30
 ADD_DIRS=()
 CLOSING="Run one iteration now. When you are done, rewrite $DIR/PROGRESS.md with your entry at the top of the Log section."
+WORKTREE=0
+WORKTREE_DIR=""
+BRANCH="main"
+PUSH=0
+SETUP_CMD=""
+ITER_TIMEOUT=7200
+VERIFY_CMD=""
+VERIFY_TIMEOUT=1800
+FROZEN=()
+REVIEW=0
+RATE_LIMIT_SLEEP=1800
+ERROR_SLEEP=300
+ERROR_STOP=0
+PROGRESS_KEEP=8
+ESCALATE_AFTER=3
+LIVE_STEER=1
 
 # shellcheck disable=SC1091
 . "$DIR/config.sh"
 
 [ -n "${REPO:-}" ] || { echo "ralph: config.sh must set REPO" >&2; exit 2; }
-[ -d "$REPO/.git" ] || { echo "ralph: REPO is not a git checkout: $REPO" >&2; exit 2; }
+[ -e "$REPO/.git" ] || { echo "ralph: REPO is not a git checkout: $REPO" >&2; exit 2; }
 
 LOG="$DIR/ralph.log"
+RESULTS="$DIR/results.tsv"
+PROMPT_FILE="$DIR/.prompt"
 NAME="$(basename "$DIR")"
+WORK="$REPO"
+
+# What the CLI prints when a usage limit ends a run. Only consulted when claude
+# exited non-zero, so an audit whose own output mentions "429" is never misread.
+RATE_LIMIT_RE='hit your ([a-z]+ )?limit|usage limit|rate_limit_error|overloaded_error|API Error: (429|529)'
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
+# ------------------------------------------------------ processes and timing
+# The agent, VERIFY_CMD, the reviewer and `git push` all run through run_bounded.
+# Each gets its own process group, so a timeout or `ralph stop` takes down
+# everything it started (test runners, dev servers, MCP servers), not only the
+# top process. macOS has no timeout(1) or setsid(1); this needs bash 3.2 and,
+# for the process group, the perl that ships with macOS and every Linux distro.
+
+CHILD=""
+NAP=""
+RC=0
+TIMED_OUT=0
+PERL="$(command -v perl 2>/dev/null || true)"
+
+kill_group() {
+  local pid="$1" i=0
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
+  kill -KILL -- "-$pid" 2>/dev/null
+}
+
+# run_bounded <seconds> <command...>
+# stdin comes from $BOUNDED_STDIN (default /dev/null), output is appended to
+# $BOUNDED_OUT (default the log). Sets RC and TIMED_OUT. Never call it inside
+# $(...): the command would become a grandchild that `ralph stop` cannot see.
+run_bounded() {
+  local secs="$1" start polls=0
+  shift
+  TIMED_OUT=0
+  if [ -n "$PERL" ]; then
+    # The command becomes the leader of a new process group, with pid == pgid.
+    # shellcheck disable=SC2016  # $ARGV is perl's, not the shell's
+    "$PERL" -e 'setpgrp(0, 0); exec { $ARGV[0] } @ARGV or exit 127' "$@" \
+      < "${BOUNDED_STDIN:-/dev/null}" >> "${BOUNDED_OUT:-$LOG}" 2>&1 &
+  else
+    # Job control gives background jobs their own group, but only where the
+    # shell can enable it; without a terminal on Linux it cannot.
+    set -m
+    "$@" < "${BOUNDED_STDIN:-/dev/null}" >> "${BOUNDED_OUT:-$LOG}" 2>&1 &
+    set +m
+  fi
+  CHILD=$!
+  start=$(date +%s)
+  while kill -0 "$CHILD" 2>/dev/null; do
+    if [ $(( $(date +%s) - start )) -ge "$secs" ]; then
+      TIMED_OUT=1
+      kill_group "$CHILD"
+      break
+    fi
+    # Poll fast at first, so quick commands (git push, a short VERIFY_CMD) do
+    # not each cost two seconds.
+    if [ "$polls" -lt 20 ]; then sleep 0.1 & else sleep 2 & fi
+    wait $! 2>/dev/null
+    polls=$((polls + 1))
+  done
+  wait "$CHILD" 2>/dev/null
+  RC=$?
+  CHILD=""
+}
+
+# A sleep the TERM trap can interrupt immediately.
+nap() {
+  [ "${1:-0}" -gt 0 ] 2>/dev/null || return 0
+  sleep "$1" &
+  NAP=$!
+  wait "$NAP" 2>/dev/null
+  NAP=""
+}
+
 iter=0
+on_signal() {
+  [ -n "$CHILD" ] && kill_group "$CHILD"
+  [ -n "$NAP" ] && kill "$NAP" 2>/dev/null
+  rm -f "$DIR/ralph.pid"
+  log "ralph stopped by signal during iteration $iter"
+  exit 130
+}
 # The CLI writes ralph.pid; clearing it here keeps `ralph status` honest after the
 # loop ends on its own rather than by `ralph stop`.
-trap 'rm -f "$DIR/ralph.pid"; log "ralph stopped by signal during iteration $iter"; exit 130' INT TERM
+trap on_signal INT TERM
 
-cd "$REPO" || exit 1
+# ------------------------------------------------------------ bookkeeping
 
-log "ralph start: loop=$NAME repo=$REPO model=$MODEL max_iter=$MAX_ITER quiet_stop=$QUIET_STOP"
+# record <before> <after> <status> <seconds> <reason>
+record() {
+  [ -f "$RESULTS" ] || printf 'time\titer\tbefore\tafter\tstatus\tsecs\treason\n' > "$RESULTS"
+  local reason
+  reason="$(printf '%s' "${5:-}" | tr '\t\n\r' '   ' | cut -c1-300)"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$iter" \
+    "${1:0:12}" "${2:0:12}" "$3" "$4" "${reason:--}" >> "$RESULTS"
+}
+
+# Consecutive failures double the pause, up to an hour.
+trouble_sleep() {
+  local s="$ERROR_SLEEP" i=1
+  while [ "$i" -lt "$trouble" ] && [ "$s" -lt 3600 ]; do s=$((s * 2)); i=$((i + 1)); done
+  [ "$s" -gt 3600 ] && s=3600
+  echo "$s"
+}
+
+# Keeps PROGRESS.md at its head sections plus the newest PROGRESS_KEEP Log
+# entries, so the prompt stops growing. The overflow is appended to
+# PROGRESS-archive.md oldest first, and is never injected.
+CAP_WARNED=""
+cap_progress() {
+  [ "$PROGRESS_KEEP" -gt 0 ] 2>/dev/null || return 0
+  local f="$DIR/PROGRESS.md" archive="$DIR/PROGRESS-archive.md" n tmp over
+  n=$(awk '/^## Log/{f=1; next} f && /^## /{f=0} f && /^### /{c++} END{print c+0}' "$f")
+  if [ "$n" -eq 0 ]; then
+    if [ -z "$CAP_WARNED" ] && grep -q '^## Log' "$f"; then
+      log "progress cap: no '### ' entries under ## Log, leaving PROGRESS.md as it is"
+    fi
+    CAP_WARNED=1
+    return 0
+  fi
+  [ "$n" -gt "$PROGRESS_KEEP" ] || return 0
+
+  tmp="$f.tmp.$$"
+  over="$DIR/.progress-overflow.$$"
+  : > "$over"
+  awk -v keep="$PROGRESS_KEEP" -v over="$over" '
+    /^## Log/          { inlog = 1; print; next }
+    inlog && /^## /    { inlog = 0 }
+    inlog && /^### /   { c++ }
+    inlog && c > keep  { print > over; next }
+                       { print }
+  ' "$f" > "$tmp" || { rm -f "$tmp" "$over"; return 0; }
+
+  [ -f "$archive" ] || printf '# Progress archive\n\nLog entries moved out of PROGRESS.md, oldest first.\n\n' > "$archive"
+  # The overflow is newest first; the archive reads oldest first.
+  awk '/^### /{n++} {b[n] = b[n] $0 "\n"} END{for (i = n; i >= 1; i--) printf "%s", b[i]}' "$over" >> "$archive"
+  mv "$tmp" "$f"
+  rm -f "$over"
+  log "progress cap: moved $((n - PROGRESS_KEEP)) old Log entries to PROGRESS-archive.md"
+}
+
+build_prompt() {
+  {
+    cat "$DIR/PROMPT.md"
+    printf '\n---\n\n# PROGRESS.md (your memory of previous iterations — read this before doing anything)\n\n'
+    cat "$DIR/PROGRESS.md"
+    if [ -s "$DIR/PROGRESS-archive.md" ]; then
+      printf '\nOlder Log entries are in %s. Read it only when you need that history.\n' "$DIR/PROGRESS-archive.md"
+    fi
+
+    if [ -f "$RESULTS" ]; then
+      printf '\n---\n\n# Harness verdicts (ground truth: where PROGRESS.md disagrees, this wins)\n\n'
+      printf 'The last iterations as the harness recorded them. "revert:*" means the commits were reset and never shipped.\n\n'
+      head -n 1 "$RESULTS"
+      tail -n +2 "$RESULTS" | tail -n 10
+    fi
+
+    if [ "$WORKTREE" = 1 ]; then
+      printf '\n---\n\n# Where you work\n\n'
+      printf 'Your working copy is %s, on branch ralph/%s. Never touch %s.\n' "$WORK" "$NAME" "$REPO"
+      if [ "$PUSH" = 1 ]; then
+        printf 'Commit your work, but do not push: the harness checks each commit and pushes the ones it keeps. A rejected commit is reset, and the verdict shows up above next time.\n'
+      else
+        printf 'Commit your work, but do not push. A human merges ralph/%s.\n' "$NAME"
+      fi
+    fi
+
+    if [ "${#FROZEN[@]}" -gt 0 ]; then
+      printf '\nFrozen, never edit: %s. A commit that touches any of them is reset.\n' "${FROZEN[*]}"
+    fi
+
+    if [ "$ESCALATE_AFTER" -gt 0 ] && [ "$trouble" -ge $((ESCALATE_AFTER * 2)) ]; then
+      printf '\n---\n\n# Harness: stuck\n\nThe last %s iterations were reverted or failed (see the verdicts). Stop attacking this. Write the blocker under "Needs a decision" in PROGRESS.md, with what was tried, then take unrelated work. If there is none, change nothing.\n' "$trouble"
+    elif [ "$ESCALATE_AFTER" -gt 0 ] && [ "$trouble" -ge "$ESCALATE_AFTER" ]; then
+      printf '\n---\n\n# Harness: stuck\n\nThe last %s iterations were reverted or failed (see the verdicts). Do not retry that approach. Pivot to a different defect or a different method.\n' "$trouble"
+    fi
+
+    printf '\n---\n\n%s\n' "$CLOSING"
+  } > "$PROMPT_FILE"
+}
+
+# ------------------------------------------------------------ git helpers
+# Everything below that can discard commits runs only in the harness-owned
+# worktree, never in your own checkout.
+
+clean_tree() {
+  local gitdir
+  gitdir="$(git rev-parse --git-dir)"
+  if [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ]; then
+    git rebase --abort >/dev/null 2>&1
+  fi
+  rm -f "$gitdir/index.lock"
+  git reset -q --hard HEAD
+  git clean -qfd
+}
+
+# revert_to <sha>: put ralph/<name> back at <sha>, whatever the agent did.
+revert_to() {
+  if [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" != "ralph/$NAME" ]; then
+    git checkout -q -f "ralph/$NAME" || return 1
+  fi
+  git reset -q --hard "$1" && git clean -qfd
+}
+
+setup_worktree() {
+  WORK="${WORKTREE_DIR:-$(dirname "$REPO")/$(basename "$REPO")-ralph-$NAME}"
+  if git -C "$WORK" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+  git -C "$REPO" worktree prune
+  if git -C "$REPO" show-ref --verify --quiet "refs/heads/ralph/$NAME"; then
+    # Reuse the branch as it is. `worktree add -B` would reset it and lose kept work.
+    git -C "$REPO" worktree add -q "$WORK" "ralph/$NAME" >> "$LOG" 2>&1 \
+      || { log "cannot create worktree $WORK"; exit 1; }
+  else
+    local base="$BRANCH"
+    git -C "$REPO" fetch -q origin "$BRANCH" >> "$LOG" 2>&1 && base="origin/$BRANCH"
+    git -C "$REPO" worktree add -q -b "ralph/$NAME" "$WORK" "$base" >> "$LOG" 2>&1 \
+      || { log "cannot create worktree $WORK from $base"; exit 1; }
+    if [ -n "$SETUP_CMD" ]; then
+      log "setup: $SETUP_CMD"
+      if ! (cd "$WORK" && bash -c "$SETUP_CMD") >> "$LOG" 2>&1; then
+        log "SETUP_CMD failed; removing the new worktree (branch ralph/$NAME stays)"
+        git -C "$REPO" worktree remove --force "$WORK" >/dev/null 2>&1
+        exit 1
+      fi
+    fi
+  fi
+  git -C "$WORK" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || { log "worktree $WORK is not usable"; exit 1; }
+  log "worktree $WORK on ralph/$NAME"
+}
+
+GATE_REASON=""
+
+verify() {
+  [ -n "$VERIFY_CMD" ] || return 0
+  : > "$DIR/verify.out"
+  BOUNDED_STDIN=/dev/null BOUNDED_OUT="$DIR/verify.out" run_bounded "$VERIFY_TIMEOUT" bash -c "$VERIFY_CMD"
+  cat "$DIR/verify.out" >> "$LOG"
+  if [ "$TIMED_OUT" = 1 ]; then
+    GATE_REASON="verify timed out after ${VERIFY_TIMEOUT}s"
+    return 1
+  fi
+  if [ "$RC" -ne 0 ]; then
+    GATE_REASON="verify exited $RC: $(grep -v '^[[:space:]]*$' "$DIR/verify.out" | tail -n 1)"
+    return 1
+  fi
+  return 0
+}
+
+# review <before>: a fresh, read-only claude judges the new commits.
+# Sets REVIEW_STATUS to accept, reject or unavailable.
+REVIEW_STATUS=""
+review() {
+  local before="$1" job steering
+  { git diff --stat "$before" HEAD; echo; git diff "$before" HEAD; } | head -c 200000 > "$DIR/review.diff"
+  job="$(awk '/^## The job/{f=1; next} /^## /{f=0} f' "$DIR/PROMPT.md")"
+  steering="$(awk '/^## Steering/{f=1; next} /^## /{f=0} f' "$DIR/PROMPT.md")"
+  # Steering handed to the agent mid-iteration by hooks/steer.sh.
+  if [ -s "$DIR/STEER.md.delivered" ]; then
+    steering="${steering:+$steering
+}$(cat "$DIR/STEER.md.delivered")"
+  fi
+  cat > "$DIR/.review-prompt" <<EOF
+You are reviewing commits that another agent just made in $WORK. You cannot change
+anything; you only judge.
+
+## The job the loop is doing
+
+$job
+
+## Steering from the human (outranks the job)
+
+${steering:-(none)}
+
+## What to review
+
+The commits are in $DIR/review.diff: a stat, then the full diff, capped at 200 KB.
+Read it. Read files in $WORK if you need context.
+
+Reject when the change is wrong, is not what the job asks for, breaks something
+visible in the diff, weakens a test or a measurement so that it passes, or claims
+a result the diff does not support. Otherwise accept. Style alone is not a reason
+to reject.
+
+End your reply with exactly one line, either
+
+VERDICT: ACCEPT
+
+or
+
+VERDICT: REJECT: <one sentence saying why>
+EOF
+  : > "$DIR/review.out"
+  BOUNDED_STDIN="$DIR/.review-prompt" BOUNDED_OUT="$DIR/review.out" run_bounded "$ITER_TIMEOUT" \
+    claude -p --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
+    --permission-prompts none --add-dir "$DIR" --model "$MODEL"
+  cat "$DIR/review.out" >> "$LOG"
+
+  local verdict
+  verdict="$(grep -a '^VERDICT:' "$DIR/review.out" | tail -n 1)"
+  case "$verdict" in
+    "VERDICT: ACCEPT"*) REVIEW_STATUS=accept ;;
+    "VERDICT: REJECT"*)
+      REVIEW_STATUS=reject
+      GATE_REASON="${verdict#VERDICT: REJECT}"
+      GATE_REASON="${GATE_REASON#:}"
+      GATE_REASON="reviewer: ${GATE_REASON# }"
+      ;;
+    *)
+      REVIEW_STATUS=unavailable
+      GATE_REASON="reviewer gave no verdict (exit $RC, timed out $TIMED_OUT)"
+      ;;
+  esac
+}
+
+# sync: follow origin/$BRANCH and push kept commits. Worktree + PUSH only.
+# Runs before every iteration and after every keep, so a push that failed once
+# is retried, and work done while a human pushed to the same branch is rebased
+# and verified again before it goes out.
+sync() {
+  local upstream="origin/$BRANCH" head
+  clean_tree
+  if ! git fetch -q origin "$BRANCH" >> "$LOG" 2>&1; then
+    log "sync: fetch failed, not pushing this time"
+    return 0
+  fi
+  if [ -z "$(git rev-list "$upstream..HEAD")" ]; then
+    git reset -q --hard "$upstream"
+    return 0
+  fi
+  if ! git merge-base --is-ancestor "$upstream" HEAD; then
+    head="$(git rev-parse HEAD)"
+    if ! git rebase -q "$upstream" >> "$LOG" 2>&1; then
+      git rebase --abort >/dev/null 2>&1
+      git update-ref "refs/ralph/dropped/$(date +%s)" "$head"
+      git reset -q --hard "$upstream"
+      record "$head" "$(git rev-parse HEAD)" "drop:conflict" 0 \
+        "rebase onto $upstream conflicted; unpushed commits dropped, saved under refs/ralph/dropped/"
+      log "sync: rebase conflicted, dropped unpushed commits (saved under refs/ralph/dropped/)"
+      return 0
+    fi
+    if ! verify; then
+      git update-ref "refs/ralph/dropped/$(date +%s)" HEAD
+      record "$head" "$(git rev-parse HEAD)" "drop:reverify" 0 "after rebase onto $upstream: $GATE_REASON"
+      git reset -q --hard "$upstream"
+      log "sync: rebased commits failed verify, dropped them (saved under refs/ralph/dropped/)"
+      return 0
+    fi
+  fi
+  BOUNDED_STDIN=/dev/null run_bounded 300 git push -q origin "HEAD:$BRANCH"
+  if [ "$RC" -eq 0 ]; then
+    log "pushed $(git rev-parse HEAD) to $upstream"
+  else
+    log "sync: push failed (exit $RC); the commits stay local and the next sync retries"
+  fi
+}
+
+# ------------------------------------------------------------------ start
+
+if [ "$WORKTREE" = 1 ]; then
+  setup_worktree
+fi
+cd "$WORK" || exit 1
+
+if [ "$LIVE_STEER" = 1 ]; then
+  printf '{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"\\"%s\\""}]}]}}\n' \
+    "$HARNESS/hooks/steer.sh" > "$DIR/.agent-settings.json"
+fi
+
+log "ralph start: loop=$NAME repo=$REPO work=$WORK model=$MODEL max_iter=$MAX_ITER quiet_stop=$QUIET_STOP worktree=$WORKTREE push=$PUSH review=$REVIEW verify=${VERIFY_CMD:+yes}"
 
 quiet=0
+trouble=0
+errors=0
 while :; do
   iter=$((iter + 1))
   if [ "$iter" -gt "$MAX_ITER" ]; then
@@ -66,48 +463,150 @@ while :; do
     break
   fi
 
+  if [ "$WORKTREE" = 1 ]; then
+    if [ "$PUSH" = 1 ]; then sync; else clean_tree; fi
+  fi
+  # The same text already sits in PROMPT.md's Steering section, which this
+  # iteration reads; the live file is only for the iteration in flight.
+  [ "$LIVE_STEER" = 1 ] && : > "$DIR/STEER.md" && : > "$DIR/STEER.md.delivered"
+
   before=$(git rev-parse HEAD)
   started=$(date +%s)
   log "=== iteration $iter (HEAD $before) ==="
 
   # PROMPT.md is re-read every iteration, so editing it (or `ralph steer`) redirects
   # the loop without restarting it.
-  prompt="$(cat "$DIR/PROMPT.md")
+  build_prompt
 
----
-
-# PROGRESS.md (your memory of previous iterations — read this before doing anything)
-
-$(cat "$DIR/PROGRESS.md")
-
----
-
-$CLOSING"
-
-  args=(-p "$prompt" --dangerously-skip-permissions --add-dir "$DIR" --model "$MODEL")
+  args=(-p --dangerously-skip-permissions --add-dir "$DIR" --model "$MODEL")
   for d in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
     args+=(--add-dir "$d")
   done
+  [ "$LIVE_STEER" = 1 ] && args+=(--settings "$DIR/.agent-settings.json")
 
-  command claude "${args[@]}" >> "$LOG" 2>&1
+  envs=("RALPH_STEER_FILE=$DIR/STEER.md")
+  if [ "$WORKTREE" = 1 ] && [ "$PUSH" = 1 ]; then
+    # The agent's own `git push origin` fails; only the harness pushes.
+    envs+=(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0=no-push://disabled)
+  fi
 
+  offset=$(wc -c < "$LOG" | tr -d ' ')
+  BOUNDED_STDIN="$PROMPT_FILE" run_bounded "$ITER_TIMEOUT" env "${envs[@]}" claude "${args[@]}"
+  agent_rc=$RC
+  agent_timed_out=$TIMED_OUT
+
+  status=""
+  reason=""
+  if [ "$WORKTREE" = 1 ]; then
+    # Gates judge what was committed. Anything left uncommitted is thrown away
+    # first, so an uncommitted edit to a frozen file cannot help a commit pass.
+    clean_tree
+    if [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" != "ralph/$NAME" ] \
+      || ! git merge-base --is-ancestor "$before" HEAD 2>/dev/null; then
+      status="revert:history"
+      reason="the agent left ralph/$NAME or rewrote its history"
+    fi
+  fi
   after=$(git rev-parse HEAD)
   took=$(( $(date +%s) - started ))
 
-  if [ "$before" = "$after" ]; then
-    quiet=$((quiet + 1))
-    log "iteration $iter shipped nothing in ${took}s (quiet streak $quiet)"
-    if [ "$QUIET_STOP" -gt 0 ] && [ "$quiet" -ge "$QUIET_STOP" ]; then
-      log "stopping: $QUIET_STOP consecutive iterations shipped nothing"
-      break
+  if [ -z "$status" ] && [ "$before" = "$after" ]; then
+    if [ "$agent_timed_out" = 1 ]; then
+      status="timeout"
+      reason="killed after ${ITER_TIMEOUT}s"
+    elif [ "$agent_rc" -ne 0 ]; then
+      last="$(tail -c +$((offset + 1)) "$LOG" | tail -n 20)"
+      if printf '%s\n' "$last" | grep -Eqi "$RATE_LIMIT_RE"; then
+        status="ratelimit"
+        reason="$(printf '%s\n' "$last" | grep -Ei "$RATE_LIMIT_RE" | tail -n 1)"
+      else
+        status="error"
+        reason="claude exited $agent_rc: $(printf '%s\n' "$last" | grep -v '^[[:space:]]*$' | tail -n 1)"
+      fi
+    else
+      status="quiet"
     fi
-    sleep "$QUIET_SLEEP"
-  else
-    quiet=0
-    log "iteration $iter shipped $after in ${took}s"
+  elif [ -z "$status" ] && [ "$WORKTREE" = 1 ]; then
+    GATE_REASON=""
+    touched=""
+    if [ "${#FROZEN[@]}" -gt 0 ]; then
+      touched="$(git diff --name-only "$before" HEAD -- "${FROZEN[@]}" | tr '\n' ' ')"
+    fi
+    if [ -n "$touched" ]; then
+      status="revert:frozen"
+      reason="touched frozen files: $touched"
+    elif ! verify; then
+      status="revert:verify"
+      reason="$GATE_REASON"
+    elif [ "$REVIEW" = 1 ]; then
+      review "$before"
+      case "$REVIEW_STATUS" in
+        accept) status="keep" ;;
+        reject) status="revert:review"; reason="$GATE_REASON" ;;
+        *)
+          if [ -n "$VERIFY_CMD" ]; then
+            status="keep:unreviewed"
+            reason="$GATE_REASON; VERIFY_CMD passed"
+          else
+            # With no VERIFY_CMD the reviewer is the only gate; do not ship unjudged work.
+            status="revert:review-unavailable"
+            reason="$GATE_REASON"
+          fi
+          ;;
+      esac
+    fi
   fi
+  [ -n "$status" ] || status="keep"
+  [ "$agent_timed_out" = 1 ] && [ "${status%%:*}" != "timeout" ] && reason="${reason:+$reason; }agent timed out after ${ITER_TIMEOUT}s"
 
-  sleep "$STEP_SLEEP"
+  case "$status" in
+    revert:*)
+      if ! revert_to "$before"; then
+        record "$before" "$after" "$status" "$took" "$reason"
+        log "stopping: could not reset ralph/$NAME to $before after $status — fix the worktree by hand"
+        break
+      fi
+      ;;
+  esac
+  record "$before" "$after" "$status" "$took" "$reason"
+
+  case "$status" in
+    keep*)
+      quiet=0; trouble=0; errors=0
+      log "iteration $iter shipped $after in ${took}s${reason:+ ($reason)}"
+      if [ "$WORKTREE" = 1 ] && [ "$PUSH" = 1 ]; then sync; fi
+      ;;
+    quiet)
+      quiet=$((quiet + 1)); trouble=0; errors=0
+      log "iteration $iter shipped nothing in ${took}s (quiet streak $quiet)"
+      if [ "$QUIET_STOP" -gt 0 ] && [ "$quiet" -ge "$QUIET_STOP" ]; then
+        log "stopping: $QUIET_STOP consecutive iterations shipped nothing"
+        break
+      fi
+      nap "$QUIET_SLEEP"
+      ;;
+    ratelimit)
+      log "iteration $iter hit a usage limit: $reason — sleeping ${RATE_LIMIT_SLEEP}s"
+      nap "$RATE_LIMIT_SLEEP"
+      ;;
+    timeout|error)
+      trouble=$((trouble + 1)); errors=$((errors + 1))
+      log "iteration $iter $status: $reason (errors in a row $errors)"
+      if [ "$ERROR_STOP" -gt 0 ] && [ "$errors" -ge "$ERROR_STOP" ]; then
+        log "stopping: $ERROR_STOP consecutive iterations failed"
+        break
+      fi
+      nap "$(trouble_sleep)"
+      ;;
+    revert:*)
+      trouble=$((trouble + 1)); errors=0
+      log "iteration $iter reverted to $before: $status — $reason"
+      nap "$(trouble_sleep)"
+      ;;
+  esac
+
+  cap_progress
+  nap "$STEP_SLEEP"
 done
 
 rm -f "$DIR/ralph.pid"

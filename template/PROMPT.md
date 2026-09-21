@@ -12,7 +12,9 @@ that can finish should be allowed to.>
 
 ## The repository
 
-- Branch: `main`. Commit directly, push to `origin main`.
+- Commit on the branch you are on. Do not push: the harness checks every commit
+  and pushes the ones it keeps. A commit it rejects is reset, and the verdict
+  shows up under "Harness verdicts" in your next prompt.
 - Tests: `<command>` — and how long it takes, so an iteration budgets for it.
 - Typecheck/build: `<command>`
 - <Anything with a slow or remote step: a container to build, a host to reach.>
@@ -40,5 +42,6 @@ that can finish should be allowed to.>
   work you can finish.
 - Leave the tree clean. Scratch scripts and measurement directories get deleted
   before the commit, not gitignored.
+- Never edit the frozen files. The measurement is not yours to move.
 - <Project rules: what must never be touched, what must be regenerated rather than
   edited, where commits are made from.>

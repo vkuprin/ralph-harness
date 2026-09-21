@@ -8,7 +8,8 @@
 #   ralph status [name]            what is running, how long, how far
 #   ralph log <name> [n]           last n lines of the loop's log (default 40)
 #   ralph tail <name>              follow the log
-#   ralph steer <name> "text"      add an instruction the next iteration will read
+#   ralph results <name> [n]       the harness verdict for each iteration (default 20)
+#   ralph steer <name> "text"      redirect a running loop, starting with the iteration in flight
 #   ralph edit <name>              open PROMPT.md in $EDITOR
 #
 # Loops live in $RALPH_HOME (default ~/.claude/ralph), one directory each. The
@@ -46,7 +47,7 @@ pid_of() {
 
 cmd_new() {
   local name="${1:-}" repo="${2:-}"
-  [ -n "$name" ] && [ -n "$repo" ] || die "usage: ralph new <name> <repo-path>"
+  if [ -z "$name" ] || [ -z "$repo" ]; then die "usage: ralph new <name> <repo-path>"; fi
   repo="$(cd "$repo" 2>/dev/null && pwd)" || die "no such directory: ${2:-}"
   [ -d "$repo/.git" ] || die "not a git checkout: $repo"
 
@@ -56,7 +57,7 @@ cmd_new() {
   mkdir -p "$dir"
   cp "$HARNESS/template/PROMPT.md"   "$dir/PROMPT.md"
   cp "$HARNESS/template/PROGRESS.md" "$dir/PROGRESS.md"
-  sed "s|__REPO__|$repo|; s|__NAME__|$name|" "$HARNESS/template/config.sh" > "$dir/config.sh"
+  sed "s|__REPO__|$repo|g; s|__NAME__|$name|g" "$HARNESS/template/config.sh" > "$dir/config.sh"
   sed -i '' "s|__NAME__|$name|g" "$dir/PROMPT.md" 2>/dev/null || \
     sed -i "s|__NAME__|$name|g" "$dir/PROMPT.md"
 
@@ -84,15 +85,22 @@ cmd_stop() {
   local name="${1:-}"; local dir; dir="$(loop_dir "$name")" || exit 1
   local pid; pid="$(pid_of "$dir")" || die "$name is not running"
 
-  # Kill the agent first. Killing only the loop leaves the current `claude -p`
-  # orphaned and still writing to the repository.
-  local child
-  for child in $(pgrep -P "$pid" 2>/dev/null); do
-    kill "$child" 2>/dev/null
-  done
+  # TERM lets the loop's trap take down the agent's whole process group (tests,
+  # dev servers, MCP servers) and log where it stopped. That can take a few
+  # seconds, so wait before reaching for SIGKILL.
   kill "$pid" 2>/dev/null
-  sleep 1
-  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+  local i=0
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 15 ]; do sleep 1; i=$((i + 1)); done
+
+  if kill -0 "$pid" 2>/dev/null; then
+    # Killing only the loop would leave the current `claude -p` orphaned and
+    # still writing to the repository.
+    local child
+    for child in $(pgrep -P "$pid" 2>/dev/null); do
+      kill -KILL -- "-$child" 2>/dev/null || kill -KILL "$child" 2>/dev/null
+    done
+    kill -KILL "$pid" 2>/dev/null
+  fi
   rm -f "$dir/ralph.pid"
   green "stopped $name (PID $pid)"
 }
@@ -101,7 +109,20 @@ status_one() {
   local dir="$1" name; name="$(basename "$dir")"
   [ -f "$dir/config.sh" ] || return 0
 
-  local repo; repo="$(. "$dir/config.sh" >/dev/null 2>&1; echo "${REPO:-?}")"
+  # config.sh may refer to variables only ralph.sh defines, so read it loosely.
+  local conf repo worktree work
+  # shellcheck disable=SC1091,SC2034  # DIR is for config.sh lines that mention it
+  conf="$(set +u; DIR="$dir"; . "$dir/config.sh" >/dev/null 2>&1
+          printf '%s\t%s\t%s' "${REPO:-?}" "${WORKTREE:-0}" "${WORKTREE_DIR:-}")"
+  repo="$(printf '%s' "$conf" | cut -f1)"
+  worktree="$(printf '%s' "$conf" | cut -f2)"
+  work="$(printf '%s' "$conf" | cut -f3)"
+  if [ "$worktree" = 1 ]; then
+    [ -n "$work" ] || work="$(dirname "$repo")/$(basename "$repo")-ralph-$name"
+  else
+    work="$repo"
+  fi
+
   local pid uptime state
   if pid="$(pid_of "$dir")"; then
     uptime="$(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')"
@@ -117,10 +138,16 @@ status_one() {
 
   printf '%-20s %s\n' "$name" "$state"
   printf '  repo        %s\n' "$repo"
+  [ "$worktree" = 1 ] && printf '  worktree    %s (ralph/%s)\n' "$work" "$name"
   printf '  iterations  %s run, %s shipped a commit\n' "$iter" "$shipped"
+  if [ -f "$dir/results.tsv" ]; then
+    local verdicts
+    verdicts="$(tail -n +2 "$dir/results.tsv" | cut -f5 | sort | uniq -c | awk '{printf "%s%s %s", sep, $1, $2; sep=", "}')"
+    [ -n "$verdicts" ] && printf '  verdicts    %s\n' "$verdicts"
+  fi
   [ -n "$last" ] && printf '  last        %s\n' "$last"
   local head
-  head="$(git -C "$repo" log --oneline -1 2>/dev/null)"
+  head="$(git -C "$work" log --oneline -1 2>/dev/null)"
   [ -n "$head" ] && printf '  HEAD        %s\n' "$head"
   echo
 }
@@ -152,8 +179,17 @@ cmd_tail() {
   tail -f "$dir/ralph.log"
 }
 
-# PROMPT.md is re-read at the start of every iteration, so this redirects a loop
-# that is already running. It takes effect on the next iteration, not this one.
+cmd_results() {
+  local name="${1:-}" n="${2:-20}"; local dir; dir="$(loop_dir "$name")" || exit 1
+  [ -f "$dir/results.tsv" ] || die "no results yet for $name"
+  { head -n 1 "$dir/results.tsv"; tail -n +2 "$dir/results.tsv" | tail -n "$n"; } \
+    | column -t -s "$(printf '\t')"
+}
+
+# Two channels. PROMPT.md is re-read at the start of every iteration, so the
+# steer holds for every iteration after this one. STEER.md is picked up by a
+# PreToolUse hook at the running agent's next tool call (LIVE_STEER=1), so the
+# iteration in flight hears it too.
 cmd_steer() {
   local name="${1:-}"; shift 2>/dev/null
   local text="${*:-}"
@@ -176,7 +212,8 @@ cmd_steer() {
     { print }
     /<!-- ralph-steer -->/ && !seen { print ""; print entry; seen = 1 }
   ' "$dir/PROMPT.md" > "$tmp" && mv "$tmp" "$dir/PROMPT.md"
-  green "steered $name — the next iteration reads it (the one running now will not)"
+  printf '%s\n' "$text" >> "$dir/STEER.md"
+  green "steered $name — the running iteration sees it at its next tool call, and every later one reads it from PROMPT.md"
 }
 
 cmd_edit() {
@@ -185,7 +222,7 @@ cmd_edit() {
 }
 
 usage() {
-  sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR >= 3 && /^#/ { sub(/^# ?/, ""); print; next } NR >= 3 { exit }' "$0"
 }
 
 case "${1:-status}" in
@@ -194,6 +231,7 @@ case "${1:-status}" in
   stop)   shift; cmd_stop   "$@" ;;
   status) shift; cmd_status "$@" ;;
   log)    shift; cmd_log    "$@" ;;
+  results) shift; cmd_results "$@" ;;
   tail)   shift; cmd_tail   "$@" ;;
   steer)  shift; cmd_steer  "$@" ;;
   edit)   shift; cmd_edit   "$@" ;;

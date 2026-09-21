@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Stand-in for the claude CLI, driven by queue files in $STUB_DIR.
+#
+# The agent pops its next mode from $STUB_DIR/modes; the reviewer (recognised by
+# --restricted) pops its verdict from $STUB_DIR/verdicts. Every prompt read on
+# stdin is kept as prompt.agent.N or prompt.review.N so tests can inspect it.
+
+set -u
+d="${STUB_DIR:?STUB_DIR not set}"
+
+pop() {
+  local q="$d/$1" line
+  if [ ! -s "$q" ]; then echo "$2"; return; fi
+  line="$(head -n 1 "$q")"
+  tail -n +2 "$q" > "$q.tmp" && mv "$q.tmp" "$q"
+  echo "$line"
+}
+bump() {
+  local n
+  n=$(( $(cat "$d/$1" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" > "$d/$1"
+  echo "$n"
+}
+
+case " $* " in
+  *" --restricted "*)
+    n="$(bump review_calls)"
+    cat > "$d/prompt.review.$n"
+    echo "Read the diff."
+    echo "VERDICT: $(pop verdicts ACCEPT)"
+    exit 0
+    ;;
+esac
+
+n="$(bump agent_calls)"
+cat > "$d/prompt.agent.$n"
+mode="$(pop modes nothing)"
+echo "$mode" >> "$d/modes.done"
+
+commit() {
+  echo "$1 $n" >> work.txt
+  git add -A
+  git commit -qm "stub: $1 (agent call $n)"
+}
+
+case "$mode" in
+  commit)       commit work ;;
+  commit-bad)   touch BAD; commit bad ;;
+  touch-frozen) echo "# edited" >> measure.sh; commit frozen ;;
+  cheat)        # commits a failing change, then quietly defangs the check without committing it
+                touch BAD; commit cheat; printf '#!/bin/sh\nexit 0\n' > measure.sh ;;
+  sleep)        sleep 999 ;;
+  limit)        echo "You've hit your limit · resets 3am (Europe/Berlin)"; exit 1 ;;
+  fail)         echo "boom: something broke"; exit 1 ;;
+  nothing)      echo "Measured again; nothing new." ;;
+  push-attempt) commit pushed
+                git push -q origin HEAD:main >/dev/null 2>&1
+                echo "$?" > "$d/push-attempt.rc" ;;
+  conflict)     # a human pushes to main meanwhile, rewriting the same file
+                (
+                  unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+                  rm -rf "$d/human"
+                  git clone -q "$STUB_REMOTE" "$d/human"
+                  cd "$d/human" && echo "human edit" > work.txt \
+                    && git commit -qam "human: edit work.txt" && git push -q origin HEAD:main
+                )
+                echo "agent edit" > work.txt
+                git add -A
+                git commit -qm "stub: conflicting (agent call $n)" ;;
+  *)            echo "stub: unknown mode $mode" >&2; exit 3 ;;
+esac
+exit 0
