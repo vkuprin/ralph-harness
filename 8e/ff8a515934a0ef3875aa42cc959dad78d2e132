@@ -1,0 +1,43 @@
+README.md
+  s_923e30f9636deb::t_b5a86ffdb44d2a 198,200-201
+  s_923e30f9636deb::t_e9001c47c3103a 228-230
+template/config.sh
+  s_923e30f9636deb::t_b6ae729fce97eb 35-37
+  s_923e30f9636deb::t_e8753db57436f0 45,49-51
+ralph.sh
+  s_923e30f9636deb::t_75649adb8049ea 364-366
+  s_923e30f9636deb::t_2ba1644d3f75ff 511-512
+  s_923e30f9636deb::t_2a90e4446165e4 324-327,329,334
+  s_923e30f9636deb::t_b978dbaae924ea 299-301
+  s_923e30f9636deb::t_e620284238b18b 508-510,513-516
+  s_923e30f9636deb::t_469455fbada5ed 282-285,287-298,307-309
+tests/stub/claude
+  s_923e30f9636deb::t_3df5fe6a234d15 64-67
+tests/run.sh
+  s_923e30f9636deb::t_5a99f6476f09e0 349-464
+  s_726a02ea8737ca::t_9734c7de126f38 348
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "8eff8a515934a0ef3875aa42cc959dad78d2e132",
+  "prompts": {},
+  "sessions": {
+    "s_726a02ea8737ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "346d7f3e-aec3-4639-a982-dc39e1a21a19",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    },
+    "s_923e30f9636deb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dfba0716-a793-4ffb-9ec0-2010dd421a00",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
