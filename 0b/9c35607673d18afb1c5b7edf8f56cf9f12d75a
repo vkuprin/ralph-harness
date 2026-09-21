@@ -7,6 +7,8 @@ template/config.sh
   s_efc28c126bc5b9::t_088b283be6baaa 73-95
 ralph.sh
   s_efc28c126bc5b9::t_265a3d252e9688 121-135,532-553,965,992-1004,1007-1010,1025-1027
+  s_efc28c126bc5b9::t_f7075fca0ddf5b 1005-1006
+  s_efc28c126bc5b9::t_2951f0e1b1a1fe 912-926
 ---
 {
   "schema_version": "authorship/3.0.0",
