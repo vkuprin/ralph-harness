@@ -108,6 +108,10 @@ check "no harness variable leaks into the agent's environment" test ! -s "$S/lea
 check "no harness variable leaks into VERIFY_CMD" bash -c '! grep -q "^BOUNDED_" "$1"' _ "$T/loops/a/verify-env"
 check "reverted commits are kept under refs/ralph/reverted/" \
   test "$(git -C "$W" for-each-ref refs/ralph/reverted/ | wc -l | tr -d ' ')" -ge 4
+review_a="$(RALPH_HOME="$T/loops" "$ROOT/ralph" review a)"
+check "review shows what shipped" grep -q "stub: work (agent call 1)" <<<"$review_a"
+check "review shows what the gates threw away" \
+  bash -c 'sed -n "/Reverted or dropped/,\$p" <<<"$1" | grep -q "stub: bad"' _ "$review_a"
 
 # ---------------------------------------------------------------------------
 section "escalation and the PROGRESS.md cap"
@@ -180,6 +184,11 @@ check "the lock is released" test ! -e "$RALPH_HOME/demo/ralph.lock"
 cp "$T/loops/a/results.tsv" "$RALPH_HOME/demo/results.tsv"
 check "ralph results renders a table" bash -c '"$1" results demo | head -1 | grep -q "status"' _ "$ROOT/ralph"
 check "status counts the verdicts" bash -c '"$1" status demo | grep -q "verdicts.*keep"' _ "$ROOT/ralph"
+git -C "$T/app-d-ralph-demo" commit -q --allow-empty -m "stub: waiting for a human"
+check "review lists what waits on ralph/<name> for a merge" \
+  bash -c '"$1" review demo | sed -n "/Waiting to merge/,\$p" | grep -q "stub: waiting for a human"' _ "$ROOT/ralph"
+check "bare ralph prints the guide and lists your loops" \
+  bash -c 'out="$("$1")"; grep -q "Getting started" <<<"$out" && grep -q "Your loops: demo" <<<"$out"' _ "$ROOT/ralph"
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------

@@ -145,7 +145,9 @@ this; it backs off.
 ./ralph                       # print this list
 ./ralph new <name> <repo>     # scaffold a loop from template/
 ./ralph start <name>          # run it in the background
+./ralph                       # a short guide, then the loops you have
 ./ralph status [name]         # running or not, iterations, verdict counts, HEAD
+./ralph review <name> [n]     # what it shipped, what the gates threw away, what waits to merge
 ./ralph results <name> [n]    # the last n verdicts as a table
 ./ralph log <name> [n]        # the last n lines of the log
 ./ralph tail <name>           # follow the log

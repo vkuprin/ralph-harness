@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
 #
-# ralph — create, start, watch and stop long-running agent loops.
+# ralph — long-running Claude Code loops: a fresh `claude -p` every iteration,
+# and git, not the model, decides what shipped.
 #
+# Getting started
+#   ralph new audit ~/code/my-app    make a loop for a repository
+#   ralph edit audit                 write the job into its PROMPT.md
+#   ralph start audit                run it in the background
+#   ralph review audit               later: what it shipped, what it threw away
+#
+# Commands
 #   ralph new <name> <repo-path>   scaffold a loop from the template
 #   ralph start <name>             run it in the background
 #   ralph stop <name>              stop the loop and the agent inside it
 #   ralph status [name]            what is running, how long, how far
+#   ralph review <name> [n]        what the loop shipped, reverted, and has waiting to merge
+#   ralph results <name> [n]       the harness verdict for each iteration (default 20)
 #   ralph log <name> [n]           last n lines of the loop's log (default 40)
 #   ralph tail <name>              follow the log
-#   ralph results <name> [n]       the harness verdict for each iteration (default 20)
 #   ralph steer <name> "text"      redirect a running loop, starting with the iteration in flight
 #   ralph edit <name>              open PROMPT.md in $EDITOR
 #
-# With no arguments it prints this.
+# With no arguments it prints this, then the loops you have.
 #
 # Loops live in $RALPH_HOME (default ~/.claude/ralph), one directory each. The
 # harness lives in this repo; loop contents stay on the machine, because they hold
@@ -117,6 +126,21 @@ cmd_stop() {
   green "stopped $name (PID $pid)"
 }
 
+# loop_conf <dir>: REPO, WORKTREE, BRANCH, PUSH and the work directory, tab
+# separated. config.sh may refer to variables only ralph.sh defines, so it is
+# read loosely, with the harness defaults for anything it leaves out.
+loop_conf() {
+  local dir="$1" name; name="$(basename "$dir")"
+  # shellcheck disable=SC1091,SC2034  # DIR is for config.sh lines that mention it
+  (set +u; DIR="$dir"; REPO=""; WORKTREE=0; WORKTREE_DIR=""; BRANCH="main"; PUSH=0
+   . "$dir/config.sh" >/dev/null 2>&1
+   work="$REPO"
+   if [ "$WORKTREE" = 1 ]; then
+     work="${WORKTREE_DIR:-$(dirname "$REPO")/$(basename "$REPO")-ralph-$name}"
+   fi
+   printf '%s\t%s\t%s\t%s\t%s' "${REPO:-?}" "$WORKTREE" "$BRANCH" "$PUSH" "$work")
+}
+
 # Prints one loop, or returns 1 without printing if the directory is not a loop.
 # The caller counts the successes, so that a $RALPH_HOME full of other things
 # says "no loops" rather than printing nothing at all.
@@ -124,19 +148,11 @@ status_one() {
   local dir="$1" name; name="$(basename "$dir")"
   [ -f "$dir/config.sh" ] || return 1
 
-  # config.sh may refer to variables only ralph.sh defines, so read it loosely.
   local conf repo worktree work
-  # shellcheck disable=SC1091,SC2034  # DIR is for config.sh lines that mention it
-  conf="$(set +u; DIR="$dir"; . "$dir/config.sh" >/dev/null 2>&1
-          printf '%s\t%s\t%s' "${REPO:-?}" "${WORKTREE:-0}" "${WORKTREE_DIR:-}")"
+  conf="$(loop_conf "$dir")"
   repo="$(printf '%s' "$conf" | cut -f1)"
   worktree="$(printf '%s' "$conf" | cut -f2)"
-  work="$(printf '%s' "$conf" | cut -f3)"
-  if [ "$worktree" = 1 ]; then
-    [ -n "$work" ] || work="$(dirname "$repo")/$(basename "$repo")-ralph-$name"
-  else
-    work="$repo"
-  fi
+  work="$(printf '%s' "$conf" | cut -f5)"
 
   local pid uptime state
   if pid="$(pid_of "$dir")"; then
@@ -195,6 +211,67 @@ cmd_tail() {
   tail -f "$dir/ralph.log"
 }
 
+# What a loop did, for a human deciding what to keep: verdict counts, the commits
+# it shipped, the ones the gates threw away (kept under refs/ralph/), and, when
+# it does not push, what is waiting on ralph/<name> to be merged.
+cmd_review() {
+  local name="${1:-}" n="${2:-10}"; local dir; dir="$(loop_dir "$name")" || exit 1
+  [ -f "$dir/config.sh" ] || die "no loop called $name in $RALPH_HOME"
+  local conf repo worktree branch push work
+  conf="$(loop_conf "$dir")"
+  repo="$(printf '%s' "$conf" | cut -f1)"
+  worktree="$(printf '%s' "$conf" | cut -f2)"
+  branch="$(printf '%s' "$conf" | cut -f3)"
+  push="$(printf '%s' "$conf" | cut -f4)"
+  work="$(printf '%s' "$conf" | cut -f5)"
+  git -C "$work" rev-parse --git-dir >/dev/null 2>&1 || die "cannot read the repository at $work"
+
+  local where="works in $repo"
+  if [ "$worktree" = 1 ]; then
+    where="works on ralph/$name in $work"
+    if [ "$push" = 1 ]; then where="$where, pushes to origin/$branch"; else where="$where, you merge"; fi
+  fi
+  printf '%s — %s\n' "$name" "$where"
+
+  local results="$dir/results.tsv"
+  if [ -f "$results" ]; then
+    printf '\nVerdicts   %s\n' "$(tail -n +2 "$results" | cut -f5 | sort | uniq -c | sort -rn \
+      | awk '{printf "%s%s %s", sep, $1, $2; sep=", "}')"
+
+    printf '\nShipped, newest first\n'
+    local sha shown=0
+    for sha in $(tail -n +2 "$results" \
+                 | awk -F'\t' '$5 ~ /^keep/ {a[n++] = $4} END {for (i = n - 1; i >= 0; i--) print a[i]}'); do
+      [ "$shown" -lt "$n" ] || break
+      git -C "$work" log -1 --format='  %h  %s' "$sha" 2>/dev/null && shown=$((shown + 1))
+    done
+    [ "$shown" -gt 0 ] || dim "  nothing yet"
+  else
+    dim "no verdicts yet"
+  fi
+
+  local refs
+  refs="$(git -C "$work" for-each-ref --sort=-refname --count="$n" \
+    --format='  %(objectname:short)  %(subject)  (%(refname:short))' refs/ralph/reverted/ refs/ralph/dropped/ 2>/dev/null)"
+  printf '\nReverted or dropped by the gates, kept under refs/ralph/\n'
+  if [ -n "$refs" ]; then printf '%s\n' "$refs"; else dim "  nothing"; fi
+
+  if [ "$worktree" = 1 ] && [ "$push" != 1 ]; then
+    local base="$branch" waiting
+    git -C "$work" rev-parse -q --verify "origin/$branch" >/dev/null && base="origin/$branch"
+    waiting="$(git -C "$work" log --reverse --format='  %h  %s' "$base..ralph/$name" 2>/dev/null)"
+    printf '\nWaiting to merge into %s\n' "$branch"
+    if [ -n "$waiting" ]; then
+      printf '%s\n' "$waiting"
+      dim "  merge them: git -C \"$repo\" merge ralph/$name"
+    else
+      dim "  nothing"
+    fi
+  fi
+  printf '\n'
+  dim "look closer: git -C \"$work\" show <sha>     every verdict: ralph results $name"
+}
+
 cmd_results() {
   local name="${1:-}" n="${2:-20}"; local dir; dir="$(loop_dir "$name")" || exit 1
   [ -f "$dir/results.tsv" ] || die "no results yet for $name"
@@ -248,9 +325,22 @@ case "${1:-help}" in
   status) shift; cmd_status "$@" ;;
   log)    shift; cmd_log    "$@" ;;
   results) shift; cmd_results "$@" ;;
+  review) shift; cmd_review "$@" ;;
   tail)   shift; cmd_tail   "$@" ;;
   steer)  shift; cmd_steer  "$@" ;;
   edit)   shift; cmd_edit   "$@" ;;
-  -h|--help|help) usage ;;
+  -h|--help|help)
+    usage
+    if [ -d "$RALPH_HOME" ]; then
+      loops=""
+      for d in "$RALPH_HOME"/*/; do
+        [ -f "${d}config.sh" ] || continue
+        l="$(basename "$d")"
+        if pid_of "${d%/}" >/dev/null; then l="$l (running)"; fi
+        loops="${loops:+$loops, }$l"
+      done
+      [ -n "$loops" ] && printf '\nYour loops: %s\n' "$loops"
+    fi
+    ;;
   *) die "unknown command: $1 (try: ralph help)" ;;
 esac
