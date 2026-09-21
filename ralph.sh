@@ -420,17 +420,27 @@ refuse() {
 # not news, and neither is the template's own placeholder.
 DECISION_SEEN="$DIR/.decision-seen"
 decisions() {
+  [ -f "$DIR/PROGRESS.md" ] || return 0
   awk '/^## Needs a decision/{f=1; next} f && /^## /{f=0} f' "$DIR/PROGRESS.md" \
     | grep -v '^[[:space:]]*$' | grep -Fv '_(nothing yet)_'
 }
+# Only lines that were not there before count. An agent rewrites PROGRESS.md
+# whole every iteration, so a question settled, reworded or moved changes the
+# section without asking anything new, and a notifier that fired on that would
+# be noise a human learns to ignore.
 check_decisions() {
-  local now
+  local now added
+  [ -f "$DIR/PROGRESS.md" ] || return 0
   now="$(decisions)"
-  [ "$now" != "$(cat "$DECISION_SEEN" 2>/dev/null)" ] || return 0
+  if [ -f "$DECISION_SEEN" ]; then
+    added="$(printf '%s\n' "$now" | grep -v '^$' | grep -Fxv -f "$DECISION_SEEN")"
+  else
+    added="$now"
+  fi
   printf '%s\n' "$now" > "$DECISION_SEEN"
-  [ -n "$now" ] || return 0
-  log "PROGRESS.md has new text under \"Needs a decision\" — the agent is asking a human"
-  notify decision "$(printf '%s' "$now" | head -c 1000)"
+  [ -n "$added" ] || return 0
+  log "PROGRESS.md has a new question under \"Needs a decision\" — the agent is asking a human"
+  notify decision "$(printf '%s' "$added" | head -c 1000)"
 }
 
 iter=0

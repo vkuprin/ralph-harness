@@ -139,6 +139,16 @@ case "$mode" in
                        print ""
                        print "- the staging key is not in the vault: only a human can settle this one \"$(touch " ENVIRON["RALPH_D"] "/OWNED)\""
                      }' "$p" > "$p.new" && mv "$p.new" "$p" ;;
+  settle)       # The agent settles one question and moves another up, the way an
+                # agent rewriting PROGRESS.md whole does: the section changes,
+                # nothing new is asked. (A reworded line is text never seen
+                # before, and it may say something new, so it is not tested as
+                # silence: telling a rewording from a new question is a guess.)
+                p="$(dirname "$RALPH_STEER_FILE")/PROGRESS.md"
+                awk '/only a human can settle this one/ {next}
+                     /^## Needs a decision/ {print; print ""; print "- an older loop left this one here"; skip = 1; next}
+                     skip && /an older loop left this one here/ {next}
+                     {print}' "$p" > "$p.new" && mv "$p.new" "$p" ;;
   drop-branch)  # the branch goes out from under the loop, as a stray
                 # `git update-ref -d` or a human tidying refs would do
                 commit work

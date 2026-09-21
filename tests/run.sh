@@ -1863,6 +1863,20 @@ check "and nothing in it ran" test ! -e "$T/stub-nc/OWNED"
 check "the log still says everything the notifier was told" \
   bash -c 'grep -q "Needs a decision" "$1/ralph.log"' _ "$T/loops/nc"
 
+# Agents rewrite PROGRESS.md whole every iteration. A question settled, or the
+# list reordered, changes the section without asking anything new, and a
+# notifier that fired on that would be noise a human learns to ignore.
+S="$T/stub-ncs"; mkdir -p "$S"
+printf '%s\n' decide settle nothing > "$S/modes"
+mk_notifier "$T/notify-ncs.log" "$T/notify-ncs.sh"
+make_loop "$T/loops/ncs" "$T/app-nc" 'MAX_ITER=3' "NOTIFY_CMD=\"$T/notify-ncs.sh\""
+awk '{print} /^## Needs a decision/{print ""; print "- an older loop left this one here"}' \
+  "$T/loops/ncs/PROGRESS.md" > "$T/loops/ncs/PROGRESS.md.new"
+mv "$T/loops/ncs/PROGRESS.md.new" "$T/loops/ncs/PROGRESS.md"
+run_loop "$T/loops/ncs" "$S"
+check "a question settled, or the list reordered, is not a new question" \
+  test "$(events "$T/notify-ncs.log")" = "decision stopped "
+
 # A keep and a quiet on their own say nothing; the stop says why it stopped.
 # QUIET_STOP, not MAX_ITER, so the other stop reason is exercised too.
 S="$T/stub-nq"; mkdir -p "$S"
