@@ -285,6 +285,67 @@ kill "$legacy_pid" 2>/dev/null
 wait "$legacy_pid" 2>/dev/null
 
 # ---------------------------------------------------------------------------
+section "ralph migrate: an old-layout loop becomes a current one"
+
+# The same layout once more, this time over a real repository, so the migrated
+# loop can be run by this repo's ralph.sh to prove the settings came across.
+make_repo "$T/app-m" "$T/remote-m.git"
+mkdir -p "$T/home-m/legacy"
+cat > "$T/home-m/legacy/ralph.sh" <<EOF
+#!/usr/bin/env bash
+set -uo pipefail
+DIR="\$HOME/.claude/ralph/legacy"
+REPO="$T/app-m"
+LOG="\$DIR/ralph.log"
+MAX_ITER="\${MAX_ITER:-7}"
+QUIET_STOP="\${QUIET_STOP:-3}"
+while :; do sleep 0.3; done
+EOF
+chmod +x "$T/home-m/legacy/ralph.sh"
+cp "$ROOT/template/PROMPT.md" "$ROOT/template/PROGRESS.md" "$T/home-m/legacy/"
+prompt_sum="$(cksum < "$T/home-m/legacy/PROMPT.md")"
+
+check "review sends an old-layout loop to migrate instead of denying it exists" \
+  bash -c 'RALPH_HOME="$1/home-m" "$2" review legacy 2>&1 | grep -q "ralph migrate legacy"' _ "$T" "$ROOT/ralph"
+
+"$RALPH_BASH" "$T/home-m/legacy/ralph.sh" & legacy_pid=$!
+for _ in $(seq 1 25); do pgrep -f "home-m/legacy/ralph.sh" >/dev/null && break; sleep 0.1; done
+check "migrate refuses while the loop is running" \
+  bash -c '! RALPH_HOME="$1/home-m" "$2" migrate legacy' _ "$T" "$ROOT/ralph"
+check "and left the running loop's ralph.sh where it was" test -f "$T/home-m/legacy/ralph.sh"
+check "and wrote no config.sh" test ! -e "$T/home-m/legacy/config.sh"
+kill "$legacy_pid" 2>/dev/null
+wait "$legacy_pid" 2>/dev/null
+
+check "migrate converts a stopped loop" \
+  bash -c 'RALPH_HOME="$1/home-m" "$2" migrate legacy' _ "$T" "$ROOT/ralph"
+check "it carries the repo over" grep -qx "REPO=\"$T/app-m\"" "$T/home-m/legacy/config.sh"
+check "it carries MAX_ITER over" grep -qx 'MAX_ITER=7' "$T/home-m/legacy/config.sh"
+check "it carries QUIET_STOP over" grep -qx 'QUIET_STOP=3' "$T/home-m/legacy/config.sh"
+check "it leaves the settings that loop never had at the harness defaults" \
+  bash -c '! grep -qE "^(WORKTREE|PUSH|REVIEW|VERIFY_CMD)=" "$1/home-m/legacy/config.sh"' _ "$T"
+check "the old ralph.sh is kept as ralph.sh.old" test -f "$T/home-m/legacy/ralph.sh.old"
+check "and is out of the way, so the loop is no longer the old layout" test ! -e "$T/home-m/legacy/ralph.sh"
+check "PROMPT.md is untouched" test "$prompt_sum" = "$(cksum < "$T/home-m/legacy/PROMPT.md")"
+check "status stops calling it the old layout" \
+  bash -c '! RALPH_HOME="$1/home-m" "$2" status legacy | grep -q "old layout"' _ "$T" "$ROOT/ralph"
+check "migrating twice is refused" \
+  bash -c '! RALPH_HOME="$1/home-m" "$2" migrate legacy' _ "$T" "$ROOT/ralph"
+check "migrate refuses a directory that is no loop at all" \
+  bash -c 'mkdir -p "$1/home-m/notaloop"; ! RALPH_HOME="$1/home-m" "$2" migrate notaloop' _ "$T" "$ROOT/ralph"
+
+# The proof that the values mean the same thing after the move: the migrated
+# loop runs under this repo's ralph.sh and stops at the MAX_ITER it carried.
+echo 'QUIET_SLEEP=0 STEP_SLEEP=0' >> "$T/home-m/legacy/config.sh"
+S="$T/stub-m"; mkdir -p "$S"
+printf '%s\n' commit commit commit commit commit commit commit commit > "$S/modes"
+run_loop "$T/home-m/legacy" "$S"
+check "the migrated loop runs, and stops at the MAX_ITER it carried over" \
+  grep -q 'hit MAX_ITER=7' "$T/home-m/legacy/ralph.log"
+check "it committed into the repo its old ralph.sh named" \
+  test "$(git -C "$T/app-m" rev-list --count HEAD)" = 8
+
+# ---------------------------------------------------------------------------
 section "CLI through a symlink on PATH"
 
 mkdir -p "$T/bin" "$T/deep/bin"

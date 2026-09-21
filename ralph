@@ -20,6 +20,7 @@
 #   ralph tail <name>              follow the log
 #   ralph steer <name> "text"      redirect a running loop, starting with the iteration in flight
 #   ralph edit <name>              open PROMPT.md in $EDITOR
+#   ralph migrate <name>           convert a loop from before config.sh to the current layout
 #
 # With no arguments it prints this, then the loops you have.
 #
@@ -76,14 +77,23 @@ loop_kind() {
   fi
 }
 
-# The repository an old-layout loop works in. Sourcing its ralph.sh would start
-# the loop, so only the plain REPO= assignment is evaluated, and a line that
-# would run a command is skipped rather than obeyed.
+# What an old-layout loop sets a variable to, near the top of its own ralph.sh.
+# Sourcing that file would start the loop, so only the plain assignment is
+# evaluated, and a line that would run a command is skipped rather than obeyed.
+# `MAX_ITER="${MAX_ITER:-40}"` is the usual shape, so the variable is unset
+# first and the environment's value cannot leak into the answer. Empty when the
+# loop never set it.
+old_var() {
+  local dir="$1" var="$2" assign
+  assign="$(grep -E "^$var=" "$dir/ralph.sh" 2>/dev/null | grep -v -e '[$](' -e '`')"
+  # set +u: the assignment may mention $HOME or another variable it left unset.
+  (set +u; unset "$var"; eval "$assign" 2>/dev/null; printf '%s' "${!var-}")
+}
+
+# The repository an old-layout loop works in, or ? when its ralph.sh hides it.
 old_repo() {
-  local assign
-  assign="$(grep -E '^REPO=' "$1/ralph.sh" 2>/dev/null | grep -v -e '[$](' -e '`')"
-  # shellcheck disable=SC2086  # set +u: the assignment may mention $HOME
-  (set +u; REPO=""; eval "$assign" 2>/dev/null; printf '%s' "${REPO:-?}")
+  local repo; repo="$(old_var "$1" REPO)"
+  printf '%s' "${repo:-?}"
 }
 
 # With no ralph.pid, the loop is whatever process is running its own script.
@@ -142,6 +152,50 @@ cmd_start() {
   echo "$pid" > "$dir/ralph.pid"
   green "started $name as PID $pid"
   dim   "  ralph status $name   ralph tail $name   ralph stop $name"
+}
+
+# An old-layout loop kept its settings in its own ralph.sh, so it cannot be run
+# by this repo's ralph.sh and `ralph start`, `stop` and `review` do not know it.
+# Migrating copies the settings it actually had into config.sh and moves the old
+# script aside; every setting added since keeps its harness default, so the loop
+# goes on behaving as it did. PROMPT.md, PROGRESS.md and ralph.log are its
+# memory and are not touched.
+cmd_migrate() {
+  local name="${1:-}"; local dir; dir="$(loop_dir "$name")" || exit 1
+  [ -d "$dir" ] || die "no such loop: $name"
+  [ -f "$dir/config.sh" ] && die "$name already has a config.sh — nothing to migrate"
+  [ -f "$dir/ralph.sh" ] || die "$name has no ralph.sh to read settings from"
+
+  # Converting underneath a running loop would leave it running the script this
+  # renames, with a config.sh it never read.
+  local running; running="$(old_pid "$dir")" && \
+    die "$name is running as PID $running — stop it first: kill $running"
+
+  local repo; repo="$(old_var "$dir" REPO)"
+  [ -n "$repo" ] || die "cannot read REPO out of $dir/ralph.sh — write config.sh by hand"
+
+  local max quiet
+  max="$(old_var "$dir" MAX_ITER)"
+  quiet="$(old_var "$dir" QUIET_STOP)"
+
+  {
+    printf '# Settings for the %s loop, written by "ralph migrate" from ralph.sh.old.\n' "$name"
+    printf '#\n'
+    printf '# Only the settings that loop already had are here. Everything else takes the\n'
+    printf '# harness default, which is what it did before: no worktree, no gates, no push.\n'
+    printf '# See the template config.sh in the harness for the rest, and turn on WORKTREE=1\n'
+    printf '# when you want the harness to check commits instead of keeping them all.\n\n'
+    printf 'REPO="%s"\n' "$repo"
+    [ -n "$max" ]   && printf 'MAX_ITER=%s\n' "$max"
+    [ -n "$quiet" ] && printf 'QUIET_STOP=%s\n' "$quiet"
+  } > "$dir/config.sh"
+
+  mv "$dir/ralph.sh" "$dir/ralph.sh.old"
+
+  green "migrated $name"
+  dim   "  settings   $dir/config.sh"
+  dim   "  the old script is kept as $dir/ralph.sh.old"
+  dim   "  check it, then: ralph start $name"
 }
 
 cmd_stop() {
@@ -283,7 +337,12 @@ cmd_tail() {
 # it does not push, what is waiting on ralph/<name> to be merged.
 cmd_review() {
   local name="${1:-}" n="${2:-10}"; local dir; dir="$(loop_dir "$name")" || exit 1
-  [ -f "$dir/config.sh" ] || die "no loop called $name in $RALPH_HOME"
+  if [ ! -f "$dir/config.sh" ]; then
+    # Saying "no such loop" of an old-layout directory is false: it exists, it
+    # keeps no results.tsv and nothing here can read it until it is migrated.
+    [ -f "$dir/ralph.sh" ] && die "$name is the old layout, with no verdicts to show — convert it first: ralph migrate $name"
+    die "no loop called $name in $RALPH_HOME"
+  fi
   local conf repo worktree branch push work
   conf="$(loop_conf "$dir")"
   repo="$(printf '%s' "$conf" | cut -f1)"
@@ -387,6 +446,7 @@ usage() {
 
 case "${1:-help}" in
   new)    shift; cmd_new    "$@" ;;
+  migrate) shift; cmd_migrate "$@" ;;
   start)  shift; cmd_start  "$@" ;;
   stop)   shift; cmd_stop   "$@" ;;
   status) shift; cmd_status "$@" ;;

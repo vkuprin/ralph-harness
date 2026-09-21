@@ -152,6 +152,7 @@ this; it backs off.
 ./ralph tail <name>           # follow the log
 ./ralph steer <name> "text"   # redirect it, starting with the iteration in flight
 ./ralph edit <name>           # open PROMPT.md in $EDITOR
+./ralph migrate <name>        # convert a loop from before config.sh to the current layout
 ./ralph stop <name>           # stop the loop and everything the agent started
 ```
 
@@ -168,6 +169,14 @@ of its own `ralph.sh` and writes no `ralph.pid`. `ralph status` and the guide li
 one anyway, marked `old layout`, with the repository it works in, its iteration
 counts, and whether a process is running it — found in the process list, since
 there is no PID file. The other commands need `config.sh`.
+
+`ralph migrate <name>` gives it one. It copies the settings that loop actually had
+(`REPO`, `MAX_ITER`, `QUIET_STOP`) into `config.sh` and renames the old script to
+`ralph.sh.old`; `PROMPT.md`, `PROGRESS.md` and the log are left alone. Everything
+added since keeps its harness default, which is what that loop already did: no
+worktree, no gates, no push. So the migrated loop behaves as before, and turning
+the gates on afterwards is a matter of editing `config.sh`. It refuses while the
+loop is running, and refuses a loop that already has a `config.sh`.
 
 ## Configuration
 
