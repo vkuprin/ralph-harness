@@ -1,0 +1,31 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck ralph ralph.sh hooks/steer.sh tests/run.sh tests/stub/claude
+      - name: tests
+        run: tests/run.sh
+
+  # macOS still ships bash 3.2 as /bin/bash, and the loop has to run there.
+  # macOS minutes cost ten times as much on private repositories, so this job
+  # only runs once the repository is public.
+  macos:
+    if: ${{ !github.event.repository.private }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck and jq
+        run: brew install shellcheck jq
+      - name: tests (bash on PATH)
+        run: tests/run.sh
+      - name: tests (/bin/bash 3.2)
+        run: RALPH_BASH=/bin/bash tests/run.sh
