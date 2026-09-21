@@ -27,6 +27,11 @@ No `wait -n`, `${x,,}`, `mapfile`, `declare -A` or other bash-4-only syntax.
 - An iteration that ships nothing makes the loop back off, not stop (unless the
   user set `QUIET_STOP`).
 - `PROMPT.md` is re-read every iteration.
+- The prompt is bounded by the harness, not by a shape the agent writes. A file
+  the agent authors may be tidied by structure it wrote (`PROGRESS_KEEP`), but
+  what goes into the prompt has a bound that holds whatever it writes
+  (`PROGRESS_MAX_BYTES`). A loop that fills its context dies, so that bound
+  belongs outside the model like every other gate.
 - Loop state lives in `$RALPH_HOME/<name>/`, never in the target repository.
 - Anything that can discard commits runs only in the harness-owned worktree
   (`WORKTREE=1`), never in the user's own checkout.

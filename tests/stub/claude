@@ -61,6 +61,18 @@ case "$mode" in
   fail429)      echo "the audit found: upstream returned HTTP 429 on /login"
                 echo "then the agent crashed"; exit 1 ;;
   nothing)      echo "Measured again; nothing new." ;;
+  grow-progress)
+                # PROGRESS.md is the agent's to rewrite, so the agent is what
+                # decides whether the shape the entry cap reads ('## Log' with
+                # '### ' entries under it) is there at all. This one writes a
+                # lot and never that shape, which is how the cap gets switched
+                # off by accident and the prompt then grows for ever.
+                p="$(dirname "$RALPH_STEER_FILE")/PROGRESS.md"
+                i=0
+                while [ "$i" -lt 60 ]; do
+                  echo "note $n.$i: the agent kept its memory in a shape of its own" >> "$p"
+                  i=$((i + 1))
+                done ;;
   drop-branch)  # the branch goes out from under the loop, as a stray
                 # `git update-ref -d` or a human tidying refs would do
                 commit work

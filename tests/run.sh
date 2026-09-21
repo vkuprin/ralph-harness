@@ -681,6 +681,86 @@ check "ralph log shows it" bash -c '"$1" log err 60 | grep -q "cannot lock ref"'
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------
+section "the prompt is bounded whatever shape PROGRESS.md is in"
+
+# PROGRESS_KEEP counts '### ' entries under a '## Log' heading, and the agent is
+# what writes both. Drop the heading and the cap counted nothing and said
+# nothing, so PROGRESS.md went into every prompt for the rest of the run — the
+# one failure the harness exists to prevent, enforced inside the model. The
+# bound is now on the bytes injected, which no shape can switch off, and the
+# file is never touched because it is the loop's whole memory.
+make_repo "$T/app-cap" "$T/remote-cap.git"
+S="$T/stub-cap"; mkdir -p "$S"
+printf '%s\n' grow-progress grow-progress grow-progress grow-progress > "$S/modes"
+export RALPH_HOME="$T/home-cap"
+D="$RALPH_HOME/cap"
+make_loop "$D" "$T/app-cap" 'MAX_ITER=4 PROGRESS_MAX_BYTES=4000'
+# No '## Log' heading anywhere: what the agent left behind after reshaping its
+# own notes. The head sections stay, because the head is what has to survive.
+{
+  printf '# Progress\n\n## Needs a decision\n\n- nothing yet\n\n## What I keep in mind\n\n'
+  printf 'the oldest note, written when the file was still small\n'
+} > "$D/PROGRESS.md"
+run_loop "$D" "$S"
+
+grew="$(wc -c < "$D/PROGRESS.md" | tr -d ' ')"
+p2="$(wc -c < "$S/prompt.agent.2" | tr -d ' ')"
+p4="$(wc -c < "$S/prompt.agent.4" | tr -d ' ')"
+check "the file really did grow past the bound, so the checks below mean something" \
+  test "$grew" -gt 12000
+# Two iterations of notes are ~7200 bytes. Unbounded, the prompt grew by all of
+# them; bounded, only the verdict rows and the byte counts in the notice move.
+check "the prompt stops growing once the file is over the bound" \
+  test "$((p4 - p2))" -lt 1000
+check "the prompt says where the rest of the file is" \
+  grep -q 'Cut off here by the harness' "$S/prompt.agent.4"
+check "the newest prompt still holds the head of the file" \
+  grep -q '^## Needs a decision' "$S/prompt.agent.4"
+check "what the bound cut is really cut" \
+  bash -c '! grep -q "note 3.59" "$1"' _ "$S/prompt.agent.4"
+# The file is the loop's memory. Bounding the prompt must not destroy it.
+check "PROGRESS.md itself is left whole on disk" \
+  bash -c 'grep -q "the oldest note" "$1" && grep -q "note 3.59" "$1"' _ "$D/PROGRESS.md"
+check "the log says it is clipping, once and not once per iteration" \
+  test "$(grep -c 'over PROGRESS_MAX_BYTES' "$D/ralph.log")" = 1
+# The entry cap saw no shape it understood and used to pass over that in
+# silence, which is how a run could go for days with no bound but this one.
+check "the log says the entry cap can see nothing to count" \
+  grep -q "the entry cap does nothing" "$D/ralph.log"
+
+# Same bound, the other hole: the heading is there and correct, and the cap
+# still does nothing because it counts entries and one entry has no size limit.
+S="$T/stub-cap1"; mkdir -p "$S"
+printf '%s\n' nothing nothing > "$S/modes"
+D="$RALPH_HOME/cap1"
+make_loop "$D" "$T/app-cap" 'MAX_ITER=2 PROGRESS_KEEP=8 PROGRESS_MAX_BYTES=4000'
+{
+  printf '# Progress\n\n## Log\n\n### 2026-01-01 10:00 — iteration 1\n\n'
+  i=0
+  while [ "$i" -lt 300 ]; do echo "one entry, and it is enormous: line $i"; i=$((i + 1)); done
+} > "$D/PROGRESS.md"
+run_loop "$D" "$S"
+
+check "one entry under the entry cap is still bounded by bytes" \
+  test "$(wc -c < "$S/prompt.agent.2" | tr -d ' ')" -lt 8000
+check "the entry cap left that file alone, as it should" \
+  test "$(grep -c '^### ' "$D/PROGRESS.md")" = 1
+
+# A healthy loop must not meet the bound at all, or it is not a backstop.
+S="$T/stub-cap2"; mkdir -p "$S"
+printf '%s\n' nothing > "$S/modes"
+D="$RALPH_HOME/cap2"
+make_loop "$D" "$T/app-cap" 'MAX_ITER=1'
+run_loop "$D" "$S"
+
+check "a loop under the bound gets its whole file, with no notice" \
+  bash -c '! grep -q "Cut off here" "$1" && ! grep -q "over PROGRESS_MAX_BYTES" "$2"' \
+  _ "$S/prompt.agent.1" "$D/ralph.log"
+check "and the default bound is not so tight that a real PROGRESS.md meets it" \
+  bash -c 'test "$(wc -c < "$1/template/PROGRESS.md")" -lt 120000' _ "$ROOT"
+unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
 section "CLI through a symlink on PATH"
 
 mkdir -p "$T/bin" "$T/deep/bin"

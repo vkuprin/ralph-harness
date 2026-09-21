@@ -79,6 +79,7 @@ RATE_LIMIT_SLEEP=1800
 ERROR_SLEEP=300
 ERROR_STOP=0
 PROGRESS_KEEP=8
+PROGRESS_MAX_BYTES=120000
 ESCALATE_AFTER=3
 LIVE_STEER=1
 LOG_MAX_BYTES=10000000
@@ -262,9 +263,12 @@ cap_progress() {
   local f="$DIR/PROGRESS.md" archive="$DIR/PROGRESS-archive.md" n tmp over
   n=$(awk '/^## Log/{f=1; next} f && /^## /{f=0} f && /^### /{c++} END{print c+0}' "$f")
   if [ "$n" -eq 0 ]; then
-    if [ -z "$CAP_WARNED" ] && grep -q '^## Log' "$f"; then
-      log "progress cap: no '### ' entries under ## Log, leaving PROGRESS.md as it is"
-    fi
+    # Said whether or not the '## Log' heading is there. A file with the heading
+    # and no entries yet is a new loop; a file without it is one whose agent
+    # reshaped its own memory, and then this cap can see nothing to count.
+    # Either way the entry cap is doing nothing and PROGRESS_MAX_BYTES is the
+    # only bound left, so a human reading the log should hear it once.
+    [ -n "$CAP_WARNED" ] || log "progress cap: no '### ' entries under a '## Log' heading in PROGRESS.md, so the entry cap does nothing; the prompt is bounded by PROGRESS_MAX_BYTES alone"
     CAP_WARNED=1
     return 0
   fi
@@ -289,11 +293,49 @@ cap_progress() {
   log "progress cap: moved $((n - PROGRESS_KEEP)) old Log entries to PROGRESS-archive.md"
 }
 
+# The cap above keeps PROGRESS.md at PROGRESS_KEEP entries, but it counts '### '
+# entries under a '## Log' heading — and the agent is what writes both. Rename
+# either and the cap silently counts nothing; keep them and one enormous entry
+# is still under the cap however big it grows. So the bound that matters was
+# enforced inside the model, against the invariant that gates live outside it.
+#
+# What kills a loop is the prompt, not the file, and the prompt is the harness's
+# alone. This is the bound no shape the agent invents can switch off: inject at
+# most PROGRESS_MAX_BYTES, and never touch the file, so nothing is lost. The
+# head of the file is what survives because the newest entry is at the top by
+# convention — the same end the entry cap keeps — and the agent is told in the
+# prompt where to read the rest.
+#
+# LC_ALL=C because length() counts characters, and a PROGRESS.md full of em
+# dashes would then be let through at up to three bytes each. The awk here
+# counts bytes in either locale, so this is for the machines where it does not.
+# It cannot log for itself: this runs inside the group build_prompt redirects
+# into the prompt file, and log() tees to stdout, so the line would be injected
+# rather than logged. It leaves the message in INJECT_NOTE instead.
+INJECT_WARNED=""
+INJECT_NOTE=""
+inject_progress() {
+  local f="$DIR/PROGRESS.md" bytes
+  bytes=$(wc -c < "$f" | tr -d ' ')
+  if ! [ "$PROGRESS_MAX_BYTES" -gt 0 ] 2>/dev/null || [ "$bytes" -le "$PROGRESS_MAX_BYTES" ]; then
+    cat "$f"
+    return 0
+  fi
+  LC_ALL=C awk -v max="$PROGRESS_MAX_BYTES" '
+    { n += length($0) + 1; if (n > max) exit } 1
+  ' "$f"
+  printf '\n[Cut off here by the harness: PROGRESS.md is %s bytes and at most %s are injected. The whole file is on disk at %s — read it if you need what is missing from the end. Then shorten it, because a prompt that keeps growing is what ends a loop.]\n' \
+    "$bytes" "$PROGRESS_MAX_BYTES" "$f"
+  [ -n "$INJECT_WARNED" ] || INJECT_NOTE="progress cap: PROGRESS.md is $bytes bytes, over PROGRESS_MAX_BYTES=$PROGRESS_MAX_BYTES — injecting its first $PROGRESS_MAX_BYTES bytes and leaving the file alone"
+  INJECT_WARNED=1
+}
+
 build_prompt() {
+  INJECT_NOTE=""
   {
     cat "$DIR/PROMPT.md"
     printf '\n---\n\n# PROGRESS.md (your memory of previous iterations — read this before doing anything)\n\n'
-    cat "$DIR/PROGRESS.md"
+    inject_progress
     if [ -s "$DIR/PROGRESS-archive.md" ]; then
       printf '\nOlder Log entries are in %s. Read it only when you need that history.\n' "$DIR/PROGRESS-archive.md"
     fi
@@ -327,6 +369,7 @@ build_prompt() {
 
     printf '\n---\n\n%s\n' "$CLOSING"
   } > "$PROMPT_FILE"
+  [ -z "$INJECT_NOTE" ] || log "$INJECT_NOTE"
 }
 
 # ------------------------------------------------------------ git helpers

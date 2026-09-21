@@ -100,6 +100,15 @@ ESCALATE_AFTER=3
 # the agent can read but which is not put into every prompt. 0 keeps everything.
 PROGRESS_KEEP=8
 
+# The backstop under that cap, and the bound that cannot be switched off. The
+# cap above counts '### ' entries under a '## Log' heading, and the agent writes
+# both, so a file it reshapes — or one huge entry — leaves it nothing to count.
+# At most this many bytes of PROGRESS.md go into one prompt, keeping the first of
+# them, since the newest entry is at the top. The file is never truncated; the
+# prompt says where the rest is. Meeting this bound means the cap above has
+# stopped working. 0 injects the whole file however big it gets.
+PROGRESS_MAX_BYTES=120000
+
 # ralph.log holds every agent's whole output and the harness's own errors, so it
 # grows without bound on a loop
 # that runs for days. It rotates between iterations once it passes LOG_MAX_BYTES,

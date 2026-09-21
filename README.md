@@ -164,6 +164,15 @@ repository: `PROMPT.md` tends to carry hostnames and per-project rules, and
 entries stay in it; older ones move to `PROGRESS-archive.md`, which the agent can
 read but which is not put into every prompt.
 
+That cap reads a `## Log` heading with `### ` entries under it, and the agent is
+what writes both — rename either, or write one enormous entry, and it has
+nothing to count. So the bound that matters is on the prompt rather than on the
+file: at most `PROGRESS_MAX_BYTES` of `PROGRESS.md` is injected, and the first
+bytes are the ones kept, because the newest entry goes at the top. The file
+itself is never truncated — it is the loop's whole memory — and the prompt says
+where to read the part that was cut. If you see that notice, the entry cap has
+stopped working and `PROGRESS.md` wants tidying by hand.
+
 The log is bounded the same way. Every agent's whole output goes into `ralph.log`,
 so a loop left running for days would write gigabytes into one file; instead it
 rotates between iterations once it passes `LOG_MAX_BYTES`, keeping `LOG_KEEP`
@@ -237,6 +246,7 @@ the same.
 | `ERROR_STOP` | `0` | `0` | stop after this many crashes or timeouts in a row; `0` never stops |
 | `ESCALATE_AFTER` | `3` | `3` | failures in a row before the prompt says pivot |
 | `PROGRESS_KEEP` | `8` | `8` | Log entries kept in `PROGRESS.md`; `0` keeps all |
+| `PROGRESS_MAX_BYTES` | `120000` | `120000` | most of `PROGRESS.md` put into one prompt, first bytes kept; the file is never touched; `0` injects all of it |
 | `LOG_MAX_BYTES` | `10000000` | `10000000` | rotate `ralph.log` once it passes this between iterations; `0` never rotates |
 | `LOG_KEEP` | `3` | `3` | rotated logs kept, `ralph.log.1` up, no ceiling; lowering it prunes the rest; `0` throws the old one away |
 | `REF_KEEP` | `20` | `20` | thrown-away commits kept under `refs/ralph/reverted/` and `refs/ralph/dropped/`, newest first, each counted separately; `0` keeps every ref and `git gc` can never reclaim them |
