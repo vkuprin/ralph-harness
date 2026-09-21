@@ -69,7 +69,7 @@ S="$T/stub-a"; mkdir -p "$S"
 printf '%s\n' commit commit-bad touch-frozen commit sleep limit fail nothing cheat push-attempt conflict > "$S/modes"
 printf '%s\n' ACCEPT "REJECT: not what the job asks for" ACCEPT ACCEPT > "$S/verdicts"
 make_loop "$T/loops/a" "$T/app" \
-  'WORKTREE=1 PUSH=1 REVIEW=1 ITER_TIMEOUT=3 MAX_ITER=11' \
+  'WORKTREE=1 PUSH=1 REVIEW=1 ITER_TIMEOUT=3 MAX_ITER=10' \
   'VERIFY_CMD="./measure.sh"' 'FROZEN=("measure.sh")'
 app_head="$(git -C "$T/app" rev-parse HEAD)"
 run_loop "$T/loops/a" "$S" "$T/remote.git"
@@ -175,6 +175,41 @@ cp "$T/loops/a/results.tsv" "$RALPH_HOME/demo/results.tsv"
 check "ralph results renders a table" bash -c '"$1" results demo | head -1 | grep -q "status"' _ "$ROOT/ralph"
 check "status counts the verdicts" bash -c '"$1" status demo | grep -q "verdicts.*keep"' _ "$ROOT/ralph"
 unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
+section "limits heal themselves; interrupted iterations are set aside"
+
+make_repo "$T/app-f" "$T/remote-f.git"
+S="$T/stub-f"; mkdir -p "$S"
+printf '%s\n' limit weekly credit custom-limit fail429 commit > "$S/modes"
+printf '%s\n' LIMIT ACCEPT > "$S/verdicts"
+make_loop "$T/loops/f" "$T/app-f" \
+  'WORKTREE=1 PUSH=1 REVIEW=1 MAX_ITER=2' 'VERIFY_CMD="./measure.sh"' \
+  "RATE_LIMIT_RE=\"\$RATE_LIMIT_RE|quota window closed\""
+run_loop "$T/loops/f" "$S" "$T/remote-f.git"
+
+check "every kind of limit is waited out, a real crash is not, and the work still ships" \
+  test "$(statuses "$T/loops/f")" = "ratelimit ratelimit ratelimit ratelimit error keep"
+check "waiting out limits did not use up MAX_ITER=2" grep -q 'stub: work' <(git -C "$T/remote-f.git" log --format=%s main)
+check "an agent crash whose output mentions 429 is an error, not a limit" \
+  test "$(tail -n +2 "$T/loops/f/results.tsv" | cut -f5 | sed -n 5p)" = error
+check "config.sh can extend RATE_LIMIT_RE" grep -q 'quota window closed' "$T/loops/f/results.tsv"
+check "the reviewer waited out its limit and was asked again" test "$(cat "$S/review_calls")" = 2
+check "that commit was reviewed, not waved through" test "$(tail -n 1 "$T/loops/f/results.tsv" | cut -f5)" = keep
+
+# A commit made by an iteration that never finished: nobody judged it.
+W="$T/app-f-ralph-f"
+git -C "$W" commit -q --allow-empty -m "stub: from an interrupted iteration"
+printf '%s\n' nothing > "$S/modes"
+sed -i.bak 's/MAX_ITER=2/MAX_ITER=1/' "$T/loops/f/config.sh"
+run_loop "$T/loops/f" "$S" "$T/remote-f.git"
+
+check "on restart the unjudged commit is set aside" \
+  test "$(tail -n 2 "$T/loops/f/results.tsv" | cut -f5 | tr '\n' ' ')" = "drop:interrupted quiet "
+check "the unjudged commit never reached origin" \
+  bash -c '! git -C "$1" log --format=%s main | grep -q interrupted' _ "$T/remote-f.git"
+check "the unjudged commit is kept under refs/ralph/dropped/" \
+  bash -c 'git -C "$1" log --format=%s $(git -C "$1" for-each-ref --format="%(refname)" refs/ralph/dropped/) | grep -q interrupted' _ "$W"
 
 # ---------------------------------------------------------------------------
 section "CLI through a symlink on PATH"

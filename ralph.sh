@@ -66,6 +66,11 @@ ERROR_STOP=0
 PROGRESS_KEEP=8
 ESCALATE_AFTER=3
 LIVE_STEER=1
+# What claude prints when a limit ends a run: plan limits (5-hour, weekly), an
+# overloaded API, or an API key out of credit. Only consulted when claude exited
+# non-zero, and only on its last lines, so an audit whose own output mentions
+# "429" is never misread. A limit is waited out, never counted as a failure.
+RATE_LIMIT_RE='hit your ([a-z]+ )?limit|usage limit|(weekly|session|[0-9]+-hour) limit|rate_limit_error|overloaded_error|API Error: (429|529)|credit balance is too low|spend limit|insufficient_quota'
 
 # shellcheck disable=SC1091
 . "$DIR/config.sh"
@@ -79,9 +84,6 @@ PROMPT_FILE="$DIR/.prompt"
 NAME="$(basename "$DIR")"
 WORK="$REPO"
 
-# What the CLI prints when a usage limit ends a run. Only consulted when claude
-# exited non-zero, so an audit whose own output mentions "429" is never misread.
-RATE_LIMIT_RE='hit your ([a-z]+ )?limit|usage limit|rate_limit_error|overloaded_error|API Error: (429|529)'
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
@@ -373,14 +375,24 @@ or
 
 VERDICT: REJECT: <one sentence saying why>
 EOF
-  : > "$DIR/review.out"
-  BOUNDED_STDIN="$DIR/.review-prompt" BOUNDED_OUT="$DIR/review.out" run_bounded "$ITER_TIMEOUT" \
-    claude -p --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
-    --permission-prompts none --add-dir "$DIR" --model "$MODEL"
-  cat "$DIR/review.out" >> "$LOG"
-
   local verdict
-  verdict="$(grep -a '^VERDICT:' "$DIR/review.out" | tail -n 1)"
+  while :; do
+    : > "$DIR/review.out"
+    BOUNDED_STDIN="$DIR/.review-prompt" BOUNDED_OUT="$DIR/review.out" run_bounded "$ITER_TIMEOUT" \
+      claude -p --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
+      --permission-prompts none --add-dir "$DIR" --model "$MODEL"
+    cat "$DIR/review.out" >> "$LOG"
+    verdict="$(grep -a '^VERDICT:' "$DIR/review.out" | tail -n 1)"
+    # A limit is not an answer: wait it out and ask again, rather than ship the
+    # commit unreviewed or throw it away.
+    if [ -z "$verdict" ] && [ "$RC" -ne 0 ] && [ "$TIMED_OUT" = 0 ] \
+      && tail -n 20 "$DIR/review.out" | grep -Eqi "$RATE_LIMIT_RE"; then
+      log "reviewer hit a limit — asking again in ${RATE_LIMIT_SLEEP}s"
+      nap "$RATE_LIMIT_SLEEP"
+      continue
+    fi
+    break
+  done
   case "$verdict" in
     "VERDICT: ACCEPT"*) REVIEW_STATUS=accept ;;
     "VERDICT: REJECT"*)
@@ -396,11 +408,39 @@ EOF
   esac
 }
 
+# The last HEAD the harness judged. An iteration killed by `ralph stop`, a crash
+# or a reboot can leave commits no gate has seen; at the next start they are set
+# aside instead of being judged by nobody and pushed by the next sync.
+GATED="$DIR/.gated-head"
+mark_gated() { git rev-parse HEAD > "$GATED"; }
+
+drop_unjudged() {
+  [ -f "$GATED" ] || { mark_gated; return 0; }
+  local judged head
+  judged="$(cat "$GATED")"
+  head="$(git rev-parse HEAD)"
+  [ "$judged" != "$head" ] || return 0
+  git cat-file -e "$judged^{commit}" 2>/dev/null || { mark_gated; return 0; }
+  git update-ref "refs/ralph/dropped/$(date +%s)" "$head"
+  if ! revert_to "$judged"; then
+    log "cannot reset ralph/$NAME to the last judged commit $judged — fix the worktree by hand"
+    exit 1
+  fi
+  record "$head" "$judged" "drop:interrupted" 0 \
+    "commits from an interrupted iteration were never judged; saved under refs/ralph/dropped/"
+  log "start: $head was never judged (an iteration was interrupted); reset to $judged, saved under refs/ralph/dropped/"
+}
+
 # sync: follow origin/$BRANCH and push kept commits. Worktree + PUSH only.
 # Runs before every iteration and after every keep, so a push that failed once
 # is retried, and work done while a human pushed to the same branch is rebased
 # and verified again before it goes out.
 sync() {
+  sync_once
+  mark_gated
+}
+
+sync_once() {
   local upstream="origin/$BRANCH" head
   clean_tree
   if ! git fetch -q origin "$BRANCH" >> "$LOG" 2>&1; then
@@ -444,6 +484,9 @@ if [ "$WORKTREE" = 1 ]; then
   setup_worktree
 fi
 cd "$WORK" || exit 1
+if [ "$WORKTREE" = 1 ]; then
+  drop_unjudged
+fi
 
 if [ "$LIVE_STEER" = 1 ]; then
   printf '{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"\\"%s\\""}]}]}}\n' \
@@ -471,6 +514,7 @@ while :; do
   [ "$LIVE_STEER" = 1 ] && : > "$DIR/STEER.md" && : > "$DIR/STEER.md.delivered"
 
   before=$(git rev-parse HEAD)
+  [ "$WORKTREE" = 1 ] && mark_gated
   started=$(date +%s)
   log "=== iteration $iter (HEAD $before) ==="
 
@@ -573,6 +617,7 @@ while :; do
   case "$status" in
     keep*)
       quiet=0; trouble=0; errors=0
+      [ "$WORKTREE" = 1 ] && mark_gated
       log "iteration $iter shipped $after in ${took}s${reason:+ ($reason)}"
       if [ "$WORKTREE" = 1 ] && [ "$PUSH" = 1 ]; then sync; fi
       ;;
@@ -586,7 +631,9 @@ while :; do
       nap "$QUIET_SLEEP"
       ;;
     ratelimit)
-      log "iteration $iter hit a usage limit: $reason — sleeping ${RATE_LIMIT_SLEEP}s"
+      log "iteration $iter hit a limit: $reason — trying it again in ${RATE_LIMIT_SLEEP}s"
+      # Waiting out a limit is not work, so it does not use up MAX_ITER.
+      iter=$((iter - 1))
       nap "$RATE_LIMIT_SLEEP"
       ;;
     timeout|error)

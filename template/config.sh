@@ -68,9 +68,12 @@ REVIEW=1
 # Seconds one agent run may take before its whole process group is killed.
 ITER_TIMEOUT=7200
 
-# Pause after an iteration that hit a usage limit. It is not an error and does
-# not count toward ERROR_STOP.
+# Pause before retrying an iteration that hit a limit (5-hour, weekly, credit,
+# overloaded API). A limit is not an error: the same iteration is tried again,
+# as often as it takes, and the retries do not count toward MAX_ITER.
 RATE_LIMIT_SLEEP=1800
+# To recognise another message as a limit (a proxy, a gateway), extend the pattern:
+# RATE_LIMIT_RE="$RATE_LIMIT_RE|quota window closed"
 
 # Pause after a failed or reverted iteration, doubling each time in a row, up
 # to an hour.

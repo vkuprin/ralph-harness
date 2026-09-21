@@ -26,8 +26,10 @@ case " $* " in
   *" --restricted "*)
     n="$(bump review_calls)"
     cat > "$d/prompt.review.$n"
+    v="$(pop verdicts ACCEPT)"
+    if [ "$v" = LIMIT ]; then echo "You've hit your limit · resets 3am"; exit 1; fi
     echo "Read the diff."
-    echo "VERDICT: $(pop verdicts ACCEPT)"
+    echo "VERDICT: $v"
     exit 0
     ;;
 esac
@@ -52,6 +54,11 @@ case "$mode" in
   sleep)        sleep 999 ;;
   limit)        echo "You've hit your limit · resets 3am (Europe/Berlin)"; exit 1 ;;
   fail)         echo "boom: something broke"; exit 1 ;;
+  credit)       echo "Credit balance is too low"; exit 1 ;;
+  weekly)       echo "Weekly limit reached · resets Mon 9am"; exit 1 ;;
+  custom-limit) echo "our proxy says: quota window closed"; exit 1 ;;
+  fail429)      echo "the audit found: upstream returned HTTP 429 on /login"
+                echo "then the agent crashed"; exit 1 ;;
   nothing)      echo "Measured again; nothing new." ;;
   push-attempt) commit pushed
                 git push -q origin HEAD:main >/dev/null 2>&1

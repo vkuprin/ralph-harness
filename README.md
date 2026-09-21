@@ -115,7 +115,7 @@ flowchart TD
 | `keep` | shipped |
 | `keep:unreviewed` | shipped; `VERIFY_CMD` passed but the reviewer gave no verdict |
 | `quiet` | nothing committed |
-| `ratelimit` | the run hit a usage limit; the loop waits it out |
+| `ratelimit` | the run hit a limit (5-hour, weekly, credit, overloaded API); the loop waits and tries the same iteration again |
 | `timeout`, `error` | the agent was killed after `ITER_TIMEOUT`, or crashed |
 | `revert:frozen` | a commit touched a frozen file |
 | `revert:verify` | `VERIFY_CMD` failed |
@@ -123,6 +123,16 @@ flowchart TD
 | `revert:review-unavailable` | no reviewer verdict and no `VERIFY_CMD`, so nothing vouched for it |
 | `revert:history` | the agent left `ralph/<name>` or rewrote its history |
 | `drop:conflict`, `drop:reverify` | kept work no longer applied, or no longer passed, on top of a new origin; saved under `refs/ralph/dropped/` |
+| `drop:interrupted` | on start: commits from an iteration that was killed before it was judged; saved under `refs/ralph/dropped/` |
+
+Limits heal on their own. When a run ends on a plan limit, an overloaded API or an
+API key out of credit, the loop sleeps `RATE_LIMIT_SLEEP` and tries the same
+iteration again, as often as it takes. A limited call fails at once without using
+quota, so the retries are free, and they do not count toward `MAX_ITER`. The
+reviewer waits the same way instead of letting a commit through unreviewed. If
+the loop itself is killed (a reboot, `ralph stop` mid-iteration), commits the
+unfinished iteration made are set aside at the next start rather than pushed
+unjudged.
 
 After `ESCALATE_AFTER` failed or reverted iterations in a row, the prompt tells
 the agent to stop retrying and pivot. After twice as many, it tells it to write the
@@ -177,7 +187,8 @@ the same.
 | `FROZEN` | `()` | `()` | paths a commit may not touch |
 | `REVIEW` | `1` | `0` | a read-only reviewer judges each commit |
 | `ITER_TIMEOUT` | `7200` | `7200` | seconds one agent run may take |
-| `RATE_LIMIT_SLEEP` | `1800` | `1800` | wait after a usage limit |
+| `RATE_LIMIT_SLEEP` | `1800` | `1800` | wait before retrying after a limit |
+| `RATE_LIMIT_RE` | | see `ralph.sh` | what counts as a limit; extend it with `RATE_LIMIT_RE="$RATE_LIMIT_RE\|your proxy's message"` |
 | `ERROR_SLEEP` | `300` | `300` | wait after a failure or reset, doubling in a row up to an hour |
 | `ERROR_STOP` | `0` | `0` | stop after this many crashes or timeouts in a row; `0` never stops |
 | `ESCALATE_AFTER` | `3` | `3` | failures in a row before the prompt says pivot |
