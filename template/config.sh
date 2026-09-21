@@ -100,7 +100,8 @@ ESCALATE_AFTER=3
 # the agent can read but which is not put into every prompt. 0 keeps everything.
 PROGRESS_KEEP=8
 
-# ralph.log holds every agent's whole output, so it grows without bound on a loop
+# ralph.log holds every agent's whole output and the harness's own errors, so it
+# grows without bound on a loop
 # that runs for days. It rotates between iterations once it passes LOG_MAX_BYTES,
 # keeping LOG_KEEP older files (ralph.log.1 and up); status, log and tail read
 # them all, however many there are. There is no ceiling on LOG_KEEP, and lowering

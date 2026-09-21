@@ -26,7 +26,9 @@
 #
 # Loops live in $RALPH_HOME (default ~/.claude/ralph), one directory each. The
 # harness lives in this repo; loop contents stay on the machine, because they hold
-# task state and production details.
+# task state and production details. `log` and `tail` read ralph.log, which holds
+# the agent's output and the harness's own errors both; nothing you need is only
+# in the ralph.out that `start` leaves beside it.
 
 set -uo pipefail
 

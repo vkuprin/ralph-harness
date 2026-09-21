@@ -156,7 +156,10 @@ check "keep then quiet" test "$(statuses "$T/loops/c")" = "keep quiet"
 check "the agent committed straight into the checkout" test "$(git -C "$T/app-c" rev-list --count "$c_before..HEAD")" = 1
 check "no worktree was made" test ! -e "$T/app-c-ralph-c"
 check "nothing was pushed" test "$(git -C "$T/remote-c.git" rev-list --count main)" = 1
-check "empty FROZEN=() did not break set -u" bash -c '! grep -q "unbound variable" "$1"' _ "$T/loops/c/ralph.out"
+# Both files: the loop's own stderr goes to ralph.log now, and ralph.out still
+# holds what log() tees to stdout, so neither may carry the complaint.
+check "empty FROZEN=() did not break set -u" \
+  bash -c '! grep -q "unbound variable" "$1/ralph.out" "$1/ralph.log"' _ "$T/loops/c"
 
 # ---------------------------------------------------------------------------
 section "CLI: new, start, status, steer, results, stop"
@@ -645,6 +648,36 @@ check "review still lists the reverted ones" \
 # By epoch and not by name: 1758400010-10 sorts under 1758400002-2 lexically.
 check "review orders them newest first by time, not by name" \
   bash -c 'test "$("$1" review mixed | sed -n "/Reverted or dropped/,\$p" | sed -n 3p | sed "s/.*  //")" = "(ralph/reverted/1758400012-12)"' _ "$ROOT/ralph"
+unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
+section "the harness's own errors reach the log a human is told to read"
+
+# Everything the harness starts is redirected into ralph.log by hand, but the
+# git it runs in passing — clean_tree, revert_to, save_ref, the rev-parses in
+# sync — wrote to the inherited stderr, which `ralph start` points at ralph.out.
+# `ralph log` and `ralph tail` read ralph.log, so none of it was anywhere a
+# reader was told to look. Worst on the one event that needs a human: revert_to
+# failing stops the run with "fix the worktree by hand" and git's reason for it
+# went to the other file.
+#
+# LOG_MAX_BYTES is small so the log rotates before the failing iteration. That
+# is the trap in the obvious fix: a descriptor opened once at start follows the
+# renamed file, which is exactly the bug ralph.out has.
+make_repo "$T/app-err" "$T/remote-err.git"
+S="$T/stub-err"; mkdir -p "$S"
+printf '%s\n' nothing branch-collision > "$S/modes"
+export RALPH_HOME="$T/home-err"
+D="$RALPH_HOME/err"
+make_loop "$D" "$T/app-err" 'WORKTREE=1 MAX_ITER=2 LOG_MAX_BYTES=200 LOG_KEEP=3'
+run_loop "$D" "$S"
+
+check "the loop gave up and asked for a human" \
+  grep -q 'fix the worktree by hand' "$D/ralph.log"
+check "the log rotated first, so the check below means something" test -f "$D/ralph.log.1"
+check "git's reason is in the log, not only in ralph.out" \
+  grep -q 'cannot lock ref' "$D/ralph.log"
+check "ralph log shows it" bash -c '"$1" log err 60 | grep -q "cannot lock ref"' _ "$ROOT/ralph"
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------

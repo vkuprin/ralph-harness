@@ -65,6 +65,14 @@ case "$mode" in
                 # `git update-ref -d` or a human tidying refs would do
                 commit work
                 git update-ref -d "$(git symbolic-ref HEAD)" ;;
+  branch-collision)
+                # A human, or a stray script, makes a branch underneath this
+                # loop's own name. refs/heads/ralph/<name> is then a directory
+                # and cannot be created again, so the harness cannot put the
+                # branch back and the run has to stop.
+                commit work
+                b="$(git rev-parse --abbrev-ref HEAD)"
+                git branch -m "$b" "$b/sub" ;;
   push-attempt) commit pushed
                 git push -q origin HEAD:main >/dev/null 2>&1
                 echo "$?" > "$d/push-attempt.rc"

@@ -172,6 +172,10 @@ read the rotated files too, however many there are, so the iteration counts do
 not reset when it rotates. Lower `LOG_KEEP` and the files above the new number
 are removed at the next rotation, so the total stays where you set it.
 
+`ralph.log` is the whole story: the harness's own errors go there as well, not
+only the agent's output. `ralph start` also leaves a `ralph.out` beside it with
+the progress lines in it, but nothing you need is there alone.
+
 What the gates throw away is bounded too, and that one grows in your repository
 rather than in the loop directory. A reverted or dropped commit is kept under
 `refs/ralph/`, and that ref is the only thing left keeping it reachable — so

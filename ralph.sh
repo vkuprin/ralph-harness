@@ -102,6 +102,14 @@ PROMPT_FILE="$DIR/.prompt"
 NAME="$(basename "$DIR")"
 WORK="$REPO"
 
+# Everything the harness starts is redirected into the log by hand, but the git
+# it runs in passing — clean_tree, revert_to, save_ref, the rev-parses in sync —
+# writes to the inherited stderr, which `ralph start` points at ralph.out.
+# `ralph log` and `ralph tail` read ralph.log, so none of that was anywhere a
+# reader is told to look: a run that stopped with "fix the worktree by hand"
+# gave its reason to a file nothing reads. One redirect here catches the next
+# such command too. ralph.out keeps the copy log() tees to stdout.
+exec 2>>"$LOG"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
@@ -137,6 +145,10 @@ rotate_log() {
     rm -f "$LOG"
   fi
   : > "$LOG"
+  # A descriptor follows the file it was opened on, not the name, so without
+  # this stderr would go on filling ralph.log.1 for the rest of the run — the
+  # very bug ralph.out has, and the reason it cannot be rotated from outside.
+  exec 2>>"$LOG"
   log "log rotated at $size bytes; the $LOG_KEEP before this one are $(basename "$LOG").1 and up"
 }
 
