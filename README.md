@@ -142,10 +142,9 @@ this; it backs off.
 ## Commands
 
 ```bash
-./ralph                       # print this list
+./ralph                       # a short guide, then the loops you have
 ./ralph new <name> <repo>     # scaffold a loop from template/
 ./ralph start <name>          # run it in the background
-./ralph                       # a short guide, then the loops you have
 ./ralph status [name]         # running or not, iterations, verdict counts, HEAD
 ./ralph review <name> [n]     # what it shipped, what the gates threw away, what waits to merge
 ./ralph results <name> [n]    # the last n verdicts as a table
@@ -163,6 +162,12 @@ repository: `PROMPT.md` tends to carry hostnames and per-project rules, and
 `PROGRESS.md` grows into a long journal. Only the newest `PROGRESS_KEEP` Log
 entries stay in it; older ones move to `PROGRESS-archive.md`, which the agent can
 read but which is not put into every prompt.
+
+A loop from before `config.sh` existed keeps its settings as variables near the top
+of its own `ralph.sh` and writes no `ralph.pid`. `ralph status` and the guide list
+one anyway, marked `old layout`, with the repository it works in, its iteration
+counts, and whether a process is running it — found in the process list, since
+there is no PID file. The other commands need `config.sh`.
 
 ## Configuration
 

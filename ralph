@@ -64,6 +64,48 @@ pid_of() {
   echo "$pid"
 }
 
+# Which layout a directory uses, or 1 if it holds no loop at all:
+#   current  settings in config.sh, the loop runs from this repo's ralph.sh,
+#            and its PID is in ralph.pid
+#   old      the loop has its own ralph.sh with the settings as variables near
+#            the top, and writes no ralph.pid
+loop_kind() {
+  if   [ -f "$1/config.sh" ]; then echo current
+  elif [ -f "$1/ralph.sh" ];  then echo old
+  else return 1
+  fi
+}
+
+# The repository an old-layout loop works in. Sourcing its ralph.sh would start
+# the loop, so only the plain REPO= assignment is evaluated, and a line that
+# would run a command is skipped rather than obeyed.
+old_repo() {
+  local assign
+  assign="$(grep -E '^REPO=' "$1/ralph.sh" 2>/dev/null | grep -v -e '[$](' -e '`')"
+  # shellcheck disable=SC2086  # set +u: the assignment may mention $HOME
+  (set +u; REPO=""; eval "$assign" 2>/dev/null; printf '%s' "${REPO:-?}")
+}
+
+# With no ralph.pid, the loop is whatever process is running its own script.
+# The agent it starts carries the same directory on its command line
+# (`claude -p --add-dir <dir>`), so only a shell, or the script itself, counts.
+old_pid() {
+  local dir="$1" pid cmd first
+  for pid in $(pgrep -f "$dir/ralph.*\.sh" 2>/dev/null); do
+    [ "$pid" = "$$" ] && continue
+    cmd="$(ps -p "$pid" -o command= 2>/dev/null)"
+    first="${cmd%% *}"
+    case "${first##*/}" in
+      bash|sh|zsh|dash|ralph*.sh) echo "$pid"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+loop_pid() {
+  if [ -f "$1/config.sh" ]; then pid_of "$1"; else old_pid "$1"; fi
+}
+
 # ------------------------------------------------------------------ commands
 
 cmd_new() {
@@ -141,12 +183,52 @@ loop_conf() {
    printf '%s\t%s\t%s\t%s\t%s' "${REPO:-?}" "$WORKTREE" "$BRANCH" "$PUSH" "$work")
 }
 
+# running/stopped, for the first line of either layout's entry.
+state_line() {
+  local dir="$1" pid uptime
+  if pid="$(loop_pid "$dir")"; then
+    uptime="$(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')"
+    printf '\033[32mrunning\033[0m  PID %s  up %s' "$pid" "$uptime"
+  else
+    printf '\033[2mstopped\033[0m'
+  fi
+}
+
+# Both layouts write the same log lines, so both are read the same way.
+# grep -c prints 0 and exits 1 when it matches nothing: a `|| echo 0` fallback
+# here would append a second 0 and split the line in two.
+status_iterations() {
+  local iter shipped
+  iter="$(grep -a -c '^\[.*=== iteration' "$1/ralph.log" 2>/dev/null)"   || iter=0
+  shipped="$(grep -a -c 'shipped [0-9a-f]\{40\}' "$1/ralph.log" 2>/dev/null)" || shipped=0
+  printf '  iterations  %s run, %s shipped a commit\n' "$iter" "$shipped"
+}
+
+status_last() {
+  local last; last="$(grep -a '^\[' "$1/ralph.log" 2>/dev/null | tail -1)"
+  [ -n "$last" ] && printf '  last        %s\n' "$last"
+  return 0
+}
+
 # Prints one loop, or returns 1 without printing if the directory is not a loop.
 # The caller counts the successes, so that a $RALPH_HOME full of other things
 # says "no loops" rather than printing nothing at all.
 status_one() {
-  local dir="$1" name; name="$(basename "$dir")"
-  [ -f "$dir/config.sh" ] || return 1
+  local dir="$1" name kind
+  name="$(basename "$dir")"
+  kind="$(loop_kind "$dir")" || return 1
+
+  # An old-layout loop keeps its settings in its own ralph.sh and has no
+  # results.tsv and no worktree, so it gets the part of the entry that is true
+  # of it: where it works, whether something is running it, and its log.
+  if [ "$kind" = old ]; then
+    printf '%-20s %s  \033[2m(old layout)\033[0m\n' "$name" "$(state_line "$dir")"
+    printf '  repo        %s\n' "$(old_repo "$dir")"
+    status_iterations "$dir"
+    status_last "$dir"
+    echo
+    return 0
+  fi
 
   local conf repo worktree work
   conf="$(loop_conf "$dir")"
@@ -154,31 +236,16 @@ status_one() {
   worktree="$(printf '%s' "$conf" | cut -f2)"
   work="$(printf '%s' "$conf" | cut -f5)"
 
-  local pid uptime state
-  if pid="$(pid_of "$dir")"; then
-    uptime="$(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')"
-    state="$(printf '\033[32mrunning\033[0m')  PID $pid  up $uptime"
-  else
-    state="$(printf '\033[2mstopped\033[0m')"
-  fi
-
-  # grep -c prints 0 and exits 1 when it matches nothing: a `|| echo 0` fallback
-  # here would append a second 0 and split the line in two.
-  local iter shipped last
-  iter="$(grep -a -c '^\[.*=== iteration' "$dir/ralph.log" 2>/dev/null)"   || iter=0
-  shipped="$(grep -a -c 'shipped [0-9a-f]\{40\}' "$dir/ralph.log" 2>/dev/null)" || shipped=0
-  last="$(grep -a '^\[' "$dir/ralph.log" 2>/dev/null | tail -1)"
-
-  printf '%-20s %s\n' "$name" "$state"
+  printf '%-20s %s\n' "$name" "$(state_line "$dir")"
   printf '  repo        %s\n' "$repo"
   [ "$worktree" = 1 ] && printf '  worktree    %s (ralph/%s)\n' "$work" "$name"
-  printf '  iterations  %s run, %s shipped a commit\n' "$iter" "$shipped"
+  status_iterations "$dir"
   if [ -f "$dir/results.tsv" ]; then
     local verdicts
     verdicts="$(tail -n +2 "$dir/results.tsv" | cut -f5 | sort | uniq -c | awk '{printf "%s%s %s", sep, $1, $2; sep=", "}')"
     [ -n "$verdicts" ] && printf '  verdicts    %s\n' "$verdicts"
   fi
-  [ -n "$last" ] && printf '  last        %s\n' "$last"
+  status_last "$dir"
   local head
   head="$(git -C "$work" log --oneline -1 2>/dev/null)"
   [ -n "$head" ] && printf '  HEAD        %s\n' "$head"
@@ -334,10 +401,11 @@ case "${1:-help}" in
     if [ -d "$RALPH_HOME" ]; then
       loops=""
       for d in "$RALPH_HOME"/*/; do
-        [ -f "${d}config.sh" ] || continue
-        l="$(basename "$d")"
-        if pid_of "${d%/}" >/dev/null; then l="$l (running)"; fi
-        loops="${loops:+$loops, }$l"
+        kind="$(loop_kind "${d%/}")" || continue
+        l="$(basename "$d")"; flags=""
+        [ "$kind" = old ] && flags="old layout"
+        loop_pid "${d%/}" >/dev/null && flags="${flags:+$flags, }running"
+        loops="${loops:+$loops, }$l${flags:+ ($flags)}"
       done
       [ -n "$loops" ] && printf '\nYour loops: %s\n' "$loops"
     fi

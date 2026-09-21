@@ -246,6 +246,43 @@ check "iteration counts stay on one line when nothing shipped yet" \
   bash -c 'RALPH_HOME="$1/home-f" "$2" status logged | grep -q "1 run, 0 shipped a commit"' _ "$T" "$ROOT/ralph"
 
 # ---------------------------------------------------------------------------
+section "loops from before config.sh"
+
+# The layout before config.sh: the settings are variables near the top of the
+# loop's own ralph.sh, and there is no ralph.pid, so a running loop has to be
+# found in the process list. status used to skip these directories in silence.
+mkdir -p "$T/home-old/legacy"
+cat > "$T/home-old/legacy/ralph.sh" <<EOF
+#!/usr/bin/env bash
+set -uo pipefail
+DIR="\$HOME/.claude/ralph/legacy"
+REPO="$T/app-d"
+LOG="\$DIR/ralph.log"
+MAX_ITER="\${MAX_ITER:-40}"
+QUIET_STOP="\${QUIET_STOP:-3}"
+while :; do sleep 0.3; done
+EOF
+chmod +x "$T/home-old/legacy/ralph.sh"
+old_sha=1111111111111111111111111111111111111111
+printf '[2026-01-01 10:00] === iteration 1 (HEAD 0000000) ===\n[2026-01-01 10:20] iteration 1 shipped %s\n[2026-01-01 10:20] === iteration 2 (HEAD %s) ===\n' \
+  "$old_sha" "$old_sha" > "$T/home-old/legacy/ralph.log"
+old_out="$(RALPH_HOME="$T/home-old" "$ROOT/ralph" status)"
+check "status lists a loop from before config.sh" grep -q '^legacy' <<<"$old_out"
+check "status marks it as the old layout" grep -q 'old layout' <<<"$old_out"
+check "status reads the repo out of its ralph.sh" grep -q "repo *$T/app-d\$" <<<"$old_out"
+check "status counts its iterations from the log" grep -q '2 run, 1 shipped a commit' <<<"$old_out"
+check "an old-layout loop with no process is stopped" grep -q 'stopped' <<<"$old_out"
+check "the guide lists old-layout loops too" \
+  grep -q 'legacy (old layout)' <<<"$(RALPH_HOME="$T/home-old" "$ROOT/ralph")"
+
+"$RALPH_BASH" "$T/home-old/legacy/ralph.sh" & legacy_pid=$!
+for _ in $(seq 1 25); do pgrep -f "home-old/legacy/ralph.sh" >/dev/null && break; sleep 0.1; done
+check "status finds the process running an old-layout loop" \
+  grep -q 'running.*PID' <<<"$(RALPH_HOME="$T/home-old" "$ROOT/ralph" status legacy)"
+kill "$legacy_pid" 2>/dev/null
+wait "$legacy_pid" 2>/dev/null
+
+# ---------------------------------------------------------------------------
 section "CLI through a symlink on PATH"
 
 mkdir -p "$T/bin" "$T/deep/bin"
