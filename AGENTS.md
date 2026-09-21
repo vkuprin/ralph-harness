@@ -60,6 +60,29 @@ Old-layout names are the ones that reach this, because `ralph new`'s gate never
 saw them — but `$RALPH_HOME` is in the path too and nothing vets that, so a
 pattern built from either is wrong.
 
+Nor a check in `tests/run.sh` that asserts about the whole machine. Four did —
+`! pgrep -f "sleep 99[9]"` three times and `! pgrep -f "home-soa[k]"` once — and
+each is a *negative* assertion, so any process anywhere carrying that text turns
+it red: a `sleep 999` a human typed, or a second copy of this suite. The suite is
+what a loop on this repository gives `VERIFY_CMD`, so a check that goes red for a
+reason outside the commit resets work that was fine; it did, once. The run now
+starts two such processes of its own and keeps them alive throughout, so a check
+that reaches past this run fails while it is being written rather than months
+later on somebody's laptop. Use `no_proc` (a `ps` snapshot matched with `grep -F`,
+taken *before* the match so the matching command cannot match itself),
+`sleeper_gone` (the PID the stub recorded), or `wait_proc` (one PID, `grep -F`) —
+and never a bare `pgrep -f`. The same claim one scope in: `make_loop` and
+`make_repo` refuse a fixture name this run has already used, because two sections
+sharing one has happened twice and each time the check that went red was hundreds
+of lines from the edit that caused it.
+
+Nor `cmd &` followed by a `kill` before that child has managed to exec. It is
+still *this* shell until it execs, so it runs the `EXIT` trap and deletes `$T`
+out from under a run that is still going — measured under 3.2.57 and 5.3.9 alike,
+and `$$` cannot tell the two apart, so the trap cannot defend itself. Start the
+process above the trap, as the two strangers are, or wait until `ps` can see it
+(`wait_proc`) before killing it.
+
 ## Invariants: do not change these
 
 - Every iteration is a new `claude -p`. Nothing but files crosses iterations.

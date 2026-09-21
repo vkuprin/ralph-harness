@@ -46,13 +46,24 @@ commit() {
   git commit -qm "stub: $1 (agent call $n)"
 }
 
+# nap <seconds>: sleep as a child and record its PID, so a test can ask whether
+# *this* process went with the agent's process group. A plain `sleep 999` leaves
+# a command line no test can tell from a sleep a human typed in another
+# terminal, and grepping the machine for one is how an unrelated process used to
+# fail a run.
+nap() {
+  sleep "$1" &
+  printf '%s\n' "$!" > "$d/sleeper.pid"
+  wait "$!"
+}
+
 case "$mode" in
   commit)       commit work ;;
   commit-bad)   touch BAD; commit bad ;;
   touch-frozen) echo "# edited" >> measure.sh; commit frozen ;;
   cheat)        # commits a failing change, then quietly defangs the check without committing it
                 touch BAD; commit cheat; printf '#!/bin/sh\nexit 0\n' > measure.sh ;;
-  sleep)        sleep 999 ;;
+  sleep)        nap 999 ;;
   limit)        echo "You've hit your limit · resets 3am (Europe/Berlin)"; exit 1 ;;
   fail)         echo "boom: something broke"; exit 1 ;;
   credit)       echo "Credit balance is too low"; exit 1 ;;
@@ -67,7 +78,7 @@ case "$mode" in
                 # clock the "time asleep" section puts on PATH. FAKE_WORK=999
                 # is the same jump with an agent that then really does hang.
                 echo "${FAKE_JUMP:-20000}" > "${FAKE_CLOCK:?FAKE_CLOCK not set}"
-                sleep "${FAKE_WORK:-1}"
+                nap "${FAKE_WORK:-1}"
                 commit work ;;
   grow-progress)
                 # PROGRESS.md is the agent's to rewrite, so the agent is what

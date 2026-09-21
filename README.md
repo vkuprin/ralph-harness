@@ -335,6 +335,13 @@ no network and no credentials. They drive the real loop through every verdict
 above, the CLI, the escalation, the progress cap and the steering hook. CI runs
 them on Linux and on macOS.
 
+Every check is about that run's own processes and its own temporary directory,
+so an unrelated `sleep 999` in another terminal — or a second copy of the suite —
+cannot fail it. The run proves that as it goes: it starts two such processes of
+its own and leaves them running throughout. This matters because `tests/run.sh`
+is what a loop working on this repository hands to `VERIFY_CMD`, and a check that
+goes red for a reason outside the commit resets work that was fine.
+
 ## Credits
 
 - [Geoffrey Huntley](https://ghuntley.com/ralph/) for the technique.

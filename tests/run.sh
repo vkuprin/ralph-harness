@@ -9,6 +9,9 @@
 
 # The single-quoted `bash -c '...' _ "$arg"` checks expand $1 in the child on purpose.
 # shellcheck disable=SC2016
+# `check` takes a command, so the predicates below are called by name through
+# "$@" and the cleanup runs from a trap — neither of which shellcheck can see.
+# shellcheck disable=SC2329
 
 set -uo pipefail
 
@@ -17,7 +20,34 @@ RALPH_BASH="${RALPH_BASH:-bash}"
 # cd+pwd normalises the path: macOS sets TMPDIR with a trailing slash, so mktemp
 # hands back a doubled slash, and paths the harness normalises stop matching it.
 T="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/ralph-test.XXXXXX")" && pwd)"
-trap 'rm -rf "$T"' EXIT
+
+# Strangers: processes this run does not own and must not notice. A `sleep 999`
+# is a thing a human types in another terminal, and a second copy of this suite
+# has a soak loop with `home-soak` on its command line. Both used to turn four
+# process checks below red, and this file is the harness's verify command — so
+# an unrelated process reset a commit that was fine. They run for the whole
+# suite on purpose, so every check here is made in their company.
+DEC="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/ralph-stranger.XXXXXX")" && pwd)"
+printf 'while :; do sleep 0.3; done\n' > "$DEC/home-soak-decoy.sh"
+sleep 999 & dec_sleep=$!
+"$RALPH_BASH" "$DEC/home-soak-decoy.sh" & dec_soak=$!
+
+# $T is kept when something fails, so it can be read; the strangers go either way.
+# The strangers are started above this trap on purpose. A child forked for
+# `cmd &` and killed before it has managed to exec is still *this* shell, so it
+# runs this trap and deletes $T out from under the run that is still going —
+# measured, under 3.2.57 and 5.3.9 alike. `$$` cannot tell the two apart. Start
+# a background process before the trap, or wait until ps can see it (wait_proc)
+# before killing it.
+KEEP_T=0
+cleanup() {
+  kill "$dec_sleep" "$dec_soak" 2>/dev/null
+  # Reaped here, or bash 3.2 prints a "Terminated" job notice after the summary.
+  wait "$dec_sleep" "$dec_soak" 2>/dev/null
+  rm -rf "$DEC"
+  [ "$KEEP_T" = 1 ] || rm -rf "$T"
+}
+trap cleanup EXIT
 
 export PATH="$ROOT/tests/stub:$PATH"
 export GIT_AUTHOR_NAME="ralph test" GIT_AUTHOR_EMAIL="test@example.invalid"
@@ -28,11 +58,63 @@ pass() { printf '  \033[32mok\033[0m    %s\n' "$*"; }
 fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; fails=$((fails + 1)); }
 check() { local what="$1"; shift; if "$@" >/dev/null 2>&1; then pass "$what"; else fail "$what"; fi; }
 section() { printf '\n%s\n' "$*"; }
+# `check` runs a command, and `!` is not one: this is how a check says "must not".
+not() { ! "$@"; }
 
 statuses() { tail -n +2 "$1/results.tsv" | cut -f5 | tr '\n' ' ' | sed 's/ $//'; }
 
+# A check is about this run and nothing else. `pgrep -f <text>` reads the whole
+# machine's process list, and its argument as a *regex*: a bare `sleep 999` a
+# human typed in another terminal, or a second copy of this suite, used to turn
+# these checks red. The harness runs this file as its verify command, so a red
+# check resets a commit that was fine.
+#
+# no_proc <text>: nothing on the machine is running out of this run's own
+# directory. `ps` is snapshotted before the match so the matching command's own
+# arguments cannot match themselves, and `grep -F` keeps the path literal —
+# mktemp's directory name is no more a regex than a loop's is.
+no_proc() { local snap; snap="$(ps -axww -o command= 2>/dev/null)"; ! grep -Fq -- "$1" <<<"$snap"; }
+
+# sleeper_gone <pid-file>: the sleeper this run started died with its process
+# group. The stub records the PID of the `sleep` it leaves behind, so this asks
+# about that one process instead of about "sleep 999" anywhere on the machine.
+# `ps -p` and not `kill -0` alone, so a PID the kernel has since handed to
+# something else does not read as "still running"; and an empty file is a
+# failure, because it means the stub never got as far as sleeping.
+sleeper_gone() {
+  local pid
+  pid="$(cat "$1" 2>/dev/null)"
+  [ -n "$pid" ] || return 1
+  ! ps -p "$pid" -o command= 2>/dev/null | grep -q 'sleep'
+}
+
+# wait_proc <pid> <text>: wait until ps can see this run's own process. One PID,
+# compared with grep -F, so it says nothing about any other process — waiting on
+# `pgrep -f "home-old/legacy/ralph.sh"` also matches a second copy of this suite
+# and returns before *this* one is up.
+wait_proc() {
+  local i
+  for i in $(seq 1 25); do
+    ps -p "$1" -o command= 2>/dev/null | grep -qF -- "$2" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# A fixture belongs to one section. Two sections sharing a name is the same
+# defect one scope in: a check goes red because of something it is not testing.
+# It has happened twice, each time breaking a check hundreds of lines from the
+# edit, so the second caller is refused loudly instead of quietly overwriting
+# the first.
+fresh() {
+  [ -e "$1" ] || return 0
+  fail "fixture reused: $1 — a fixture name belongs to one section"
+  return 1
+}
+
 # make_repo <dir> <remote>: a checkout of a fresh bare remote with one commit.
 make_repo() {
+  fresh "$1" && fresh "$2" || return 1
   git init -q --bare -b main "$2"
   git init -q -b main "$1"
   (
@@ -49,6 +131,7 @@ make_repo() {
 # make_loop <dir> <repo> <extra config lines...>
 make_loop() {
   local dir="$1" repo="$2"
+  fresh "$dir" || return 1
   shift 2
   mkdir -p "$dir"
   cp "$ROOT/template/PROMPT.md" "$ROOT/template/PROGRESS.md" "$dir/"
@@ -104,7 +187,7 @@ check "after 3 failures the prompt says pivot" grep -q 'Do not retry that approa
 check "a quiet iteration clears the escalation" bash -c '! grep -q "Harness: stuck" "$1"' _ "$S/prompt.agent.9"
 check "the reviewer was only asked about commits that passed verify" test "$(cat "$S/review_calls")" = 4
 check "the reviewer prompt points at the diff file" grep -q 'review.diff' "$S/prompt.review.1"
-check "timeout killed the agent's process group" bash -c '! pgrep -f "sleep 99[9]" >/dev/null'
+check "timeout killed the agent's process group" sleeper_gone "$S/sleeper.pid"
 check "usage-limit reason recorded" grep -q "hit your limit" "$T/loops/a/results.tsv"
 check "no harness variable leaks into the agent's environment" test ! -s "$S/leaked-env"
 check "no harness variable leaks into VERIFY_CMD" bash -c '! grep -q "^BOUNDED_" "$1"' _ "$T/loops/a/verify-env"
@@ -186,7 +269,7 @@ check "steer reaches the running iteration (STEER.md)" grep -q 'login flow' "$RA
 check "steer holds for later iterations (PROMPT.md)" grep -q 'login flow' "$RALPH_HOME/demo/PROMPT.md"
 "$ROOT/ralph" stop demo >/dev/null
 check "stop ends the loop" bash -c '"$1" status demo | grep -q stopped' _ "$ROOT/ralph"
-check "stop kills the agent's process group" bash -c '! pgrep -f "sleep 99[9]" >/dev/null'
+check "stop kills the agent's process group" sleeper_gone "$S/sleeper.pid"
 check "the loop logged why it stopped" grep -q 'stopped by signal' "$RALPH_HOME/demo/ralph.log"
 check "the lock is released" test ! -e "$RALPH_HOME/demo/ralph.lock"
 cp "$T/loops/a/results.tsv" "$RALPH_HOME/demo/results.tsv"
@@ -388,7 +471,7 @@ check "the guide lists old-layout loops too" \
   grep -q 'legacy (old layout)' <<<"$(RALPH_HOME="$T/home-old" "$ROOT/ralph")"
 
 "$RALPH_BASH" "$T/home-old/legacy/ralph.sh" & legacy_pid=$!
-for _ in $(seq 1 25); do pgrep -f "home-old/legacy/ralph.sh" >/dev/null && break; sleep 0.1; done
+wait_proc "$legacy_pid" "$T/home-old/legacy/ralph.sh"
 check "status finds the process running an old-layout loop" \
   grep -q 'running.*PID' <<<"$(RALPH_HOME="$T/home-old" "$ROOT/ralph" status legacy)"
 kill "$legacy_pid" 2>/dev/null
@@ -419,7 +502,7 @@ check "review sends an old-layout loop to migrate instead of denying it exists" 
   bash -c 'RALPH_HOME="$1/home-m" "$2" review legacy 2>&1 | grep -q "ralph migrate legacy"' _ "$T" "$ROOT/ralph"
 
 "$RALPH_BASH" "$T/home-m/legacy/ralph.sh" & legacy_pid=$!
-for _ in $(seq 1 25); do pgrep -f "home-m/legacy/ralph.sh" >/dev/null && break; sleep 0.1; done
+wait_proc "$legacy_pid" "$T/home-m/legacy/ralph.sh"
 check "migrate refuses while the loop is running" \
   bash -c '! RALPH_HOME="$1/home-m" "$2" migrate legacy' _ "$T" "$ROOT/ralph"
 check "and left the running loop's ralph.sh where it was" test -f "$T/home-m/legacy/ralph.sh"
@@ -656,7 +739,7 @@ run_slept "$T/loops/susp2" "$S" 999
 
 check "an agent that hangs after the suspend is still killed" \
   test "$(statuses "$T/loops/susp2")" = "timeout"
-check "and its process group went with it" bash -c '! pgrep -f "sleep 99[9]" >/dev/null'
+check "and its process group went with it" sleeper_gone "$S/sleeper.pid"
 
 # VERIFY_CMD runs through the same bound, and so does the push.
 S="$T/stub-susp3"; mkdir -p "$S"
@@ -718,7 +801,7 @@ check "the progress cap says its piece once, not once per iteration" \
   test "$(cat "$D"/ralph.log* | grep -c 'progress cap')" -le 1
 check "PROGRESS.md is still the file it started as" \
   bash -c 'grep -q "^## Needs a decision" "$1" && test "$(wc -c < "$1")" -lt 8000' _ "$D/PROGRESS.md"
-check "no process was left behind" bash -c '! pgrep -f "home-soa[k]" >/dev/null'
+check "no process was left behind" no_proc "$RALPH_HOME"
 check "the lock is released" test ! -e "$D/ralph.lock"
 unset RALPH_HOME
 
@@ -1409,17 +1492,12 @@ make_old() {
   chmod +x "$d/ralph.sh" "$d/$s"
 }
 
-# start_old <name> [script]: run it, and wait until ps can see it. The wait
-# looks at this run's own PID and compares with grep -F, so it says nothing
-# about any other process on the machine.
+# start_old <name> [script]: run it, and wait until ps can see it.
 start_old() {
-  local d="$RALPH_HOME/$1" s="${2:-ralph.sh}" i
+  local d="$RALPH_HOME/$1" s="${2:-ralph.sh}"
   "$RALPH_BASH" "$d/$s" >/dev/null 2>&1 &
   old_bg=$!
-  for i in $(seq 1 25); do
-    ps -p "$old_bg" -o command= 2>/dev/null | grep -qF "$d/$s" && break
-    sleep 0.1
-  done
+  wait_proc "$old_bg" "$d/$s"
 }
 stop_old() { kill "$old_bg" 2>/dev/null; wait "$old_bg" 2>/dev/null; }
 # state_line colours "running", so the escape has to come off before the PID
@@ -1487,11 +1565,73 @@ stop_old
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------
+section "a check is about this run and nothing else"
+
+# Four checks above used to assert about the whole machine: `! pgrep -f "sleep
+# 99[9]"` three times and `! pgrep -f "home-soa[k]"` once. Each is a *negative*
+# assertion, so anything else on the box with that text on its command line
+# turns it red — a sleep a human typed, or a second copy of this suite, which is
+# how a green run came back with a fifth failure that was not real. This file is
+# what the harness runs to judge a commit, so that reset work which was fine.
+#
+# The strangers started at the top of this file have been running throughout, so
+# those four checks have already been made in their company. These say the
+# strangers were really there, and that the shapes that replaced `pgrep` refuse
+# and accept the right things.
+
+check "the stranger's sleep 999 ran for the whole suite" kill -0 "$dec_sleep"
+check "and so did the stranger whose command line holds home-soak" kill -0 "$dec_soak"
+check "the pattern those four checks used really does match the strangers" \
+  bash -c 'pgrep -f "sleep 99[9]" | grep -qx "$1" && pgrep -f "home-soa[k]" | grep -qx "$2"' \
+  _ "$dec_sleep" "$dec_soak"
+
+# sleeper_gone asks about the one PID the stub recorded, which is how the three
+# checks above told this run's sleeper from the stranger's.
+echo "$dec_sleep" > "$T/live.pid"
+: > "$T/empty.pid"
+check "the sleeper the timeout killed reads as gone with a stranger's still running" \
+  sleeper_gone "$T/stub-a/sleeper.pid"
+check "the stranger's own PID does not read as gone" not sleeper_gone "$T/live.pid"
+check "and a stub that never recorded one is not a pass either" not sleeper_gone "$T/empty.pid"
+
+# no_proc matches this run's own directory, literally.
+"$RALPH_BASH" -c 'while :; do sleep 0.3; done' "$T/guard-home-soak" & guard_pid=$!
+wait_proc "$guard_pid" "$T/guard-home-soak"
+check "a live process under this run's own directory is found" not no_proc "$T/guard-home-soak"
+check "a stranger's home-soak does not answer for this run's" no_proc "$T/home-soak"
+check "the directory is matched literally, not as a regex" no_proc "$T/guard-h.me-soak"
+
+# wait_proc waits on a PID, so a stranger holding the text cannot end the wait.
+check "a process this run started is waited for" wait_proc "$guard_pid" "$T/guard-home-soak"
+check "but another process holding that text does not end the wait" \
+  not wait_proc "$dec_sleep" "$T/guard-home-soak"
+kill "$guard_pid" 2>/dev/null
+wait "$guard_pid" 2>/dev/null
+
+# The same claim one scope in: a fixture belongs to one section. Two sections
+# sharing a name has happened twice, and each time the check that went red was
+# hundreds of lines from the edit that caused it.
+dup_rc=0; ( make_loop "$T/loops/a" "$T/app" 'MAX_ITER=1' ) >/dev/null 2>&1 || dup_rc=$?
+check "make_loop refuses a name another section already used" test "$dup_rc" != 0
+check "and the loop that name belongs to is untouched" \
+  grep -q 'MAX_ITER=10' "$T/loops/a/config.sh"
+# make_repo over a checkout another section owns is the destructive half: it
+# rewrites work.txt, commits, and — since `git remote add origin` fails on a
+# checkout that has one — pushes that to the *first* section's remote.
+dup_rc=0; ( make_repo "$T/app-c" "$T/remote-dup.git" ) >/dev/null 2>&1 || dup_rc=$?
+check "make_repo refuses one too" test "$dup_rc" != 0
+check "and made no remote on the way out" test ! -e "$T/remote-dup.git"
+check "and the checkout that name belongs to still has its history" \
+  grep -q 'work 1' "$T/app-c/work.txt"
+make_loop "$T/loops/dup-ok" "$T/app" 'MAX_ITER=1'
+check "a name no section has used is still made" test -f "$T/loops/dup-ok/config.sh"
+
+# ---------------------------------------------------------------------------
 echo
 if [ "$fails" -eq 0 ]; then
   printf '\033[32mall tests passed\033[0m\n'
 else
   printf '\033[31m%s test(s) failed\033[0m — loop output is in the ralph.out and ralph.log files under %s\n' "$fails" "$T"
-  trap - EXIT
+  KEEP_T=1
 fi
 exit "$fails"
