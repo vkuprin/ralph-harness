@@ -100,7 +100,11 @@ flowchart TD
 1. The prompt is `PROMPT.md` (re-read every time, so edits land on the next
    iteration), then `PROGRESS.md`, then the last ten harness verdicts. Where
    `PROGRESS.md` claims something shipped and the verdicts say it was reset,
-   the verdicts win.
+   the verdicts win. Both files are checked before every iteration, not only at
+   the start: if one has gone missing or become unreadable the loop stops and
+   says which. Half a prompt is not a prompt — without `PROMPT.md` the next
+   agent would be handed its own notes and "Run one iteration now", with no job
+   at all. Put the file back and start the loop again.
 2. The agent works in its own git worktree on branch `ralph/<name>`, next to your
    repository. It commits; it cannot push.
 3. When it exits, the harness throws away anything left uncommitted. An
@@ -319,6 +323,12 @@ user can. The harness narrows what that can do to your code, not to your machine
 - Every run (agent, `VERIFY_CMD`, reviewer, push) has a timeout and its own
   process group, so a timeout or `ralph stop` also ends the test runners and dev
   servers it started.
+- The agent can write in the loop directory — it is told to rewrite
+  `PROGRESS.md` there — so it can also take `PROMPT.md` away. It is read again
+  before every iteration, and a loop with no job stops instead of running an
+  unprompted agent. The reviewer reads it for the job it judges against, so with
+  it gone the reviewer is not asked at all: that iteration takes the
+  reviewer-unavailable path rather than an ACCEPT that means nothing.
 
 If the loop can reach production, say in `PROMPT.md` what it must never write
 to. For stronger isolation, run the whole thing inside a container or a VM.

@@ -1101,6 +1101,70 @@ check "and the default bound is not so tight that a real PROGRESS.md meets it" \
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------
+section "a file the harness re-reads every iteration, gone mid-run"
+
+# PROMPT.md and PROGRESS.md are checked once, at the start, and then read again
+# on every iteration: build_prompt reads both, and the reviewer reads PROMPT.md
+# for the job it judges against. Nothing ever looked a second time. The agent
+# has write access to the loop directory — it is told to rewrite PROGRESS.md
+# there — so one of them going missing mid-run is not exotic, and the harness
+# carried on: with PROMPT.md gone the next agent was handed its own notes, the
+# verdict table and "Run one iteration now", with no job at all, under
+# --dangerously-skip-permissions.
+make_repo "$T/app-gone" "$T/remote-gone.git"
+S="$T/stub-gone"; mkdir -p "$S"
+printf '%s\n' drop-prompt commit commit nothing > "$S/modes"
+printf '%s\n' ACCEPT ACCEPT ACCEPT ACCEPT > "$S/verdicts"
+make_loop "$T/loops/gone" "$T/app-gone" \
+  'WORKTREE=1 REVIEW=1 MAX_ITER=4' 'VERIFY_CMD="./measure.sh"'
+run_loop "$T/loops/gone" "$S"
+
+check "the loop stops rather than run an agent with no job" \
+  test "$(cat "$S/agent_calls")" = 1
+check "the log names the file it could not read" \
+  grep -q 'stopping: PROMPT.md is gone' "$T/loops/gone/ralph.log"
+check "no prompt reached the agent without the job in it" \
+  bash -c 'for f in "$1"/prompt.agent.*; do grep -q "^## The job" "$f" || exit 1; done' _ "$S"
+# Asked with no job, the reviewer judges the diff against an empty brief and
+# cannot say "not what the loop asked for" — the one thing it is there for.
+check "the reviewer is never asked to judge against a job that is not there" \
+  test "$(cat "$S/review_calls" 2>/dev/null || echo 0)" = 0
+check "the commit made in that iteration still ships, marked unreviewed" \
+  test "$(statuses "$T/loops/gone")" = "keep:unreviewed"
+check "and the recorded reason says why there was no review" \
+  grep -q 'no job to review against' "$T/loops/gone/results.tsv"
+
+# The same hole in the other file, and its symptom is a lie rather than a
+# silence: with PROGRESS.md gone, wc -c printed nothing, the byte comparison
+# errored, and every later prompt told the agent its memory had been cut off at
+# "" bytes and to read the rest on disk — of a file that is not there.
+S="$T/stub-gone2"; mkdir -p "$S"
+printf '%s\n' drop-progress nothing nothing nothing > "$S/modes"
+make_loop "$T/loops/gone2" "$T/app-gone" 'MAX_ITER=4'
+run_loop "$T/loops/gone2" "$S"
+
+check "the loop stops when its memory is gone too" \
+  test "$(cat "$S/agent_calls")" = 1
+check "the log names PROGRESS.md" \
+  grep -q 'stopping: PROGRESS.md is gone' "$T/loops/gone2/ralph.log"
+check "no prompt claims the memory was clipped when there is no memory" \
+  bash -c 'for f in "$1"/prompt.agent.*; do ! grep -q "Cut off here" "$f" || exit 1; done' _ "$S"
+
+# The guard, and the reason it is here: -s is the tempting test and it is the
+# wrong one. A loop whose agent has not written its first entry yet has an
+# empty PROGRESS.md, and it must still run.
+S="$T/stub-gone3"; mkdir -p "$S"
+printf '%s\n' nothing nothing nothing > "$S/modes"
+make_loop "$T/loops/gone3" "$T/app-gone" 'MAX_ITER=3'
+: > "$T/loops/gone3/PROGRESS.md"
+run_loop "$T/loops/gone3" "$S"
+
+check "an empty PROGRESS.md is not a missing one" \
+  test "$(cat "$S/agent_calls")" = 3
+check "a loop with both files ends at MAX_ITER, not at this check" \
+  grep -q 'hit MAX_ITER=3' "$T/loops/gone3/ralph.log"
+
+# ---------------------------------------------------------------------------
 section "CLI through a symlink on PATH"
 
 mkdir -p "$T/bin" "$T/deep/bin"

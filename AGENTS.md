@@ -119,6 +119,24 @@ process above the trap, as the two strangers are, or wait until `ps` can see it
   committing into the user's own checkout. Do not soften this to a warning. Judge
   the parse and not what sourcing returns: `[ -d x ] && ADD_DIRS=(x)` exits
   non-zero and is a valid config.
+- A job the harness could not read is not a job. `PROMPT.md` and `PROGRESS.md`
+  are checked by `have_files` before **every** iteration, not only at the start,
+  and a loop missing one stops. They are the only two files re-read every
+  iteration (`config.sh` is read once on purpose — a restart is how a setting
+  changes), and the agent can write in the loop directory, because it is told to
+  rewrite `PROGRESS.md` there. Without the check the harness carried on: with
+  `PROMPT.md` gone the next agent got its own notes, the verdict table and "Run
+  one iteration now" — no job, under `--dangerously-skip-permissions`; with
+  `PROGRESS.md` gone the prompt told it its memory had been clipped at `""`
+  bytes and to read the rest on disk, of a file that is not there. Three things
+  read like redundancy and are not. The start still calls `have_files` too, and
+  deleting either call leaves the other hole. `-f` **and** `-r`, because a
+  directory is readable and cannot be `cat`'d. And `review()` calls it again for
+  itself: a reviewer asked with an empty brief still answers, and its ACCEPT
+  cannot mean "this is what the loop asked for", so that iteration takes the
+  existing reviewer-unavailable path instead. The loop stops one iteration
+  later, so dropping the `review()` call looks harmless and ships one commit
+  nobody judged.
 - A scaffold the harness could not write is not a scaffold. `ralph new` judges
   the loop name before it writes anything and fails loudly rather than leaving
   a loop that only breaks later, somewhere else. Two rules, and the second is

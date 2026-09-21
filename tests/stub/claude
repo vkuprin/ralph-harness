@@ -104,6 +104,17 @@ case "$mode" in
                 commit work
                 b="$(git rev-parse --abbrev-ref HEAD)"
                 git branch -m "$b" "$b/sub" ;;
+  drop-prompt)  # PROMPT.md is the job, and the harness re-reads it every
+                # iteration. The agent is told to rewrite PROGRESS.md in the
+                # loop directory, so it has write access to PROMPT.md beside
+                # it; this is that access used by accident. It commits too, so
+                # the gates — including the reviewer, which reads PROMPT.md for
+                # the job — run in the same iteration.
+                rm -f "$(dirname "$RALPH_STEER_FILE")/PROMPT.md"
+                commit work ;;
+  drop-progress) # The loop's whole memory, gone. No commit, so this iteration
+                # is quiet and only the next prompt shows the damage.
+                rm -f "$(dirname "$RALPH_STEER_FILE")/PROGRESS.md" ;;
   push-attempt) commit pushed
                 git push -q origin HEAD:main >/dev/null 2>&1
                 echo "$?" > "$d/push-attempt.rc"

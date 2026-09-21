@@ -38,9 +38,32 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 # terminal still hears it.
 exec 2>>"$LOG"
 
-for f in config.sh PROMPT.md PROGRESS.md; do
-  [ -f "$DIR/$f" ] || { log "ralph: loop is missing $f: $DIR/$f"; exit 2; }
-done
+# have_files <name...>: every one of them is a regular file this process can
+# read. Names the first that is not in MISSING_FILE, so the caller can say
+# which. `-f` as well as `-r`, because a directory is readable and cannot be
+# cat'd; a loop directory holding a PROMPT.md/ is still a loop with no job.
+#
+# Called at the start and again before every iteration, and that is the point.
+# config.sh is read once on purpose — a restart is how a setting changes — but
+# PROMPT.md and PROGRESS.md are re-read for every prompt, and the reviewer
+# re-reads PROMPT.md for the job it judges against. Nothing looked a second
+# time, and the agent can write in this directory: it is told to rewrite
+# PROGRESS.md here. So one of them could go, and the harness carried on. With
+# PROMPT.md gone the next agent got its own notes, the verdict table and "Run
+# one iteration now" — no job at all, under --dangerously-skip-permissions.
+# With PROGRESS.md gone the prompt told it its memory had been clipped at ""
+# bytes and to read the rest on disk, of a file that is not there.
+MISSING_FILE=""
+have_files() {
+  local f
+  for f in "$@"; do
+    if [ ! -f "$DIR/$f" ] || [ ! -r "$DIR/$f" ]; then MISSING_FILE="$f"; return 1; fi
+  done
+  return 0
+}
+
+have_files config.sh PROMPT.md PROGRESS.md \
+  || { log "ralph: loop is missing $MISSING_FILE: $DIR/$MISSING_FILE"; exit 2; }
 
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -538,6 +561,18 @@ REVIEW_LIMIT_TRIED=0
 review() {
   local before="$1" job steering
   REVIEW_LIMIT_TRIED=0
+  # A job the harness cannot read is not a job. Asked with an empty brief the
+  # reviewer still answers, and the answer is worth nothing: it cannot say
+  # "this is not what the loop asked for", which is the one thing it is here
+  # for, so an ACCEPT out of it would ship work nobody judged. Hand it to the
+  # unavailable path below, which is the harness's existing answer to a
+  # reviewer it cannot get — and do it before spending the call. The loop
+  # itself stops at the top of the next iteration.
+  if ! have_files PROMPT.md; then
+    REVIEW_STATUS=unavailable
+    GATE_REASON="$MISSING_FILE is gone, so there is no job to review against"
+    return 0
+  fi
   { git diff --stat "$before" HEAD; echo; git diff "$before" HEAD; } | head -c 200000 > "$DIR/review.diff"
   job="$(awk '/^## The job/{f=1; next} /^## /{f=0} f' "$DIR/PROMPT.md")"
   # A PROMPT.md written without that heading is still the job. Better the
@@ -733,6 +768,15 @@ while :; do
   if [ "$iter" -gt "$MAX_ITER" ]; then
     iter=$((iter - 1))   # this one never ran; do not count it
     log "stopping: hit MAX_ITER=$MAX_ITER"
+    break
+  fi
+  # The other gate on whether this iteration runs at all. Refusing is the same
+  # answer the start gives, for the same reason: half a prompt is not a prompt,
+  # and an agent handed one under --dangerously-skip-permissions does something
+  # with it. A human who wants the loop back puts the file back and restarts.
+  if ! have_files PROMPT.md PROGRESS.md; then
+    iter=$((iter - 1))   # this one never ran; do not count it
+    log "stopping: $MISSING_FILE is gone or unreadable at $DIR/$MISSING_FILE — every iteration re-reads it, and the harness will not run an agent without it"
     break
   fi
 
