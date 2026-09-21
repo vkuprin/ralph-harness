@@ -1,0 +1,24 @@
+README.md
+  s_efc28c126bc5b9::t_7ff205a4f7fe4d 148,150
+tests/run.sh
+  s_efc28c126bc5b9::t_f80a56aca39410 111-114,187-191
+ralph
+  s_efc28c126bc5b9::t_873029a92c8390 243-244
+  s_efc28c126bc5b9::t_92cb59577e5119 3-4,6-12,17-18,24,129-143,152,155,214-242,245-274,328,332-344
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "3b76b57daf6ad9d258c7bf449963f0cbacd38b6f",
+  "prompts": {},
+  "sessions": {
+    "s_efc28c126bc5b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9dfe7d39-b0c9-412c-bdf8-b4710d1b8016",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
