@@ -1,0 +1,31 @@
+.gitignore
+  s_a4d63ab683cc56::t_3051af7ad66214 1-2
+README.md
+  s_a4d63ab683cc56::t_c495aad4029b07 1-105
+ralph
+  s_a4d63ab683cc56::t_f08375b6244326 1-202
+ralph.sh
+  s_a4d63ab683cc56::t_5b1f777e5a7356 1-114
+template/PROGRESS.md
+  s_a4d63ab683cc56::t_b0f0b36de3bb0c 1-20
+template/PROMPT.md
+  s_a4d63ab683cc56::t_372668e3eaa2c7 1-44
+template/config.sh
+  s_a4d63ab683cc56::t_8d8197441d573c 1-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "92bea50e312589d00ef8f83d4af75e24b0dda65c",
+  "prompts": {},
+  "sessions": {
+    "s_a4d63ab683cc56": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7637e099-50bb-4ea1-ae18-fa814f64e043",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
