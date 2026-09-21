@@ -40,4 +40,11 @@ No `wait -n`, `${x,,}`, `mapfile`, `declare -A` or other bash-4-only syntax.
 - Loop state lives in `$RALPH_HOME/<name>/`, never in the target repository.
 - Anything that can discard commits runs only in the harness-owned worktree
   (`WORKTREE=1`), never in the user's own checkout.
+- A setting the harness could not read is not a default. `config.sh` is checked
+  with `bash -n` and a file that does not parse refuses the start, because
+  sourcing one runs the lines before the error and silently leaves the rest at
+  their defaults — which is how a loop written for a gated worktree ends up
+  committing into the user's own checkout. Do not soften this to a warning. Judge
+  the parse and not what sourcing returns: `[ -d x ] && ADD_DIRS=(x)` exits
+  non-zero and is a valid config.
 - Defaults keep a loop written for an older version behaving the same.

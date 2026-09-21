@@ -187,8 +187,12 @@ not reset when it rotates. Lower `LOG_KEEP` and the files above the new number
 are removed at the next rotation, so the total stays where you set it.
 
 `ralph.log` is the whole story: the harness's own errors go there as well, not
-only the agent's output. `ralph start` also leaves a `ralph.out` beside it with
-the progress lines in it, but nothing you need is there alone.
+only the agent's output, and that includes the ones from before the first
+iteration. A loop that cannot start — no `REPO`, a `REPO` that is not a checkout,
+a missing `PROGRESS.md` — says why in the log, because `ralph start` puts it in
+the background and the CLI has already printed `started <name> as PID N` by the
+time it dies. `ralph start` also leaves a `ralph.out` beside it with the progress
+lines in it, but nothing you need is there alone.
 
 What the gates throw away is bounded too, and that one grows in your repository
 rather than in the loop directory. A reverted or dropped commit is kept under
@@ -225,6 +229,14 @@ loop is running, and refuses a loop that already has a `config.sh`.
 writes one with the values in the first column. A setting left out takes the value
 in the second, which is how a loop written for an earlier version keeps behaving
 the same.
+
+A setting the harness could not read is not one you left out. Bash abandons the
+rest of a file it cannot parse, so a stray bracket used to leave every setting
+below it at its default — most of all `WORKTREE=0`, which puts an ungated loop in
+your own checkout. A `config.sh` that does not parse now refuses the start, and
+both the harness's reason and bash's own line number go to `ralph.log`. Only the
+parse is judged, not what sourcing returns: a config ending in a false test, like
+`[ -d vendor ] && ADD_DIRS=(vendor)`, has always been fine and still starts.
 
 | Setting | `ralph new` | If unset | What it does |
 | --- | --- | --- | --- |

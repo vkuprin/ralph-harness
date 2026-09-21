@@ -25,8 +25,21 @@ arg="${1:-${RALPH_LOOP:-}}"
 [ -n "$arg" ] || { echo "usage: ralph.sh <loop-dir>" >&2; exit 2; }
 DIR="$(cd "${arg%/}" 2>/dev/null && pwd)" || { echo "ralph: no such loop directory: $arg" >&2; exit 2; }
 
+LOG="$DIR/ralph.log"
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
+
+# The harness's own errors belong in ralph.log, which is where `ralph log`,
+# `ralph tail` and `ralph status` read and where a human is sent. Everything it
+# said before this line went to the inherited stderr instead, and `ralph start`
+# points that at ralph.out: the CLI printed "started <name> as PID N", the loop
+# was gone a second later, and `ralph log` answered "no log yet". So the
+# redirect goes as early as the log's name is known, and the fatals below say
+# their piece through log(), which tees to stdout as well so a hand-run in a
+# terminal still hears it.
+exec 2>>"$LOG"
+
 for f in config.sh PROMPT.md PROGRESS.md; do
-  [ -f "$DIR/$f" ] || { echo "ralph: loop is missing $f: $DIR/$f" >&2; exit 2; }
+  [ -f "$DIR/$f" ] || { log "ralph: loop is missing $f: $DIR/$f"; exit 2; }
 done
 
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,7 +63,7 @@ lock_held() {
   return 1
 }
 if [ -f "$LOCK" ] && lock_held; then
-  echo "ralph: this loop is already running as PID $(cat "$LOCK"): $DIR" >&2
+  log "ralph: this loop is already running as PID $(cat "$LOCK"): $DIR"
   exit 2
 fi
 echo $$ > "$LOCK"
@@ -98,28 +111,29 @@ REF_KEEP=20
 # "429" is never misread. A limit is waited out, never counted as a failure.
 RATE_LIMIT_RE='hit your ([a-z]+ )?limit|usage limit|(weekly|session|[0-9]+-hour) limit|rate_limit_error|overloaded_error|API Error: (429|529)|credit balance is too low|spend limit|insufficient_quota'
 
+# Sourcing a file that does not parse runs the commands before the error,
+# abandons the rest and returns non-zero — and nothing checked that, so every
+# setting after a stray bracket was silently left at its harness default. A
+# loop written for a gated worktree then ran with WORKTREE=0 and committed
+# straight into the user's own checkout. Half a config is not a config, so
+# refuse. The parse alone is checked, and not the source's exit status: a
+# config.sh ending in `[ -d x ] && ADD_DIRS=(x)` returns non-zero when the
+# directory is absent, and it has always been a working config. $BASH, so it is
+# judged by the same bash that is about to read it.
+if ! "${BASH:-bash}" -n "$DIR/config.sh"; then
+  log "ralph: $DIR/config.sh does not parse (bash said so above) — refusing to start with only the settings before the error"
+  exit 2
+fi
 # shellcheck disable=SC1091
 . "$DIR/config.sh"
 
-[ -n "${REPO:-}" ] || { echo "ralph: config.sh must set REPO" >&2; exit 2; }
-[ -e "$REPO/.git" ] || { echo "ralph: REPO is not a git checkout: $REPO" >&2; exit 2; }
+[ -n "${REPO:-}" ] || { log "ralph: config.sh must set REPO"; exit 2; }
+[ -e "$REPO/.git" ] || { log "ralph: REPO is not a git checkout: $REPO"; exit 2; }
 
-LOG="$DIR/ralph.log"
 RESULTS="$DIR/results.tsv"
 PROMPT_FILE="$DIR/.prompt"
 NAME="$(basename "$DIR")"
 WORK="$REPO"
-
-# Everything the harness starts is redirected into the log by hand, but the git
-# it runs in passing — clean_tree, revert_to, save_ref, the rev-parses in sync —
-# writes to the inherited stderr, which `ralph start` points at ralph.out.
-# `ralph log` and `ralph tail` read ralph.log, so none of that was anywhere a
-# reader is told to look: a run that stopped with "fix the worktree by hand"
-# gave its reason to a file nothing reads. One redirect here catches the next
-# such command too. ralph.out keeps the copy log() tees to stdout.
-exec 2>>"$LOG"
-
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
 # Every agent's whole output goes into ralph.log, so a loop left running for days
 # writes gigabytes into one file that nothing can then read. Rotate it between

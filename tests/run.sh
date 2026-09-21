@@ -741,6 +741,91 @@ check "ralph log shows it" bash -c '"$1" log err 60 | grep -q "cannot lock ref"'
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------
+section "a loop that cannot start says why where the reader is sent"
+
+# The startup half of the section above. Everything ralph.sh says before its
+# first iteration went to stderr alone, and `ralph start` points stderr at
+# ralph.out: the CLI printed "started boot1 as PID N", the loop was gone a
+# second later, `ralph status` said "stopped" and `ralph log` said "no log yet".
+# Nothing anywhere told the reader why.
+make_repo "$T/app-boot" "$T/remote-boot.git"
+S="$T/stub-boot"; mkdir -p "$S"
+export RALPH_HOME="$T/home-boot"
+mkdir -p "$RALPH_HOME"
+
+boot_loop() {
+  local d="$RALPH_HOME/$1"; shift
+  mkdir -p "$d"
+  cp "$ROOT/template/PROMPT.md" "$ROOT/template/PROGRESS.md" "$d/"
+  printf '%s\n' "$@" > "$d/config.sh"
+}
+
+boot_loop boot1 'MAX_ITER=1'   # no REPO
+B="$RALPH_HOME/boot1"
+"$RALPH_BASH" "$ROOT/ralph.sh" "$B" > "$B/out" 2> "$B/err"; boot1_rc=$?
+
+check "a loop with no REPO still exits 2" test "$boot1_rc" = 2
+check "the reason still reaches a terminal, so the log is not a hiding place" \
+  bash -c 'cat "$1/out" "$1/err" | grep -q "must set REPO"' _ "$B"
+check "the reason reaches ralph.log" grep -q 'must set REPO' "$B/ralph.log"
+check "ralph log shows it" bash -c '"$1" log boot1 | grep -q "must set REPO"' _ "$ROOT/ralph"
+# loop_conf leaves the work directory empty when config.sh names no REPO, and
+# `git -C ""` is documented to leave the working directory alone — so status
+# reported whatever repository the reader happened to be standing in as this
+# loop's HEAD.
+check "status does not credit it with the HEAD of wherever you are standing" \
+  bash -c 'cd "$1" && ! "$2" status boot1 | grep -q "HEAD  "' _ "$ROOT" "$ROOT/ralph"
+
+boot_loop boot2 "REPO=\"$T/not-a-repo\""
+B="$RALPH_HOME/boot2"
+"$RALPH_BASH" "$ROOT/ralph.sh" "$B" >/dev/null 2>&1
+check "a REPO that is not a checkout says so in the log" \
+  grep -q 'not a git checkout' "$B/ralph.log"
+
+B="$RALPH_HOME/boot3"; mkdir -p "$B"
+cp "$ROOT/template/PROMPT.md" "$B/"
+printf 'REPO="%s"\n' "$T/app-boot" > "$B/config.sh"
+"$RALPH_BASH" "$ROOT/ralph.sh" "$B" >/dev/null 2>&1
+check "a loop missing PROGRESS.md says so in the log" \
+  grep -q 'missing PROGRESS.md' "$B/ralph.log"
+
+# The one with teeth, and the one no call site could have been annotated for.
+# Sourcing a config.sh that does not parse abandons the rest of the file and
+# returns non-zero, which nothing checked: the loop ran on with every setting
+# after the broken line silently at its harness default. Here that means
+# WORKTREE=0, so a loop written to work in a gated worktree instead committed
+# straight into the user's own checkout, ungated, and said nothing.
+boot_loop boot4 "REPO=\"$T/app-boot\"" 'QUIET_SLEEP=0 STEP_SLEEP=0 MAX_ITER=1' \
+  'if [ 1 ; then' 'WORKTREE=1'
+B="$RALPH_HOME/boot4"
+printf '%s\n' commit > "$S/modes"
+boot_head="$(git -C "$T/app-boot" rev-parse HEAD)"
+STUB_DIR="$S" "$RALPH_BASH" "$ROOT/ralph.sh" "$B" > "$B/out" 2> "$B/err"; boot4_rc=$?
+
+check "a config.sh that does not parse stops the loop" test "$boot4_rc" = 2
+check "the log names the file" grep -q 'config.sh' "$B/ralph.log"
+check "bash's own reason is in the log too" grep -q 'syntax error' "$B/ralph.log"
+check "no iteration ran with half the settings applied" \
+  bash -c '! grep -q "=== iteration" "$1/ralph.log"' _ "$B"
+check "the repository it would have committed into is untouched" \
+  bash -c 'test "$(git -C "$1" rev-parse HEAD)" = "$2"' _ "$T/app-boot" "$boot_head"
+
+# The guard. A config.sh whose last command merely returns non-zero is not a
+# broken one — `[ -d x ] && ADD_DIRS=(x)` is the shape — so only the parse is
+# checked, and a loop that has always started must go on starting.
+boot_loop boot5 "REPO=\"$T/app-boot\"" \
+  'QUIET_SLEEP=0 STEP_SLEEP=0 MAX_ITER=1 WORKTREE=1' \
+  '[ -d /no/such/directory ] && ADD_DIRS=(/no/such/directory)'
+B="$RALPH_HOME/boot5"
+printf '%s\n' nothing > "$S/modes"
+run_loop "$B" "$S"
+check "a config.sh ending in a false test still starts" \
+  grep -q '=== iteration 1' "$B/ralph.log"
+check "a healthy start says nothing about config.sh" \
+  bash -c '! grep -q "config.sh" "$1/ralph.log"' _ "$B"
+unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
 section "the prompt is bounded whatever shape PROGRESS.md is in"
 
 # PROGRESS_KEEP counts '### ' entries under a '## Log' heading, and the agent is

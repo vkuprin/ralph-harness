@@ -347,8 +347,12 @@ status_one() {
     [ -n "$verdicts" ] && printf '  verdicts    %s\n' "$verdicts"
   fi
   status_last "$dir"
-  local head
-  head="$(git -C "$work" log --oneline -1 2>/dev/null)"
+  # No REPO in config.sh leaves the work directory empty, and `git -C ""` is
+  # documented to leave the working directory alone — so a loop that died on
+  # its own config was reported with the HEAD of whatever repository the reader
+  # happened to be standing in, as if it were the loop's.
+  local head=""
+  [ -n "$work" ] && head="$(git -C "$work" log --oneline -1 2>/dev/null)"
   [ -n "$head" ] && printf '  HEAD        %s\n' "$head"
   echo
 }
