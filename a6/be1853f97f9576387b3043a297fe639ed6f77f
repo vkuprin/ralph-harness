@@ -1,0 +1,29 @@
+LICENSE
+  s_efc28c126bc5b9::t_82695921d97ed4 1-24
+README.md
+  s_efc28c126bc5b9::t_407b9f3b01c077 194-195,232
+  s_efc28c126bc5b9::t_53b57cbb914fe1 3,5-6,8-9,12-13,16,19-26,45-69,71-89,92-125,127-137,139-180,186-193,196-206,208-211,213-231,233-236
+  s_efc28c126bc5b9::t_b30e32c211a125 27-44,70,181-185
+AGENTS.md
+  s_efc28c126bc5b9::t_82695921d97ed4 1-21,23-33
+  s_efc28c126bc5b9::t_6c984b534a411d 22
+.github/workflows/test.yml
+  s_efc28c126bc5b9::t_82695921d97ed4 1-8,11-14,17,28-31
+  s_efc28c126bc5b9::t_407b9f3b01c077 9-10,15-16,18-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a6be1853f97f9576387b3043a297fe639ed6f77f",
+  "prompts": {},
+  "sessions": {
+    "s_efc28c126bc5b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9dfe7d39-b0c9-412c-bdf8-b4710d1b8016",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
