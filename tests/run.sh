@@ -463,6 +463,47 @@ check "and its commit reached origin" \
   grep -q 'stub: work' <(git -C "$T/remote-n.git" log --format=%s main)
 
 # ---------------------------------------------------------------------------
+section "days, not minutes: a soak run over a rotating log"
+
+# Nothing had ever run here for longer than a dozen iterations. 200 of them with
+# no sleeps is about a week of a real loop with the waiting taken out: long
+# enough for the log to rotate many times over, and for anything that leaks once
+# per iteration to have leaked 200 times by the end.
+make_repo "$T/app-soak" "$T/remote-soak.git"
+S="$T/stub-soak"; mkdir -p "$S"
+printf '%s\n' commit commit commit > "$S/modes"   # then "nothing" for the rest
+export RALPH_HOME="$T/home-soak"
+D="$RALPH_HOME/soak"
+make_loop "$D" "$T/app-soak" 'MAX_ITER=200 LOG_MAX_BYTES=4000 LOG_KEEP=3'
+run_loop "$D" "$S"
+
+check "200 iterations ran" test "$(tail -n +2 "$D/results.tsv" | wc -l | tr -d ' ')" = 200
+check "results.tsv counts up to the last one" test "$(tail -n 1 "$D/results.tsv" | cut -f2)" = 200
+check "the verdicts add up: 3 keeps and 197 quiet" \
+  bash -c 'v="$(tail -n +2 "$1" | cut -f5)"; test "$(grep -c keep <<<"$v")" = 3 \
+           && test "$(grep -c quiet <<<"$v")" = 197' _ "$D/results.tsv"
+check "the log rotated" test -f "$D/ralph.log.1"
+check "rotation keeps LOG_KEEP files and no more" \
+  bash -c 'test -f "$1.3" && test ! -e "$1.4"' _ "$D/ralph.log"
+check "the log stops growing: all of it together stays near the limit" \
+  test "$(cat "$D"/ralph.log* | wc -c | tr -d ' ')" -lt 30000
+
+soak_cur="$(grep -a -c '=== iteration' "$D/ralph.log")"
+soak_all="$(cat "$D"/ralph.log* | grep -a -c '=== iteration')"
+check "the newest log alone has lost most of the history" test "$soak_cur" -lt "$soak_all"
+check "status counts iterations across the rotated logs" \
+  bash -c '"$1" status soak | grep -q "iterations  $2 run"' _ "$ROOT/ralph" "$soak_all"
+check "ralph log reads the rotated files too" \
+  test "$("$ROOT/ralph" log soak 100 | wc -l | tr -d ' ')" = 100
+check "the progress cap says its piece once, not once per iteration" \
+  test "$(cat "$D"/ralph.log* | grep -c 'progress cap')" -le 1
+check "PROGRESS.md is still the file it started as" \
+  bash -c 'grep -q "^## Needs a decision" "$1" && test "$(wc -c < "$1")" -lt 8000' _ "$D/PROGRESS.md"
+check "no process was left behind" bash -c '! pgrep -f "home-soa[k]" >/dev/null'
+check "the lock is released" test ! -e "$D/ralph.lock"
+unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
 section "CLI through a symlink on PATH"
 
 mkdir -p "$T/bin" "$T/deep/bin"

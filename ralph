@@ -16,8 +16,8 @@
 #   ralph status [name]            what is running, how long, how far
 #   ralph review <name> [n]        what the loop shipped, reverted, and has waiting to merge
 #   ralph results <name> [n]       the harness verdict for each iteration (default 20)
-#   ralph log <name> [n]           last n lines of the loop's log (default 40)
-#   ralph tail <name>              follow the log
+#   ralph log <name> [n]           last n lines of the log, rotated files included (default 40)
+#   ralph tail <name>              follow the log, across rotations
 #   ralph steer <name> "text"      redirect a running loop, starting with the iteration in flight
 #   ralph edit <name>              open PROMPT.md in $EDITOR
 #   ralph migrate <name>           convert a loop from before config.sh to the current layout
@@ -248,14 +248,43 @@ state_line() {
   fi
 }
 
+# The loop rotates its log, so the history is spread over ralph.log and the
+# ralph.log.N behind it. Anything that reads the log reads them all, oldest
+# first, or the first rotation of a long run makes it look as if the loop had
+# only just started.
+log_files() {
+  local i=9
+  while [ "$i" -ge 1 ]; do
+    [ -f "$1/ralph.log.$i" ] && printf '%s\n' "$1/ralph.log.$i"
+    i=$((i - 1))
+  done
+  [ -f "$1/ralph.log" ] && printf '%s\n' "$1/ralph.log"
+  return 0
+}
+
+log_cat() {
+  local f
+  while IFS= read -r f; do cat "$f"; done < <(log_files "$1")
+}
+
+# Matching lines across every log file. Summing per-file counts, rather than
+# grepping one concatenation, so this stays cheap on the tens of megabytes a
+# long run leaves behind.
+log_count() {
+  local f n total=0
+  while IFS= read -r f; do
+    n="$(grep -a -c "$2" "$f" 2>/dev/null)" || n=0
+    total=$((total + n))
+  done < <(log_files "$1")
+  printf '%s' "$total"
+}
+
 # Both layouts write the same log lines, so both are read the same way.
 # grep -c prints 0 and exits 1 when it matches nothing: a `|| echo 0` fallback
 # here would append a second 0 and split the line in two.
 status_iterations() {
-  local iter shipped
-  iter="$(grep -a -c '^\[.*=== iteration' "$1/ralph.log" 2>/dev/null)"   || iter=0
-  shipped="$(grep -a -c 'shipped [0-9a-f]\{40\}' "$1/ralph.log" 2>/dev/null)" || shipped=0
-  printf '  iterations  %s run, %s shipped a commit\n' "$iter" "$shipped"
+  printf '  iterations  %s run, %s shipped a commit\n' \
+    "$(log_count "$1" '^\[.*=== iteration')" "$(log_count "$1" 'shipped [0-9a-f]\{40\}')"
 }
 
 status_last() {
@@ -323,13 +352,15 @@ cmd_status() {
 
 cmd_log() {
   local name="${1:-}" n="${2:-40}"; local dir; dir="$(loop_dir "$name")" || exit 1
-  [ -f "$dir/ralph.log" ] || die "no log yet for $name"
-  tail -n "$n" "$dir/ralph.log"
+  [ -n "$(log_files "$dir")" ] || die "no log yet for $name"
+  log_cat "$dir" | tail -n "$n"
 }
 
 cmd_tail() {
   local name="${1:-}"; local dir; dir="$(loop_dir "$name")" || exit 1
-  tail -f "$dir/ralph.log"
+  # -F, not -f: a rotation renames the file this is following, and -f would then
+  # sit on the old one, silent, for the rest of the run.
+  tail -F "$dir/ralph.log"
 }
 
 # What a loop did, for a human deciding what to keep: verdict counts, the commits

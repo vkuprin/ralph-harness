@@ -100,6 +100,13 @@ ESCALATE_AFTER=3
 # the agent can read but which is not put into every prompt. 0 keeps everything.
 PROGRESS_KEEP=8
 
+# ralph.log holds every agent's whole output, so it grows without bound on a loop
+# that runs for days. It rotates between iterations once it passes LOG_MAX_BYTES,
+# keeping LOG_KEEP older files (ralph.log.1 and up); status, log and tail read
+# them all. 0 bytes never rotates; 0 kept throws the old log away.
+LOG_MAX_BYTES=10000000
+LOG_KEEP=3
+
 # `ralph steer` also reaches the iteration in flight, at its next tool call.
 LIVE_STEER=1
 

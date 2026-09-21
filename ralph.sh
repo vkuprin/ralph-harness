@@ -66,6 +66,8 @@ ERROR_STOP=0
 PROGRESS_KEEP=8
 ESCALATE_AFTER=3
 LIVE_STEER=1
+LOG_MAX_BYTES=10000000
+LOG_KEEP=3
 # What claude prints when a limit ends a run: plan limits (5-hour, weekly), an
 # overloaded API, or an API key out of credit. Only consulted when claude exited
 # non-zero, and only on its last lines, so an audit whose own output mentions
@@ -86,6 +88,33 @@ WORK="$REPO"
 
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
+
+# Every agent's whole output goes into ralph.log, so a loop left running for days
+# writes gigabytes into one file that nothing can then read. Rotate it between
+# iterations — ralph.log.1 is the one before this, up to LOG_KEEP of them — which
+# bounds the lot at roughly LOG_MAX_BYTES * (LOG_KEEP + 1). Between iterations,
+# not during one, so an iteration's output stays in one piece; one very loud
+# agent can therefore overshoot the limit by its own output before it is noticed.
+# `ralph status`, `ralph log` and `ralph tail` read the rotated files too.
+rotate_log() {
+  [ "${LOG_MAX_BYTES:-0}" -gt 0 ] 2>/dev/null || return 0
+  local size i
+  size=$(wc -c < "$LOG" 2>/dev/null | tr -d ' ') || return 0
+  [ -n "$size" ] && [ "$size" -ge "$LOG_MAX_BYTES" ] || return 0
+  if [ "${LOG_KEEP:-0}" -ge 1 ] 2>/dev/null; then
+    rm -f "$LOG.$LOG_KEEP"
+    i=$((LOG_KEEP - 1))
+    while [ "$i" -ge 1 ]; do
+      [ -f "$LOG.$i" ] && mv "$LOG.$i" "$LOG.$((i + 1))"
+      i=$((i - 1))
+    done
+    mv "$LOG" "$LOG.1"
+  else
+    rm -f "$LOG"
+  fi
+  : > "$LOG"
+  log "log rotated at $size bytes; the $LOG_KEEP before this one are $(basename "$LOG").1 and up"
+}
 
 # ------------------------------------------------------ processes and timing
 # The agent, VERIFY_CMD, the reviewer and `git push` all run through run_bounded.
@@ -540,6 +569,7 @@ while :; do
     break
   fi
 
+  rotate_log
   if [ "$WORKTREE" = 1 ]; then
     if [ "$PUSH" = 1 ]; then sync; else clean_tree; fi
   fi

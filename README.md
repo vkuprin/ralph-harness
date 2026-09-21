@@ -164,6 +164,12 @@ repository: `PROMPT.md` tends to carry hostnames and per-project rules, and
 entries stay in it; older ones move to `PROGRESS-archive.md`, which the agent can
 read but which is not put into every prompt.
 
+The log is bounded the same way. Every agent's whole output goes into `ralph.log`,
+so a loop left running for days would write gigabytes into one file; instead it
+rotates between iterations once it passes `LOG_MAX_BYTES`, keeping `LOG_KEEP`
+older files as `ralph.log.1` and up. `ralph status`, `ralph log` and `ralph tail`
+read the rotated files too, so the iteration counts do not reset when it rotates.
+
 A loop from before `config.sh` existed keeps its settings as variables near the top
 of its own `ralph.sh` and writes no `ralph.pid`. `ralph status` and the guide list
 one anyway, marked `old layout`, with the repository it works in, its iteration
@@ -210,6 +216,8 @@ the same.
 | `ERROR_STOP` | `0` | `0` | stop after this many crashes or timeouts in a row; `0` never stops |
 | `ESCALATE_AFTER` | `3` | `3` | failures in a row before the prompt says pivot |
 | `PROGRESS_KEEP` | `8` | `8` | Log entries kept in `PROGRESS.md`; `0` keeps all |
+| `LOG_MAX_BYTES` | `10000000` | `10000000` | rotate `ralph.log` once it passes this between iterations; `0` never rotates |
+| `LOG_KEEP` | `3` | `3` | rotated logs kept, `ralph.log.1` up; `0` throws the old one away |
 | `LIVE_STEER` | `1` | `1` | let `ralph steer` reach the iteration in flight |
 | `CLOSING` | | see `ralph.sh` | the last line of every prompt |
 
