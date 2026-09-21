@@ -25,6 +25,13 @@ command writes two different files under the two bashes this supports. `fill` in
 `ralph` shows the shape that is safe in both. `sed` has the same reading, and
 `&`, `|` and `\` are all legal in a path.
 
+Nor `awk -v var="$text"` with user text: awk processes escape sequences in a `-v`
+value, so `\t` arrives as a tab and `\n` as a newline — a steer naming a Windows
+path used to reach `PROMPT.md` in two pieces. Pass it in the environment and read
+`ENVIRON["var"]`, which awk does not rescan; `cmd_steer` shows the shape. Shortening
+it back to `-v` reads better and is the bug. A numeric `-v` (`PROGRESS_KEEP`,
+`PROGRESS_MAX_BYTES`) is fine, because a number has no escapes to process.
+
 ## Invariants: do not change these
 
 - Every iteration is a new `claude -p`. Nothing but files crosses iterations.

@@ -1223,6 +1223,53 @@ check "the hook keeps what it delivered for the reviewer" grep -q 'drop the CSS 
 check "an empty STEER.md lets every call through" test -z "$(RALPH_STEER_FILE="$T/steer.md" "$ROOT/hooks/steer.sh")"
 
 # ---------------------------------------------------------------------------
+section "ralph steer keeps the text it was handed"
+
+# awk's -v processes escape sequences in the value it assigns, so a steer
+# holding a Windows path or a regex reached PROMPT.md with tabs and newlines
+# in it, and the newline broke the second half of the entry out of the list.
+# STEER.md is written with printf and was always right, so the iteration in
+# flight saw the text the human typed and every later one did not.
+make_repo "$T/app-esc" "$T/remote-esc.git"
+S="$T/stub-esc"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+printf '%s\n' ACCEPT > "$S/verdicts"
+make_loop "$T/home-esc/esc" "$T/app-esc" 'WORKTREE=1 PUSH=0 REVIEW=1 MAX_ITER=1 ITER_TIMEOUT=30'
+export RALPH_HOME="$T/home-esc"
+esc_prompt="$RALPH_HOME/esc/PROMPT.md"
+esc_text='look in C:\temp\new, split on \t, match \q and keep a & b'
+esc_plain='the second steer, newest first'
+"$ROOT/ralph" steer esc "$esc_text" >/dev/null
+"$ROOT/ralph" steer esc "$esc_plain" >/dev/null
+
+# Everything the steer wrote sits after the marker, one list item per steer.
+esc_entries() { sed -n '/<!-- ralph-steer -->/,$p' "$esc_prompt" | tail -n +2; }
+
+check "STEER.md holds the text the human typed" \
+  grep -qFx "$esc_text" "$RALPH_HOME/esc/STEER.md"
+check "PROMPT.md holds the text the human typed" \
+  grep -qF "$esc_text" "$esc_prompt"
+check "nothing the steer wrote sits outside its list item" \
+  test -z "$(esc_entries | grep -v '^- \[' | grep -v '^$')"
+check "one list item per steer, not one per line of mangled text" \
+  test "$(esc_entries | grep -c '^- \[')" = 2
+check "an ordinary steer still reaches PROMPT.md" grep -qF "$esc_plain" "$esc_prompt"
+check "the newest steer is still the first entry" \
+  bash -c 'case "$(sed -n "/<!-- ralph-steer -->/,\$p" "$1" | grep -m 1 "^- \[")" in *"$2") exit 0;; esac; exit 1' \
+  _ "$esc_prompt" "$esc_plain"
+
+# The two consumers, not the file: the agent is handed PROMPT.md whole, and the
+# reviewer is handed its Steering section through a second awk.
+run_loop "$RALPH_HOME/esc" "$S"
+check "the steered iteration ran and its commit was kept" \
+  test "$(statuses "$RALPH_HOME/esc")" = keep
+check "the agent's prompt holds the text the human typed" \
+  grep -qF "$esc_text" "$S/prompt.agent.1"
+check "the reviewer's steering section holds the text the human typed" \
+  grep -qF "$esc_text" "$S/prompt.review.1"
+unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
 echo
 if [ "$fails" -eq 0 ]; then
   printf '\033[32mall tests passed\033[0m\n'

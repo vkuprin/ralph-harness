@@ -48,7 +48,8 @@ An iteration that finds nothing makes the loop look less often. It does not stop
 it, because an hour that found nothing says nothing about the next hour.
 
 You can redirect it while it runs. `ralph steer` reaches the iteration in flight
-at its next tool call, and every iteration after that.
+at its next tool call, and every iteration after that, as the text you typed: a
+Windows path, a regex or a `\t` goes through to `PROMPT.md` byte for byte.
 
 The cost is worth naming: the agent knows only what the previous one bothered to
 write down. `PROGRESS.md` discipline is the whole ballgame, which is why the

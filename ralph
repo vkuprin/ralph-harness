@@ -552,10 +552,16 @@ cmd_steer() {
     } >> "$dir/PROMPT.md"
   fi
 
+  # ENVIRON and not -v: awk processes escape sequences in a -v value, so a
+  # steer naming a Windows path or a regex arrived as `C:<tab>emp<newline>ew`,
+  # and the newline put half the entry outside the list. awk does not rescan
+  # the environment. STEER.md is written with printf and was never affected,
+  # so only the later iterations — the ones that read PROMPT.md — saw the
+  # mangled text.
   local tmp; tmp="$(mktemp)"
-  awk -v entry="- [$(date '+%Y-%m-%d %H:%M')] $text" '
+  RALPH_STEER_ENTRY="- [$(date '+%Y-%m-%d %H:%M')] $text" awk '
     { print }
-    /<!-- ralph-steer -->/ && !seen { print ""; print entry; seen = 1 }
+    /<!-- ralph-steer -->/ && !seen { print ""; print ENVIRON["RALPH_STEER_ENTRY"]; seen = 1 }
   ' "$dir/PROMPT.md" > "$tmp" && mv "$tmp" "$dir/PROMPT.md"
   printf '%s\n' "$text" >> "$dir/STEER.md"
   green "steered $name — the running iteration sees it at its next tool call, and every later one reads it from PROMPT.md"
