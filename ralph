@@ -56,12 +56,23 @@ loop_dir() {
   echo "$RALPH_HOME/$name"
 }
 
+# A PID is not an identity. ralph.pid outlives a `kill -9`, the OOM killer and a
+# reboot, and after a reboot the kernel hands those low numbers straight back
+# out: `kill -0` then says "running" about a stranger. `ralph status` reported a
+# dead loop as running, `ralph start` refused to start it ever again, and
+# `ralph stop` TERMed and then KILLed that stranger's whole process group.
+# `ralph start` runs `bash <harness>/ralph.sh <dir>`, so the loop is the process
+# whose command line ends with this loop's directory, and nothing else counts.
 pid_of() {
   local dir="$1" pid
   [ -f "$dir/ralph.pid" ] || return 1
   pid="$(cat "$dir/ralph.pid" 2>/dev/null)"
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
+  case "$(ps -p "$pid" -o command= 2>/dev/null)" in
+    *ralph*.sh*" $dir") ;;
+    *) return 1 ;;
+  esac
   echo "$pid"
 }
 

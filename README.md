@@ -170,6 +170,13 @@ rotates between iterations once it passes `LOG_MAX_BYTES`, keeping `LOG_KEEP`
 older files as `ralph.log.1` and up. `ralph status`, `ralph log` and `ralph tail`
 read the rotated files too, so the iteration counts do not reset when it rotates.
 
+A loop that ends by `kill -9`, the OOM killer or a reboot leaves its `ralph.pid`
+and `ralph.lock` behind, and the kernel later hands that number to some unrelated
+process. Neither file is believed on the number alone: the process holding it has
+to be running this loop's script, or it is treated as gone. Otherwise `ralph
+status` reported a dead loop as running, `ralph start` refused to start it ever
+again, and `ralph stop` killed the stranger's process group.
+
 A loop from before `config.sh` existed keeps its settings as variables near the top
 of its own `ralph.sh` and writes no `ralph.pid`. `ralph status` and the guide list
 one anyway, marked `old layout`, with the repository it works in, its iteration

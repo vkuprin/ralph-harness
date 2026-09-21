@@ -34,7 +34,22 @@ HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # One loop process per loop directory. Two would share PROGRESS.md, the log and
 # the worktree, and each would take the other's commits for its own.
 LOCK="$DIR/ralph.lock"
-if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null; then
+# A PID is not an identity: a loop killed by `kill -9`, the OOM killer or a
+# reboot leaves this file behind, and the number is then somebody else's, so
+# `kill -0` alone made the loop refuse to start for good. The holder has to be
+# running a ralph loop. Looser than the CLI's check, which can demand this exact
+# directory because it is the CLI that put it on the command line; started
+# through RALPH_LOOP the directory is not there to match.
+lock_held() {
+  local pid; pid="$(cat "$LOCK" 2>/dev/null)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  case "$(ps -p "$pid" -o command= 2>/dev/null)" in
+    *ralph*.sh*) return 0 ;;
+  esac
+  return 1
+}
+if [ -f "$LOCK" ] && lock_held; then
   echo "ralph: this loop is already running as PID $(cat "$LOCK"): $DIR" >&2
   exit 2
 fi

@@ -194,6 +194,50 @@ check "bare ralph prints the guide and lists your loops" \
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------
+section "a PID is not an identity: ralph.pid and ralph.lock left by a dead loop"
+
+# A loop that ends by `kill -9`, the OOM killer or a reboot leaves both files
+# behind holding a number the kernel then hands to somebody else. A stranger
+# playing the part of that somebody:
+make_repo "$T/app-p" "$T/remote-p.git"
+S="$T/stub-p"; mkdir -p "$S"
+printf '%s\n' nothing > "$S/modes"
+make_loop "$T/home-p/stale" "$T/app-p" 'MAX_ITER=1'
+sleep 41 &
+bystander=$!
+echo "$bystander" > "$T/home-p/stale/ralph.pid"
+
+check "status does not call a recycled PID a running loop" \
+  bash -c 'RALPH_HOME="$1/home-p" "$2" status stale | grep -q stopped' _ "$T" "$ROOT/ralph"
+check "stop says the loop is not running" \
+  bash -c '! RALPH_HOME="$1/home-p" "$2" stop stale >/dev/null 2>&1' _ "$T" "$ROOT/ralph"
+check "stop leaves the stranger who now owns that PID alone" kill -0 "$bystander"
+kill "$bystander" 2>/dev/null
+
+# The recycled number could be another loop's, which is why the check is this
+# loop's own command line and not merely "some ralph.sh is alive".
+S2="$T/stub-p2"; mkdir -p "$S2"
+printf '%s\n' sleep > "$S2/modes"
+make_loop "$T/home-p/other" "$T/app-p" 'MAX_ITER=1 ITER_TIMEOUT=600'
+STUB_DIR="$S2" RALPH_HOME="$T/home-p" "$ROOT/ralph" start other >/dev/null
+for _ in $(seq 1 50); do [ -s "$S2/modes.done" ] && break; sleep 0.2; done
+cp "$T/home-p/other/ralph.pid" "$T/home-p/stale/ralph.pid"
+RALPH_HOME="$T/home-p" "$ROOT/ralph" stop stale >/dev/null 2>&1
+check "stopping one loop does not stop the loop next door" \
+  bash -c 'RALPH_HOME="$1/home-p" "$2" status other | grep -q running' _ "$T" "$ROOT/ralph"
+RALPH_HOME="$T/home-p" "$ROOT/ralph" stop other >/dev/null 2>&1
+
+# The lock is the loop's own, and a recycled PID there stopped it starting at all.
+sleep 41 &
+bystander=$!
+echo "$bystander" > "$T/home-p/stale/ralph.lock"
+run_loop "$T/home-p/stale" "$S"
+check "a lock left by a dead loop does not block the next start" \
+  grep -q 'ralph finished' "$T/home-p/stale/ralph.log"
+check "the stranger holding the lock's PID survived that too" kill -0 "$bystander"
+kill "$bystander" 2>/dev/null
+
+# ---------------------------------------------------------------------------
 section "limits heal themselves; interrupted iterations are set aside"
 
 make_repo "$T/app-f" "$T/remote-f.git"
