@@ -1,0 +1,32 @@
+tests/run.sh
+  s_5dc7698e2270af::t_5ffc20aab53fe6 654-682
+  s_5dc7698e2270af::t_8d4e12a0babf4d 159-162
+  s_5dc7698e2270af::t_268ad9eca67898 653
+template/config.sh
+  s_5dc7698e2270af::t_656bc85630848a 103-104
+ralph
+  s_5dc7698e2270af::t_c5490220a023ef 29-31
+README.md
+  s_5dc7698e2270af::t_bbf30efccbb53e 175-178
+ralph.sh
+  s_5dc7698e2270af::t_45ce2f0794ff5e 148-151
+  s_5dc7698e2270af::t_ee07de6000079c 105-112
+tests/stub/claude
+  s_5dc7698e2270af::t_04ec6df4fc7dbc 68-75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "1384a30e3e8d54b8f70f54f0df4cc51f8778f3a1",
+  "prompts": {},
+  "sessions": {
+    "s_5dc7698e2270af": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "534ce952-7bd8-4c3e-8d4b-c436f9dcd19c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
