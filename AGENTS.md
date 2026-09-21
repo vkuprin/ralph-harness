@@ -32,6 +32,20 @@ path used to reach `PROMPT.md` in two pieces. Pass it in the environment and rea
 it back to `-v` reads better and is the bug. A numeric `-v` (`PROGRESS_KEEP`,
 `PROGRESS_MAX_BYTES`) is fine, because a number has no escapes to process.
 
+**A path is user text too**, and that is the half a first reading of this rule
+misses: `cap_progress` passed its overflow file as `-v over="$DIR/.progress-…"`
+beside a numeric `-v keep=`, and a backslash anywhere in `$DIR` — from
+`RALPH_HOME`, or from the argument to `ralph.sh <loop-dir>`, neither of which is
+vetted — made awk open a different file. With nothing at the mangled path awk
+dies, the `||` swallows it and the cap goes quiet for the rest of the run; with
+something there (an unknown escape such as `\q` drops its backslash and maps one
+real directory onto another) awk writes the overflow into a directory the loop
+does not own, the shell archives the empty file it made itself, and `mv`
+truncates `PROGRESS.md` anyway — the loop's memory destroyed and logged as
+archived. So judge the **values** on an `awk -v` line and not the line: a
+retiring note that says "these uses are numeric" has to name each one, because
+this site sat inside such a note for four iterations.
+
 Nor a value written into `config.sh` unquoted, because that file is *sourced* and
 bash reads the value back as its own language: `REPO="__REPO__"` let a `$` in a
 repo path expand, a backtick or `$(…)` **run**, and a `"` end the string and

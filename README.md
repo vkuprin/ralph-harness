@@ -180,7 +180,9 @@ log, the verdicts and the archive the harness writes. None of it goes into your
 repository: `PROMPT.md` tends to carry hostnames and per-project rules, and
 `PROGRESS.md` grows into a long journal. Only the newest `PROGRESS_KEEP` Log
 entries stay in it; older ones move to `PROGRESS-archive.md`, which the agent can
-read but which is not put into every prompt.
+read but which is not put into every prompt. Nothing is dropped on the way: an
+entry that leaves `PROGRESS.md` is in the archive, whatever characters the path
+to your loop directory holds.
 
 That cap reads a `## Log` heading with `### ` entries under it, and the agent is
 what writes both — rename either, or write one enormous entry, and it has

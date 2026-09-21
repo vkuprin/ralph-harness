@@ -346,7 +346,19 @@ cap_progress() {
   tmp="$f.tmp.$$"
   over="$DIR/.progress-overflow.$$"
   : > "$over"
-  awk -v keep="$PROGRESS_KEEP" -v over="$over" '
+  # ENVIRON and not -v for the path: awk processes escape sequences in a -v
+  # value, so a backslash anywhere in $DIR reached awk as a *different* path —
+  # `\t` as a tab, an unknown escape such as `\q` with the backslash dropped,
+  # which maps one real directory onto another. Then either awk cannot open it,
+  # the `||` below swallows that, and this cap silently does nothing for the
+  # rest of the run; or it can, and awk writes the overflow into a directory
+  # the loop does not own while the shell reads the un-mangled name, finds the
+  # empty file it made itself, appends nothing to the archive and lets the mv
+  # truncate PROGRESS.md regardless — the loop's memory destroyed, and logged
+  # as archived. awk does not rescan the environment. `keep` stays on -v: it is
+  # a number, and a number has no escapes to process.
+  RALPH_OVERFLOW="$over" awk -v keep="$PROGRESS_KEEP" '
+    BEGIN              { over = ENVIRON["RALPH_OVERFLOW"] }
     /^## Log/          { inlog = 1; print; next }
     inlog && /^## /    { inlog = 0 }
     inlog && /^### /   { c++ }

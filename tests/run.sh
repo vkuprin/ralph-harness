@@ -1692,6 +1692,87 @@ make_loop "$T/loops/dup-ok" "$T/app" 'MAX_ITER=1'
 check "a name no section has used is still made" test -f "$T/loops/dup-ok/config.sh"
 
 # ---------------------------------------------------------------------------
+section "the overflow path is a path, not an awk escape sequence"
+
+# cap_progress moved old Log entries out of PROGRESS.md with
+# `awk -v over="$DIR/.progress-overflow.$$"`, and awk processes escape
+# sequences in a -v value the way it does in a string literal. So a loop
+# directory holding a backslash reached awk as a *different* path: `\t` as a
+# tab, and an unknown escape such as `\q` with the backslash dropped, which
+# maps one real directory onto another. $DIR is whatever was handed to
+# `ralph.sh <loop-dir>` or RALPH_LOOP, and $RALPH_HOME is in it too; none of
+# the three is vetted, and `ralph new`'s name gate only ever saw the name.
+#
+# Two outcomes, and the second destroys the loop's only memory. If nothing
+# exists at the mangled path, awk dies, the `||` swallows it and this cap
+# silently does nothing for the rest of the run. If something does, awk writes
+# the overflow *there*, the shell then reads the un-mangled name — still the
+# empty file `: > "$over"` made — appends nothing to the archive, and `mv`
+# truncates PROGRESS.md anyway. The entries are gone and the log says they
+# were archived.
+make_repo "$T/app-bs" "$T/remote-bs.git"
+S="$T/stub-bs"; mkdir -p "$S"
+printf '%s\n' nothing nothing nothing > "$S/modes"
+
+# Twelve Log entries against PROGRESS_KEEP=8, so four must move to the archive.
+seed_log() {
+  {
+    sed '/^## Log/,$d' "$ROOT/template/PROGRESS.md"
+    printf '## Log\n\n'
+    for i in 12 11 10 9 8 7 6 5 4 3 2 1; do
+      printf '### 2026-01-%02d 10:00 — iteration %s\n\nentry %s\n\n' "$i" "$i" "$i"
+    done
+  } > "$1/PROGRESS.md"
+}
+# The iteration numbers held by the files named, in order. Given both files it
+# answers "which entries still exist anywhere", which is the question the cap
+# must never change the answer to.
+entries() { grep -h '^### ' "$@" 2>/dev/null | sed 's/.*iteration //' | sort -n | tr '\n' ' '; }
+
+# The control: the same fixture with an ordinary path. It passes before and
+# after, so a fix that switches the cap off to dodge the problem fails here.
+BS_OK="$T/loops/bs-plain"
+make_loop "$BS_OK" "$T/app-bs" 'MAX_ITER=1 PROGRESS_KEEP=8'
+seed_log "$BS_OK"
+run_loop "$BS_OK" "$S"
+check "an ordinary loop directory archives its four oldest entries" \
+  test "$(entries "$BS_OK/PROGRESS-archive.md")" = "1 2 3 4 "
+check "and keeps the other eight" test "$(grep -c '^### ' "$BS_OK/PROGRESS.md")" = 8
+
+# Arm one: nothing exists at the mangled path, so awk cannot open it and the
+# cap goes quiet. `d\qrop` mangles to `dqrop`, which this run never creates.
+BS_DROP="$T"'/d\qrop/loop'
+make_loop "$BS_DROP" "$T/app-bs" 'MAX_ITER=1 PROGRESS_KEEP=8'
+seed_log "$BS_DROP"
+run_loop "$BS_DROP" "$S"
+check "a backslash in the loop directory does not stop the cap archiving" \
+  test "$(entries "$BS_DROP/PROGRESS-archive.md")" = "1 2 3 4 "
+check "and PROGRESS.md is trimmed to the eight entries it keeps" \
+  test "$(grep -c '^### ' "$BS_DROP/PROGRESS.md")" = 8
+check "awk was handed a path it could open" \
+  bash -c '! grep -q "progress-overflow" "$1/ralph.log"' _ "$BS_DROP"
+
+# Arm two, the one that loses work: the mangled path is a real directory, so
+# awk writes there and the shell archives the empty file it made itself.
+BS_STEAL="$T"'/s\qib/loop'
+STRANGER="$T/sqib/loop"
+mkdir -p "$STRANGER"
+make_loop "$BS_STEAL" "$T/app-bs" 'MAX_ITER=1 PROGRESS_KEEP=8'
+seed_log "$BS_STEAL"
+run_loop "$BS_STEAL" "$S"
+check "no Log entry is lost: all twelve are in PROGRESS.md or the archive" \
+  test "$(entries "$BS_STEAL/PROGRESS.md" "$BS_STEAL/PROGRESS-archive.md")" = "1 2 3 4 5 6 7 8 9 10 11 12 "
+check "the log does not claim to have archived entries it destroyed" \
+  bash -c 'grep -q "moved 4 old Log entries" "$1/ralph.log" &&
+           test "$(grep -c "^### " "$1/PROGRESS-archive.md")" = 4' _ "$BS_STEAL"
+check "nothing is written into a directory the loop does not own" \
+  bash -c 'test -z "$(ls -A "$1")"' _ "$STRANGER"
+# A guard: passes before too, because the un-mangled name is the one `rm -f`
+# was already given. It fails a fix that stops cleaning the overflow up.
+check "the overflow file does not outlive the iteration" \
+  bash -c '! ls "$1"/.progress-overflow.* >/dev/null 2>&1' _ "$BS_STEAL"
+
+# ---------------------------------------------------------------------------
 echo
 if [ "$fails" -eq 0 ]; then
   printf '\033[32mall tests passed\033[0m\n'
