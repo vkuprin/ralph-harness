@@ -10,8 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: shellcheck
-        run: shellcheck ralph ralph.sh hooks/steer.sh tests/run.sh tests/stub/claude
+      # The same shellcheck the loop's gate runs, so the two cannot disagree:
+      # older versions flag functions called only from a trap as unreachable.
+      - name: shellcheck 0.11.0
+        run: |
+          curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz | tar -xJ
+          ./shellcheck-v0.11.0/shellcheck ralph ralph.sh hooks/steer.sh tests/run.sh tests/stub/claude
       - name: tests
         run: tests/run.sh
 

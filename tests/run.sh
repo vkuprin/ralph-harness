@@ -40,6 +40,7 @@ sleep 999 & dec_sleep=$!
 # a background process before the trap, or wait until ps can see it (wait_proc)
 # before killing it.
 KEEP_T=0
+# shellcheck disable=SC2317  # only ever called by the EXIT trap below
 cleanup() {
   kill "$dec_sleep" "$dec_soak" 2>/dev/null
   # Reaped here, or bash 3.2 prints a "Terminated" job notice after the summary.
