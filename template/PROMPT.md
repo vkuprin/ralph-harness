@@ -1,0 +1,44 @@
+# __NAME__
+
+One iteration of this loop is a fresh agent with no memory of the last one. The only
+thing it knows about what came before is PROGRESS.md, which it rewrites at the end of
+its turn. Write both files for a stranger, because every reader is one.
+
+## The job
+
+<Two or three sentences. Name the outcome the loop is chasing, not the steps. If the
+outcome is a finite list of tasks, say so and set QUIET_STOP in config.sh — a loop
+that can finish should be allowed to.>
+
+## The repository
+
+- Branch: `main`. Commit directly, push to `origin main`.
+- Tests: `<command>` — and how long it takes, so an iteration budgets for it.
+- Typecheck/build: `<command>`
+- <Anything with a slow or remote step: a container to build, a host to reach.>
+
+## How one iteration goes
+
+1. **Verify what the last iteration shipped, before starting anything new.**
+   PROGRESS.md names it and says how to check it. An unverified fix is a claim.
+2. **Find the next defect by measuring, not by reading code and guessing.** Count
+   something. A finding with no number attached is not a finding, and a number that
+   came from a different input than the one production uses is worse than none.
+3. **Ship one change.** One coherent commit. Put the measurement in the message:
+   what was wrong, how much of what it affected, what the number is now.
+4. **Rewrite PROGRESS.md.** What you measured and how, what you shipped, what the
+   next iteration should verify first, and any earlier conclusion you now believe
+   is wrong.
+
+## Rules
+
+- Never mutate production data. Read it, never write it. Code changes only.
+- Do not report that something works because the code looks right. Run it.
+- If an earlier PROGRESS.md entry is wrong, correct it in your entry and say it was
+  yours to correct. A journal nobody contradicts stops being evidence.
+- What only a human can settle goes under "Needs a decision", and you move on to
+  work you can finish.
+- Leave the tree clean. Scratch scripts and measurement directories get deleted
+  before the commit, not gitignored.
+- <Project rules: what must never be touched, what must be regenerated rather than
+  edited, where commits are made from.>

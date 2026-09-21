@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+#
+# ralph — create, start, watch and stop long-running agent loops.
+#
+#   ralph new <name> <repo-path>   scaffold a loop from the template
+#   ralph start <name>             run it in the background
+#   ralph stop <name>              stop the loop and the agent inside it
+#   ralph status [name]            what is running, how long, how far
+#   ralph log <name> [n]           last n lines of the loop's log (default 40)
+#   ralph tail <name>              follow the log
+#   ralph steer <name> "text"      add an instruction the next iteration will read
+#   ralph edit <name>              open PROMPT.md in $EDITOR
+#
+# Loops live in $RALPH_HOME (default ~/.claude/ralph), one directory each. The
+# harness lives in this repo; loop contents stay on the machine, because they hold
+# task state and production details.
+
+set -uo pipefail
+
+RALPH_HOME="${RALPH_HOME:-$HOME/.claude/ralph}"
+HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOOPSH="$HARNESS/ralph.sh"
+
+red()   { printf '\033[31m%s\033[0m\n' "$*"; }
+green() { printf '\033[32m%s\033[0m\n' "$*"; }
+dim()   { printf '\033[2m%s\033[0m\n' "$*"; }
+
+die() { red "ralph: $*" >&2; exit 1; }
+
+loop_dir() {
+  local name="$1"
+  [ -n "$name" ] || die "which loop? try: ralph status"
+  echo "$RALPH_HOME/$name"
+}
+
+pid_of() {
+  local dir="$1" pid
+  [ -f "$dir/ralph.pid" ] || return 1
+  pid="$(cat "$dir/ralph.pid" 2>/dev/null)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  echo "$pid"
+}
+
+# ------------------------------------------------------------------ commands
+
+cmd_new() {
+  local name="${1:-}" repo="${2:-}"
+  [ -n "$name" ] && [ -n "$repo" ] || die "usage: ralph new <name> <repo-path>"
+  repo="$(cd "$repo" 2>/dev/null && pwd)" || die "no such directory: ${2:-}"
+  [ -d "$repo/.git" ] || die "not a git checkout: $repo"
+
+  local dir="$RALPH_HOME/$name"
+  [ -e "$dir" ] && die "loop already exists: $dir"
+
+  mkdir -p "$dir"
+  cp "$HARNESS/template/PROMPT.md"   "$dir/PROMPT.md"
+  cp "$HARNESS/template/PROGRESS.md" "$dir/PROGRESS.md"
+  sed "s|__REPO__|$repo|; s|__NAME__|$name|" "$HARNESS/template/config.sh" > "$dir/config.sh"
+  sed -i '' "s|__NAME__|$name|g" "$dir/PROMPT.md" 2>/dev/null || \
+    sed -i "s|__NAME__|$name|g" "$dir/PROMPT.md"
+
+  green "created $dir"
+  dim   "  1. write the job into $dir/PROMPT.md"
+  dim   "  2. check the commands in $dir/config.sh"
+  dim   "  3. ralph start $name"
+}
+
+cmd_start() {
+  local name="${1:-}"; local dir; dir="$(loop_dir "$name")" || exit 1
+  [ -d "$dir" ] || die "no such loop: $name"
+  [ -x "$LOOPSH" ] || die "harness not executable: $LOOPSH"
+
+  local running; running="$(pid_of "$dir")" && die "already running as PID $running"
+
+  nohup bash "$LOOPSH" "$dir" >> "$dir/ralph.out" 2>&1 &
+  local pid=$!
+  echo "$pid" > "$dir/ralph.pid"
+  green "started $name as PID $pid"
+  dim   "  ralph status $name   ralph tail $name   ralph stop $name"
+}
+
+cmd_stop() {
+  local name="${1:-}"; local dir; dir="$(loop_dir "$name")" || exit 1
+  local pid; pid="$(pid_of "$dir")" || die "$name is not running"
+
+  # Kill the agent first. Killing only the loop leaves the current `claude -p`
+  # orphaned and still writing to the repository.
+  local child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do
+    kill "$child" 2>/dev/null
+  done
+  kill "$pid" 2>/dev/null
+  sleep 1
+  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+  rm -f "$dir/ralph.pid"
+  green "stopped $name (PID $pid)"
+}
+
+status_one() {
+  local dir="$1" name; name="$(basename "$dir")"
+  [ -f "$dir/config.sh" ] || return 0
+
+  local repo; repo="$(. "$dir/config.sh" >/dev/null 2>&1; echo "${REPO:-?}")"
+  local pid uptime state
+  if pid="$(pid_of "$dir")"; then
+    uptime="$(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')"
+    state="$(printf '\033[32mrunning\033[0m')  PID $pid  up $uptime"
+  else
+    state="$(printf '\033[2mstopped\033[0m')"
+  fi
+
+  local iter shipped last
+  iter="$(grep -a -c '^\[.*=== iteration' "$dir/ralph.log" 2>/dev/null || echo 0)"
+  shipped="$(grep -a -c 'shipped [0-9a-f]\{40\}' "$dir/ralph.log" 2>/dev/null || echo 0)"
+  last="$(grep -a '^\[' "$dir/ralph.log" 2>/dev/null | tail -1)"
+
+  printf '%-20s %s\n' "$name" "$state"
+  printf '  repo        %s\n' "$repo"
+  printf '  iterations  %s run, %s shipped a commit\n' "$iter" "$shipped"
+  [ -n "$last" ] && printf '  last        %s\n' "$last"
+  local head
+  head="$(git -C "$repo" log --oneline -1 2>/dev/null)"
+  [ -n "$head" ] && printf '  HEAD        %s\n' "$head"
+  echo
+}
+
+cmd_status() {
+  local name="${1:-}"
+  if [ -n "$name" ]; then
+    status_one "$RALPH_HOME/$name"
+    return
+  fi
+  [ -d "$RALPH_HOME" ] || { dim "no loops yet — ralph new <name> <repo>"; return; }
+  local d found=0
+  for d in "$RALPH_HOME"/*/; do
+    [ -d "$d" ] || continue
+    found=1
+    status_one "${d%/}"
+  done
+  [ "$found" = 1 ] || dim "no loops yet — ralph new <name> <repo>"
+}
+
+cmd_log() {
+  local name="${1:-}" n="${2:-40}"; local dir; dir="$(loop_dir "$name")" || exit 1
+  [ -f "$dir/ralph.log" ] || die "no log yet for $name"
+  tail -n "$n" "$dir/ralph.log"
+}
+
+cmd_tail() {
+  local name="${1:-}"; local dir; dir="$(loop_dir "$name")" || exit 1
+  tail -f "$dir/ralph.log"
+}
+
+# PROMPT.md is re-read at the start of every iteration, so this redirects a loop
+# that is already running. It takes effect on the next iteration, not this one.
+cmd_steer() {
+  local name="${1:-}"; shift 2>/dev/null
+  local text="${*:-}"
+  [ -n "$text" ] || die 'usage: ralph steer <name> "what to do instead"'
+  local dir; dir="$(loop_dir "$name")" || exit 1
+  [ -f "$dir/PROMPT.md" ] || die "no such loop: $name"
+
+  # The marker is what makes this repeatable: entries always land directly under
+  # it, newest first, without re-parsing the prose around them.
+  if ! grep -q '<!-- ralph-steer -->' "$dir/PROMPT.md"; then
+    {
+      printf '\n## Steering\n\n'
+      printf 'Added while the loop was running, newest first. These outrank the backlog below.\n\n'
+      printf '<!-- ralph-steer -->\n'
+    } >> "$dir/PROMPT.md"
+  fi
+
+  local tmp; tmp="$(mktemp)"
+  awk -v entry="- [$(date '+%Y-%m-%d %H:%M')] $text" '
+    { print }
+    /<!-- ralph-steer -->/ && !seen { print ""; print entry; seen = 1 }
+  ' "$dir/PROMPT.md" > "$tmp" && mv "$tmp" "$dir/PROMPT.md"
+  green "steered $name — the next iteration reads it (the one running now will not)"
+}
+
+cmd_edit() {
+  local name="${1:-}"; local dir; dir="$(loop_dir "$name")" || exit 1
+  "${EDITOR:-vi}" "$dir/PROMPT.md"
+}
+
+usage() {
+  sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+case "${1:-status}" in
+  new)    shift; cmd_new    "$@" ;;
+  start)  shift; cmd_start  "$@" ;;
+  stop)   shift; cmd_stop   "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  log)    shift; cmd_log    "$@" ;;
+  tail)   shift; cmd_tail   "$@" ;;
+  steer)  shift; cmd_steer  "$@" ;;
+  edit)   shift; cmd_edit   "$@" ;;
+  -h|--help|help) usage ;;
+  *) die "unknown command: $1 (try: ralph help)" ;;
+esac
