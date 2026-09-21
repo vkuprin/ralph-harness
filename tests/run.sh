@@ -14,7 +14,9 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RALPH_BASH="${RALPH_BASH:-bash}"
-T="$(mktemp -d "${TMPDIR:-/tmp}/ralph-test.XXXXXX")"
+# cd+pwd normalises the path: macOS sets TMPDIR with a trailing slash, so mktemp
+# hands back a doubled slash, and paths the harness normalises stop matching it.
+T="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/ralph-test.XXXXXX")" && pwd)"
 trap 'rm -rf "$T"' EXIT
 
 export PATH="$ROOT/tests/stub:$PATH"
@@ -214,6 +216,25 @@ check "the unjudged commit never reached origin" \
   bash -c '! git -C "$1" log --format=%s main | grep -q interrupted' _ "$T/remote-f.git"
 check "the unjudged commit is kept under refs/ralph/dropped/" \
   bash -c 'git -C "$1" log --format=%s $(git -C "$1" for-each-ref --format="%(refname)" refs/ralph/dropped/) | grep -q interrupted' _ "$W"
+
+# ---------------------------------------------------------------------------
+section "CLI: usage, and a status with nothing to show"
+
+mkdir -p "$T/home-f/notaloop"
+check "bare ralph prints the usage instead of running status" \
+  bash -c 'RALPH_HOME="$1/home-f" "$2" | grep -q "ralph stop <name>"' _ "$T" "$ROOT/ralph"
+check "status says so when it recognises no loops" \
+  bash -c 'RALPH_HOME="$1/home-f" "$2" status | grep -q "no loops"' _ "$T" "$ROOT/ralph"
+check "status of a name that is not a loop says so" \
+  bash -c 'RALPH_HOME="$1/home-f" "$2" status nosuch | grep -q "no loop"' _ "$T" "$ROOT/ralph"
+
+# grep -c prints 0 and exits 1 when it matches nothing, so a `|| echo 0` fallback
+# used to add a second 0 and split the line.
+mkdir -p "$T/home-f/logged"
+printf 'REPO="%s"\n' "$T/app-d" > "$T/home-f/logged/config.sh"
+printf '[2026-01-01 10:00] === iteration 1 ===\n' > "$T/home-f/logged/ralph.log"
+check "iteration counts stay on one line when nothing shipped yet" \
+  bash -c 'RALPH_HOME="$1/home-f" "$2" status logged | grep -q "1 run, 0 shipped a commit"' _ "$T" "$ROOT/ralph"
 
 # ---------------------------------------------------------------------------
 section "CLI through a symlink on PATH"

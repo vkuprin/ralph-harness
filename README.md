@@ -142,6 +142,7 @@ this; it backs off.
 ## Commands
 
 ```bash
+./ralph                       # print this list
 ./ralph new <name> <repo>     # scaffold a loop from template/
 ./ralph start <name>          # run it in the background
 ./ralph status [name]         # running or not, iterations, verdict counts, HEAD

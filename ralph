@@ -12,6 +12,8 @@
 #   ralph steer <name> "text"      redirect a running loop, starting with the iteration in flight
 #   ralph edit <name>              open PROMPT.md in $EDITOR
 #
+# With no arguments it prints this.
+#
 # Loops live in $RALPH_HOME (default ~/.claude/ralph), one directory each. The
 # harness lives in this repo; loop contents stay on the machine, because they hold
 # task state and production details.
@@ -115,9 +117,12 @@ cmd_stop() {
   green "stopped $name (PID $pid)"
 }
 
+# Prints one loop, or returns 1 without printing if the directory is not a loop.
+# The caller counts the successes, so that a $RALPH_HOME full of other things
+# says "no loops" rather than printing nothing at all.
 status_one() {
   local dir="$1" name; name="$(basename "$dir")"
-  [ -f "$dir/config.sh" ] || return 0
+  [ -f "$dir/config.sh" ] || return 1
 
   # config.sh may refer to variables only ralph.sh defines, so read it loosely.
   local conf repo worktree work
@@ -141,9 +146,11 @@ status_one() {
     state="$(printf '\033[2mstopped\033[0m')"
   fi
 
+  # grep -c prints 0 and exits 1 when it matches nothing: a `|| echo 0` fallback
+  # here would append a second 0 and split the line in two.
   local iter shipped last
-  iter="$(grep -a -c '^\[.*=== iteration' "$dir/ralph.log" 2>/dev/null || echo 0)"
-  shipped="$(grep -a -c 'shipped [0-9a-f]\{40\}' "$dir/ralph.log" 2>/dev/null || echo 0)"
+  iter="$(grep -a -c '^\[.*=== iteration' "$dir/ralph.log" 2>/dev/null)"   || iter=0
+  shipped="$(grep -a -c 'shipped [0-9a-f]\{40\}' "$dir/ralph.log" 2>/dev/null)" || shipped=0
   last="$(grep -a '^\[' "$dir/ralph.log" 2>/dev/null | tail -1)"
 
   printf '%-20s %s\n' "$name" "$state"
@@ -165,17 +172,16 @@ status_one() {
 cmd_status() {
   local name="${1:-}"
   if [ -n "$name" ]; then
-    status_one "$RALPH_HOME/$name"
+    status_one "$RALPH_HOME/$name" || dim "no loop called $name in $RALPH_HOME"
     return
   fi
-  [ -d "$RALPH_HOME" ] || { dim "no loops yet — ralph new <name> <repo>"; return; }
+  [ -d "$RALPH_HOME" ] || { dim "no loops in $RALPH_HOME — ralph new <name> <repo>"; return; }
   local d found=0
   for d in "$RALPH_HOME"/*/; do
     [ -d "$d" ] || continue
-    found=1
-    status_one "${d%/}"
+    status_one "${d%/}" && found=1
   done
-  [ "$found" = 1 ] || dim "no loops yet — ralph new <name> <repo>"
+  [ "$found" = 1 ] || dim "no loops in $RALPH_HOME — ralph new <name> <repo>"
 }
 
 cmd_log() {
@@ -235,7 +241,7 @@ usage() {
   awk 'NR >= 3 && /^#/ { sub(/^# ?/, ""); print; next } NR >= 3 { exit }' "$0"
 }
 
-case "${1:-status}" in
+case "${1:-help}" in
   new)    shift; cmd_new    "$@" ;;
   start)  shift; cmd_start  "$@" ;;
   stop)   shift; cmd_stop   "$@" ;;
