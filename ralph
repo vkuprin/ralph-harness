@@ -54,6 +54,16 @@ dim()   { printf '\033[2m%s\033[0m\n' "$*"; }
 
 die() { red "ralph: $*" >&2; exit 1; }
 
+# shq <word>: that word as a shell will read it back. Every hint below is a
+# command the user is meant to paste, and a loop name is a directory and a
+# branch, not a label: the name gate in `ralph new` refuses what git refuses,
+# and git takes & ; | ( ) $ ` and both quotes. So `ralph new 'a&b'` scaffolded a
+# loop that works and then printed "3. ralph start a&b", which a shell runs as
+# `ralph start a` in the background followed by `b`. A repo path is worse still.
+# printf %q quotes only what needs it — an ordinary name still prints bare — and
+# its output is identical under bash 3.2 and 5, unlike `${x//a/b}` (see AGENTS.md).
+shq() { printf '%q' "$1"; }
+
 loop_dir() {
   local name="$1"
   [ -n "$name" ] || die "which loop? try: ralph status"
@@ -202,7 +212,7 @@ cmd_new() {
   green "created $dir"
   dim   "  1. write the job into $dir/PROMPT.md"
   dim   "  2. check the commands in $dir/config.sh"
-  dim   "  3. ralph start $name"
+  dim   "  3. ralph start $(shq "$name")"
 }
 
 cmd_start() {
@@ -216,7 +226,7 @@ cmd_start() {
   local pid=$!
   echo "$pid" > "$dir/ralph.pid"
   green "started $name as PID $pid"
-  dim   "  ralph status $name   ralph tail $name   ralph stop $name"
+  dim   "  ralph status $(shq "$name")   ralph tail $(shq "$name")   ralph stop $(shq "$name")"
 }
 
 # An old-layout loop kept its settings in its own ralph.sh, so it cannot be run
@@ -260,7 +270,7 @@ cmd_migrate() {
   green "migrated $name"
   dim   "  settings   $dir/config.sh"
   dim   "  the old script is kept as $dir/ralph.sh.old"
-  dim   "  check it, then: ralph start $name"
+  dim   "  check it, then: ralph start $(shq "$name")"
 }
 
 cmd_stop() {
@@ -445,7 +455,7 @@ cmd_review() {
   if [ ! -f "$dir/config.sh" ]; then
     # Saying "no such loop" of an old-layout directory is false: it exists, it
     # keeps no results.tsv and nothing here can read it until it is migrated.
-    [ -f "$dir/ralph.sh" ] && die "$name is the old layout, with no verdicts to show — convert it first: ralph migrate $name"
+    [ -f "$dir/ralph.sh" ] && die "$name is the old layout, with no verdicts to show — convert it first: ralph migrate $(shq "$name")"
     die "no loop called $name in $RALPH_HOME"
   fi
   local conf repo worktree branch push work
@@ -505,13 +515,13 @@ cmd_review() {
     printf '\nWaiting to merge into %s\n' "$branch"
     if [ -n "$waiting" ]; then
       printf '%s\n' "$waiting"
-      dim "  merge them: git -C \"$repo\" merge ralph/$name"
+      dim "  merge them: git -C $(shq "$repo") merge $(shq "ralph/$name")"
     else
       dim "  nothing"
     fi
   fi
   printf '\n'
-  dim "look closer: git -C \"$work\" show <sha>     every verdict: ralph results $name"
+  dim "look closer: git -C $(shq "$work") show <sha>     every verdict: ralph results $(shq "$name")"
 }
 
 cmd_results() {

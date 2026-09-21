@@ -68,4 +68,16 @@ command writes two different files under the two bashes this supports. `fill` in
   `git check-ref-format` alone lets a `/` through, and a `/` nests the loop
   directory one level down where `ralph status` never looks. `mkdir` is checked
   for the same reason — it used to fail and still print `created`.
+- A command the harness prints is a command someone will paste. The name gate
+  above stops only at what git stops at, and `&`, `;`, `|`, `$`, a backtick and
+  both quotes are all legal in a branch name, so a hint that prints the name raw
+  is one the shell splits: `3. ralph start a&b` runs `ralph start a` in the
+  background and then `b`. Each of the six goes through `shq`, which is
+  `printf %q`, so a name needing nothing still prints bare — that is why the
+  quoting looks absent most of the time and is not. Hand-written quotes are not
+  the same thing and are what a partial fix leaves behind: `git -C "$repo"
+  merge ralph/$name` looks quoted, and splits on the name. The six are the
+  `ralph new` hint, the three `ralph start` prints, the `ralph migrate` hint,
+  the message sending an old-layout loop to `ralph migrate`, and both commands
+  in `ralph review`'s footer — a seventh added later needs `shq` too.
 - Defaults keep a loop written for an older version behaving the same.

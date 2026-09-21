@@ -1115,6 +1115,103 @@ check "and a name with a dot runs on its own branch and keeps its commit" \
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------
+section "the commands ralph prints back are ones a shell will run"
+
+# The name gate above refuses what git refuses, and git takes plenty that a
+# shell reads as syntax: & ; | ( ) $ ` and both quotes are all legal in a branch
+# name. So `ralph new 'a&b'` scaffolded a loop that works and then told the user
+#   3. ralph start a&b
+# which pastes into a shell as `ralph start a` in the background, then `b`.
+make_repo "$T/app-hint" "$T/remote-hint.git"
+export RALPH_HOME="$T/home-hint"
+ESC="$(printf '\033')"
+
+# A `ralph` that records nothing but the arguments it was handed, one line per
+# call, so what is checked is what the shell passed on and not what was printed.
+mkdir -p "$T/shim-hint"
+printf '%s\n' '#!/bin/sh' 'printf "%s|%s\n" "$#" "$*" >> "$PASTED"' > "$T/shim-hint/ralph"
+chmod +x "$T/shim-hint/ralph"
+
+# printed <output> <command's first two words>: that command as ralph printed
+# it, colour escapes and the prose around it removed. A loop name cannot hold a
+# space — git refuses it — so the command ends at the first space after it.
+printed() {
+  printf '%s\n' "$1" | sed "s/$ESC\[[0-9;]*m//g" | grep -o "$2 [^ ]*" | head -1
+}
+# after <output> <the prose in front of the command>: the rest of that line. A
+# repo path may hold a space, so those two hints cannot end at one.
+after() {
+  printf '%s\n' "$1" | sed "s/$ESC\[[0-9;]*m//g" | sed -n "s/.*$2//p" | head -1
+}
+# pasted <command>: run it the way a user pasting it would, through that shim.
+pasted() {
+  : > "$T/pasted-hint"
+  # SC2031: the export in the date-shim subshell above never reached this PATH.
+  # shellcheck disable=SC2031
+  env "PASTED=$T/pasted-hint" "PATH=$T/shim-hint:$PATH" bash -c "$1
+wait" >/dev/null 2>&1
+  tr '\n' ' ' < "$T/pasted-hint"
+}
+
+hint_out="$("$ROOT/ralph" new 'a&b' "$T/app-hint")"
+check "the hint ralph new prints starts the loop it just made" \
+  test "$(pasted "$(printed "$hint_out" 'ralph start')")" = "2|start a&b "
+
+S="$T/stub-hint"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+printf '%s\n' 'QUIET_SLEEP=0 STEP_SLEEP=0 ERROR_SLEEP=0 PUSH=0 REVIEW=0 MAX_ITER=1' \
+  >> "$RALPH_HOME/a&b/config.sh"
+hint_out="$(STUB_DIR="$S" "$ROOT/ralph" start 'a&b')"
+for _ in $(seq 1 100); do "$ROOT/ralph" status 'a&b' | grep -q stopped && break; sleep 0.2; done
+check "and the loop it named really did run and kept a commit" \
+  test "$(statuses "$RALPH_HOME/a&b")" = "keep"
+for verb in status tail stop; do
+  check "the $verb hint ralph start prints names that loop and nothing else" \
+    test "$(pasted "$(printed "$hint_out" "ralph $verb")")" = "2|$verb a&b "
+done
+hint_out="$("$ROOT/ralph" review 'a&b' 2>&1)"
+check "the hint ralph review prints reaches that loop's verdicts" \
+  test "$(pasted "$(printed "$hint_out" 'ralph results')")" = "2|results a&b "
+
+# `ralph review` prints a second command, and it is the one that moves work:
+# with PUSH=0 the loop's commits sit on ralph/<name> until the human merges
+# them. It is checked by running it for real rather than through the shim,
+# because the claim is that the merge happens. Before the fix the line read
+#   merge them: git -C "<repo>" merge ralph/a&b
+# which a shell runs as `git merge ralph/a` in the background, then `b`.
+shipped="$(git -C "$T/app-hint" rev-parse 'ralph/a&b')"
+bash -c "$(after "$hint_out" 'merge them: ')
+wait" >/dev/null 2>&1
+check "the merge command ralph review prints really merges that loop's branch" \
+  test "$(git -C "$T/app-hint" rev-parse HEAD)" = "$shipped"
+# The path in the other half of the footer is the worktree's, and it holds the
+# loop name too. This passed before the fix — double quotes cover an `&` — so
+# it is here to stop a fix that quotes the name and leaves the path hand-quoted.
+check "and the 'look closer' command it prints shows a commit from the worktree" \
+  bash -c "$(after "$hint_out" 'look closer: ' | sed 's/ show <sha>.*/ show/') $shipped --no-patch --format=%s | grep -q 'stub: work'"
+
+# The same for the two hints only an old-layout loop can produce.
+mkdir -p "$T/home-hint-old/a&b"
+{ echo '#!/usr/bin/env bash'; echo "REPO=\"$T/app-hint\""; } > "$T/home-hint-old/a&b/ralph.sh"
+hint_out="$(RALPH_HOME="$T/home-hint-old" "$ROOT/ralph" review 'a&b' 2>&1)"
+check "the hint that sends an old-layout loop to migrate can be pasted" \
+  test "$(pasted "$(printed "$hint_out" 'ralph migrate')")" = "2|migrate a&b "
+hint_out="$(RALPH_HOME="$T/home-hint-old" "$ROOT/ralph" migrate 'a&b' 2>&1)"
+check "and so can the hint migrate prints when it is done" \
+  test "$(pasted "$(printed "$hint_out" 'ralph start')")" = "2|start a&b "
+
+# Guards. Quoting every name would satisfy all of the above and make the common
+# hint unreadable, so pin that a name needing nothing is still printed bare —
+# and that a name holding a quote survives, which wrapping in '' would not.
+hint_out="$("$ROOT/ralph" new plainhint "$T/app-hint")"
+check "a name that needs no quoting is still printed bare" \
+  bash -c 'printf "%s\n" "$1" | grep -q "^ralph start plainhint$"' _ "$(printed "$hint_out" 'ralph start')"
+hint_out="$("$ROOT/ralph" new "a'b" "$T/app-hint")"
+check "a name holding a single quote is quoted so the shell hands it back whole" \
+  test "$(pasted "$(printed "$hint_out" 'ralph start')")" = "2|start a'b "
+unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
 section "live steer hook"
 
 printf 'drop the CSS work\n' > "$T/steer.md"

@@ -166,8 +166,11 @@ just a label: it is the directory under `$RALPH_HOME`, and with `WORKTREE=1` it 
 also the branch `ralph/<name>` the loop commits to. So `ralph new` refuses a name
 that cannot be both — anything holding a `/`, and anything
 `git check-ref-format --branch` rejects, such as a space, `..`, `~`, `^`, `:` or a
-leading dot. A loop directory holds `config.sh`, `PROMPT.md` (the job) and
-`PROGRESS.md` (the memory), plus the
+leading dot. What is left still includes characters a shell reads as syntax — `&`,
+`;`, `|`, `$`, a backtick, a quote — so every command the CLI prints back for you
+to paste quotes the name and the repo path: paste it and it acts on the loop it
+names, including the `git merge` that `ralph review` offers you. A loop directory
+holds `config.sh`, `PROMPT.md` (the job) and `PROGRESS.md` (the memory), plus the
 log, the verdicts and the archive the harness writes. None of it goes into your
 repository: `PROMPT.md` tends to carry hostnames and per-project rules, and
 `PROGRESS.md` grows into a long journal. Only the newest `PROGRESS_KEEP` Log
