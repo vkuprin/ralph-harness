@@ -262,13 +262,18 @@ state_line() {
 # The loop rotates its log, so the history is spread over ralph.log and the
 # ralph.log.N behind it. Anything that reads the log reads them all, oldest
 # first, or the first rotation of a long run makes it look as if the loop had
-# only just started.
+# only just started. How many there are is whatever is on disk: LOG_KEEP has no
+# ceiling, so assuming a highest number dropped the oldest files silently. The
+# sort is numeric because ralph.log.10 sorts under ralph.log.2 by name, which
+# would hand the history back shuffled rather than short.
 log_files() {
-  local i=9
-  while [ "$i" -ge 1 ]; do
-    [ -f "$1/ralph.log.$i" ] && printf '%s\n' "$1/ralph.log.$i"
-    i=$((i - 1))
-  done
+  local f n
+  for f in "$1"/ralph.log.[0-9]*; do
+    [ -f "$f" ] || continue
+    n="${f##*.}"
+    case "$n" in *[!0-9]*) continue ;; esac
+    printf '%s\t%s\n' "$n" "$f"
+  done | sort -rn | cut -f2-
   [ -f "$1/ralph.log" ] && printf '%s\n' "$1/ralph.log"
   return 0
 }

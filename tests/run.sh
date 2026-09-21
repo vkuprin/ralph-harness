@@ -548,6 +548,48 @@ check "the lock is released" test ! -e "$D/ralph.lock"
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------
+section "rotated logs past ralph.log.9"
+
+# LOG_KEEP has no ceiling, so a loop asked to keep more history rotates into
+# ralph.log.10 and up. Both sides used to assume the count was fixed: the CLI
+# walked a hardcoded 9..1, and rotation removed exactly the file at LOG_KEEP.
+make_repo "$T/app-logn" "$T/remote-logn.git"
+export RALPH_HOME="$T/home-logn"
+D="$RALPH_HOME/deep"
+make_loop "$D" "$T/app-logn" 'LOG_KEEP=12'
+i=12
+while [ "$i" -ge 1 ]; do
+  printf '[2026-01-01 00:00:00] === iteration %s ===\n' "$i" > "$D/ralph.log.$i"
+  i=$((i - 1))
+done
+printf '[2026-01-01 00:00:00] === iteration 13 ===\n' > "$D/ralph.log"
+
+check "status counts the iterations in ralph.log.10 and up" \
+  bash -c '"$1" status deep | grep -q "iterations  13 run"' _ "$ROOT/ralph"
+check "ralph log reads past ralph.log.9" \
+  bash -c '"$1" log deep 20 | grep -q "iteration 12 "' _ "$ROOT/ralph"
+# The oldest file is ralph.log.12. A glob would sort it under ralph.log.2 and
+# hand the history back shuffled, so this pins the order as numeric.
+check "the log is read oldest first, by number and not by name" \
+  bash -c 'test "$("$1" log deep 20 | head -1)" = "$2"' _ "$ROOT/ralph" \
+  '[2026-01-01 00:00:00] === iteration 12 ==='
+
+# Lowering LOG_KEEP used to leave every file above the new number behind for
+# good, so the bound of LOG_MAX_BYTES * (LOG_KEEP + 1) was not a bound at all —
+# and once the CLI could read past nine it would read that stale file for ever.
+S="$T/stub-logn"; mkdir -p "$S"; printf 'nothing\n' > "$S/modes"
+O="$RALPH_HOME/orphan"
+make_loop "$O" "$T/app-logn" 'MAX_ITER=6 LOG_MAX_BYTES=200 LOG_KEEP=2'
+echo "left over from when LOG_KEEP was higher" > "$O/ralph.log.5"
+run_loop "$O" "$S"
+
+check "the run rotated at all, so the check below means something" test -f "$O/ralph.log.1"
+check "rotation prunes the logs left above a lowered LOG_KEEP" test ! -e "$O/ralph.log.5"
+check "rotation still keeps the LOG_KEEP files below it" \
+  bash -c 'test -f "$1.2" && test ! -e "$1.3"' _ "$O/ralph.log"
+unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
 section "CLI through a symlink on PATH"
 
 mkdir -p "$T/bin" "$T/deep/bin"

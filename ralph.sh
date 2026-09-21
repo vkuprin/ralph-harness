@@ -113,11 +113,19 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 # `ralph status`, `ralph log` and `ralph tail` read the rotated files too.
 rotate_log() {
   [ "${LOG_MAX_BYTES:-0}" -gt 0 ] 2>/dev/null || return 0
-  local size i
+  local size i f n
   size=$(wc -c < "$LOG" 2>/dev/null | tr -d ' ') || return 0
   [ -n "$size" ] && [ "$size" -ge "$LOG_MAX_BYTES" ] || return 0
   if [ "${LOG_KEEP:-0}" -ge 1 ] 2>/dev/null; then
-    rm -f "$LOG.$LOG_KEEP"
+    # Everything numbered at or above LOG_KEEP goes, not only the file at
+    # exactly that number: a loop whose LOG_KEEP was lowered still carries the
+    # files from the higher setting, and nothing else would ever remove them,
+    # so the bound below would not hold.
+    for f in "$LOG".[0-9]*; do
+      n="${f##*.}"
+      case "$n" in *[!0-9]*) continue ;; esac
+      if [ -f "$f" ] && [ "$n" -ge "$LOG_KEEP" ]; then rm -f "$f"; fi
+    done
     i=$((LOG_KEEP - 1))
     while [ "$i" -ge 1 ]; do
       [ -f "$LOG.$i" ] && mv "$LOG.$i" "$LOG.$((i + 1))"

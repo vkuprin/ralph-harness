@@ -168,7 +168,9 @@ The log is bounded the same way. Every agent's whole output goes into `ralph.log
 so a loop left running for days would write gigabytes into one file; instead it
 rotates between iterations once it passes `LOG_MAX_BYTES`, keeping `LOG_KEEP`
 older files as `ralph.log.1` and up. `ralph status`, `ralph log` and `ralph tail`
-read the rotated files too, so the iteration counts do not reset when it rotates.
+read the rotated files too, however many there are, so the iteration counts do
+not reset when it rotates. Lower `LOG_KEEP` and the files above the new number
+are removed at the next rotation, so the total stays where you set it.
 
 A loop that ends by `kill -9`, the OOM killer or a reboot leaves its `ralph.pid`
 and `ralph.lock` behind, and the kernel later hands that number to some unrelated
@@ -224,7 +226,7 @@ the same.
 | `ESCALATE_AFTER` | `3` | `3` | failures in a row before the prompt says pivot |
 | `PROGRESS_KEEP` | `8` | `8` | Log entries kept in `PROGRESS.md`; `0` keeps all |
 | `LOG_MAX_BYTES` | `10000000` | `10000000` | rotate `ralph.log` once it passes this between iterations; `0` never rotates |
-| `LOG_KEEP` | `3` | `3` | rotated logs kept, `ralph.log.1` up; `0` throws the old one away |
+| `LOG_KEEP` | `3` | `3` | rotated logs kept, `ralph.log.1` up, no ceiling; lowering it prunes the rest; `0` throws the old one away |
 | `LIVE_STEER` | `1` | `1` | let `ralph steer` reach the iteration in flight |
 | `CLOSING` | | see `ralph.sh` | the last line of every prompt |
 

@@ -103,7 +103,9 @@ PROGRESS_KEEP=8
 # ralph.log holds every agent's whole output, so it grows without bound on a loop
 # that runs for days. It rotates between iterations once it passes LOG_MAX_BYTES,
 # keeping LOG_KEEP older files (ralph.log.1 and up); status, log and tail read
-# them all. 0 bytes never rotates; 0 kept throws the old log away.
+# them all, however many there are. There is no ceiling on LOG_KEEP, and lowering
+# it prunes the files above the new number at the next rotation.
+# 0 bytes never rotates; 0 kept throws the old log away.
 LOG_MAX_BYTES=10000000
 LOG_KEEP=3
 
