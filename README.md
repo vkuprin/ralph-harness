@@ -195,10 +195,10 @@ the same.
 | `STEP_SLEEP` | `30` | `30` | seconds between iterations |
 | `ADD_DIRS` | | `()` | extra directories the agent may read |
 | `WORKTREE` | `1` | `0` | work in a harness-owned worktree; every gate needs it |
-| `WORKTREE_DIR` | | `<repo>-ralph-<name>` next to the repo | where the worktree goes |
+| `WORKTREE_DIR` | | `<repo>-ralph-<name>` next to the repo | where the worktree goes; a path holding anything but a worktree of `REPO` is refused |
 | `BRANCH` | `main` | `main` | the branch the worktree starts from and pushes to |
-| `PUSH` | `1` | `0` | push kept commits to `origin/$BRANCH`; with `0` they wait on `ralph/<name>` for you |
-| `SETUP_CMD` | | | run once in a new worktree (`npm ci`, copy `.env`) |
+| `PUSH` | `1` | `0` | push kept commits to `origin/$BRANCH`; with `0` they wait on `ralph/<name>` for you. With no `origin` it says so once and behaves as `0` |
+| `SETUP_CMD` | | | run once in a new worktree (`npm ci`, copy `.env`). If it fails the worktree and its branch go, so the next start runs it again |
 | `VERIFY_CMD` | | | your check, run after every commit; failing resets the commit |
 | `VERIFY_TIMEOUT` | `1800` | `1800` | seconds `VERIFY_CMD` may take |
 | `FROZEN` | `()` | `()` | paths a commit may not touch |
@@ -225,7 +225,9 @@ The agent runs with `--dangerously-skip-permissions`: it can run any command you
 user can. The harness narrows what that can do to your code, not to your machine.
 
 - With `WORKTREE=1` it never touches your own checkout, and everything that
-  resets commits happens only inside its own worktree.
+  resets commits happens only inside its own worktree. A `WORKTREE_DIR` that
+  holds a checkout of some other repository is refused at start rather than
+  reset: the loop only discards work on a worktree of its own `REPO`.
 - With `PUSH=1` the agent's own push to this repository fails, however it spells
   it; only the harness pushes, and only what passed the gates. The block is keyed
   on the remote's URL, so a push to some other repository — the throwaway remote

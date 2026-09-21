@@ -32,6 +32,9 @@ STEP_SLEEP=30
 # below needs it. The worktree sits next to the repo by default, so build tools
 # that look at parent directories see the same layout.
 WORKTREE=1
+# Somewhere other than next to the repo. It must be free, or already be a
+# worktree of REPO: the harness resets and cleans whatever is there after every
+# iteration, so it refuses to start on a checkout that is not this loop's.
 # WORKTREE_DIR="/somewhere/else"
 
 # The branch the worktree starts from, and the one kept commits are pushed to.
@@ -39,10 +42,13 @@ BRANCH="main"
 
 # 1: the harness pushes kept commits to origin/$BRANCH itself (the agent cannot).
 # 0: commits stay on ralph/__NAME__ for you to merge.
+# A repository with no origin says so once at start and behaves as 0.
 PUSH=1
 
 # Runs once in a new worktree. Untracked files such as .env and node_modules do
-# not exist there until something puts them there.
+# not exist there until something puts them there. If it fails the loop stops
+# and takes the half-built worktree and its branch with it, so fixing the
+# command and starting again runs it from scratch.
 # SETUP_CMD="npm ci && cp __REPO__/.env ."
 SETUP_CMD=""
 

@@ -346,6 +346,123 @@ check "it committed into the repo its old ralph.sh named" \
   test "$(git -C "$T/app-m" rev-list --count HEAD)" = 8
 
 # ---------------------------------------------------------------------------
+section "bad configuration and odd inputs"
+
+# A SETUP_CMD that fails. The half-built worktree goes, and the branch it was
+# built on goes with it: keeping the branch made the next start take the "reuse
+# the branch" path, which skips SETUP_CMD, so the loop ran for good in a
+# worktree its own setup had never prepared.
+make_repo "$T/app-g" "$T/remote-g.git"
+S="$T/stub-g"; mkdir -p "$S"
+printf '%s\n' commit commit > "$S/modes"
+make_loop "$T/loops/g" "$T/app-g" 'WORKTREE=1 MAX_ITER=2' \
+  "SETUP_CMD=\"echo preparing >> '$T/setup-runs'; exit 3\""
+run_loop "$T/loops/g" "$S"
+run_loop "$T/loops/g" "$S"
+
+check "a failed SETUP_CMD leaves no worktree behind" test ! -e "$T/app-g-ralph-g"
+check "the next start runs SETUP_CMD again instead of skipping it" \
+  test "$(wc -l < "$T/setup-runs" | tr -d ' ')" = 2
+check "a loop whose setup failed runs no iteration" test ! -e "$T/loops/g/results.tsv"
+
+# WORKTREE_DIR pointing somewhere that is not a worktree of REPO. The harness
+# hard-resets and cleans whatever it finds there after every iteration, so
+# accepting any git checkout means discarding a stranger's work.
+make_repo "$T/app-h" "$T/remote-h.git"
+git init -q -b main "$T/elsewhere"
+(
+  cd "$T/elsewhere" || exit 1
+  echo keep > precious.txt
+  git add -A && git commit -qm "not ralph's work"
+  echo scratch > untracked.txt
+)
+S="$T/stub-h"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+make_loop "$T/loops/h" "$T/app-h" 'WORKTREE=1 MAX_ITER=1' "WORKTREE_DIR=\"$T/elsewhere\""
+run_loop "$T/loops/h" "$S"
+
+check "a WORKTREE_DIR holding someone else's checkout is refused" \
+  grep -q 'not a worktree of' "$T/loops/h/ralph.log"
+check "nothing was committed into that checkout" \
+  test "$(git -C "$T/elsewhere" rev-list --count HEAD)" = 1
+check "and its uncommitted file was not cleaned away" test -f "$T/elsewhere/untracked.txt"
+
+mkdir -p "$T/notempty" && echo x > "$T/notempty/x"
+make_loop "$T/loops/h2" "$T/app-h" 'WORKTREE=1 MAX_ITER=1' "WORKTREE_DIR=\"$T/notempty\""
+run_loop "$T/loops/h2" "$S"
+check "a WORKTREE_DIR that exists and holds no checkout stops the loop" \
+  grep -q 'cannot create worktree' "$T/loops/h2/ralph.log"
+
+# PUSH=1 in a repository with no origin. Every sync used to fetch, fail, and
+# log git's four-line complaint: for a loop that runs for days that is the whole
+# log. Say it once and carry on as PUSH=0.
+git init -q -b main "$T/app-i"
+(
+  cd "$T/app-i" || exit 1
+  printf '#!/bin/sh\nexit 0\n' > measure.sh && chmod +x measure.sh
+  git add -A && git commit -qm initial
+)
+S="$T/stub-i"; mkdir -p "$S"
+printf '%s\n' commit commit > "$S/modes"
+make_loop "$T/loops/i" "$T/app-i" 'WORKTREE=1 PUSH=1 MAX_ITER=2'
+run_loop "$T/loops/i" "$S"
+
+check "with no origin the loop still runs and keeps its commits" \
+  test "$(statuses "$T/loops/i")" = "keep keep"
+check "the missing origin is logged once, not once per sync" \
+  test "$(grep -c 'no origin remote' "$T/loops/i/ralph.log")" = 1
+check "and no failed fetch is logged at all" \
+  bash -c '! grep -q "fetch failed" "$1/loops/i/ralph.log"' _ "$T"
+
+# ralph/<name> deleted while the loop runs. The worktree's HEAD then names a ref
+# that is gone, so `git rev-parse HEAD` fails and with it every gate. The loop
+# used to stop and ask for a human; it can put the branch back itself.
+make_repo "$T/app-j" "$T/remote-j.git"
+S="$T/stub-j"; mkdir -p "$S"
+printf '%s\n' drop-branch commit > "$S/modes"
+make_loop "$T/loops/j" "$T/app-j" 'WORKTREE=1 MAX_ITER=2'
+run_loop "$T/loops/j" "$S"
+
+check "a branch deleted under the loop is put back, and the loop goes on" \
+  test "$(statuses "$T/loops/j")" = "revert:history keep"
+check "so it never stops asking for a human" \
+  bash -c '! grep -q "fix the worktree by hand" "$1/loops/j/ralph.log"' _ "$T"
+check "the restored branch and the worktree agree" \
+  test "$(git -C "$T/app-j" rev-parse ralph/j)" = "$(git -C "$T/app-j-ralph-j" rev-parse HEAD)"
+
+# A PROMPT.md with no "## The job" heading. The reviewer was handed an empty job
+# and judged the diff against nothing at all.
+make_repo "$T/app-k" "$T/remote-k.git"
+S="$T/stub-k"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+make_loop "$T/loops/k" "$T/app-k" 'WORKTREE=1 REVIEW=1 MAX_ITER=1'
+printf 'Find and fix the races in the scheduler.\n' > "$T/loops/k/PROMPT.md"
+run_loop "$T/loops/k" "$S"
+check "with no '## The job' heading the reviewer still gets the job" \
+  grep -q 'races in the scheduler' "$S/prompt.review.1"
+
+# MAX_ITER=0: a ceiling of none. Stop before the first iteration rather than
+# running one and calling it zero.
+make_loop "$T/loops/l" "$T/app-k" 'WORKTREE=1 MAX_ITER=0'
+run_loop "$T/loops/l" "$S"
+check "MAX_ITER=0 runs no iteration" grep -q 'finished after 0 iterations' "$T/loops/l/ralph.log"
+check "and records no verdict" test ! -e "$T/loops/l/results.tsv"
+
+# A repo path with a space in it, through every gate there is.
+make_repo "$T/my app" "$T/remote-n.git"
+S="$T/stub-n"; mkdir -p "$S"
+printf '%s\n' commit nothing > "$S/modes"
+make_loop "$T/loops/n" "$T/my app" \
+  'WORKTREE=1 PUSH=1 REVIEW=1 MAX_ITER=2' 'VERIFY_CMD="./measure.sh"'
+run_loop "$T/loops/n" "$S" "$T/remote-n.git"
+
+check "a repo path with a space survives verify, review and push" \
+  test "$(statuses "$T/loops/n")" = "keep quiet"
+check "its worktree was made next to it" test -d "$T/my app-ralph-n"
+check "and its commit reached origin" \
+  grep -q 'stub: work' <(git -C "$T/remote-n.git" log --format=%s main)
+
+# ---------------------------------------------------------------------------
 section "CLI through a symlink on PATH"
 
 mkdir -p "$T/bin" "$T/deep/bin"

@@ -279,18 +279,34 @@ clean_tree() {
   git clean -qfd
 }
 
-# revert_to <sha>: put ralph/<name> back at <sha>, whatever the agent did.
+# revert_to <sha>: put ralph/<name> back at <sha>, whatever the agent did —
+# left the branch, rewrote its history, or deleted the ref out from under the
+# worktree. -B remakes the branch when it is gone, so a deleted ref costs one
+# iteration instead of ending the run.
 revert_to() {
-  if [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" != "ralph/$NAME" ]; then
-    git checkout -q -f "ralph/$NAME" || return 1
-  fi
-  git reset -q --hard "$1" && git clean -qfd
+  git checkout -q -f -B "ralph/$NAME" "$1" || return 1
+  git clean -qfd
+}
+
+# The repository a checkout belongs to, as an absolute path, or nothing.
+# Everything the harness does in $WORK resets and cleans it, so $WORK has to be
+# this REPO's own worktree and not merely some git checkout that happens to sit
+# at the path WORKTREE_DIR names.
+git_home() {
+  local common
+  common="$(git -C "$1" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  [ -n "$common" ] || return 1
+  # pwd -P, because git answers with ".git" for a checkout and an absolute path
+  # for a worktree, and on macOS that absolute path has been through /private.
+  (cd "$1" && cd "$common" && pwd -P)
 }
 
 setup_worktree() {
   WORK="${WORKTREE_DIR:-$(dirname "$REPO")/$(basename "$REPO")-ralph-$NAME}"
   if git -C "$WORK" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    return 0
+    [ "$(git_home "$WORK")" = "$(git_home "$REPO")" ] && return 0
+    log "$WORK is not a worktree of $REPO — refusing to reset a checkout this loop does not own"
+    exit 1
   fi
   git -C "$REPO" worktree prune
   if git -C "$REPO" show-ref --verify --quiet "refs/heads/ralph/$NAME"; then
@@ -305,13 +321,17 @@ setup_worktree() {
     if [ -n "$SETUP_CMD" ]; then
       log "setup: $SETUP_CMD"
       if ! (cd "$WORK" && bash -c "$SETUP_CMD") >> "$LOG" 2>&1; then
-        log "SETUP_CMD failed; removing the new worktree (branch ralph/$NAME stays)"
+        # The branch goes with the worktree. Keeping it sent the next start down
+        # the "reuse the branch" path above, which never runs SETUP_CMD, so the
+        # loop ran for good in a worktree its own setup had never prepared.
+        log "SETUP_CMD failed; removing the new worktree and branch ralph/$NAME, so the next start runs setup again"
         git -C "$REPO" worktree remove --force "$WORK" >/dev/null 2>&1
+        git -C "$REPO" branch -q -D "ralph/$NAME" >/dev/null 2>&1
         exit 1
       fi
     fi
   fi
-  git -C "$WORK" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+  [ "$(git_home "$WORK")" = "$(git_home "$REPO")" ] \
     || { log "worktree $WORK is not usable"; exit 1; }
   log "worktree $WORK on ralph/$NAME"
 }
@@ -341,6 +361,9 @@ review() {
   local before="$1" job steering
   { git diff --stat "$before" HEAD; echo; git diff "$before" HEAD; } | head -c 200000 > "$DIR/review.diff"
   job="$(awk '/^## The job/{f=1; next} /^## /{f=0} f' "$DIR/PROMPT.md")"
+  # A PROMPT.md written without that heading is still the job. Better the
+  # reviewer reads all of it than judges the diff against nothing at all.
+  [ -n "$job" ] || job="$(cat "$DIR/PROMPT.md")"
   steering="$(awk '/^## Steering/{f=1; next} /^## /{f=0} f' "$DIR/PROMPT.md")"
   # Steering handed to the agent mid-iteration by hooks/steer.sh.
   if [ -s "$DIR/STEER.md.delivered" ]; then
@@ -481,6 +504,15 @@ sync_once() {
 }
 
 # ------------------------------------------------------------------ start
+
+# PUSH with nowhere to push. Every sync would fetch, fail, and copy git's
+# four-line complaint into the log; over days that is the whole log. Say it
+# once and keep the commits local, which is what PUSH=0 does anyway.
+if [ "$WORKTREE" = 1 ] && [ "$PUSH" = 1 ] \
+  && ! git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
+  log "PUSH=1 but $REPO has no origin remote — keeping commits local, as PUSH=0 does"
+  PUSH=0
+fi
 
 if [ "$WORKTREE" = 1 ]; then
   setup_worktree

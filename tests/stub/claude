@@ -61,6 +61,10 @@ case "$mode" in
   fail429)      echo "the audit found: upstream returned HTTP 429 on /login"
                 echo "then the agent crashed"; exit 1 ;;
   nothing)      echo "Measured again; nothing new." ;;
+  drop-branch)  # the branch goes out from under the loop, as a stray
+                # `git update-ref -d` or a human tidying refs would do
+                commit work
+                git update-ref -d "$(git symbolic-ref HEAD)" ;;
   push-attempt) commit pushed
                 git push -q origin HEAD:main >/dev/null 2>&1
                 echo "$?" > "$d/push-attempt.rc"
