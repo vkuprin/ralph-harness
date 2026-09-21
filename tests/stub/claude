@@ -25,6 +25,7 @@ bump() {
 case " $* " in
   *" --restricted "*)
     n="$(bump review_calls)"
+    printf '%s\n' "$*" > "$d/argv.review.$n"
     cat > "$d/prompt.review.$n"
     v="$(pop verdicts ACCEPT)"
     if [ "$v" = LIMIT ]; then echo "You've hit your limit · resets 3am"; exit 1; fi
@@ -35,6 +36,7 @@ case " $* " in
 esac
 
 n="$(bump agent_calls)"
+printf '%s\n' "$*" > "$d/argv.agent.$n"
 cat > "$d/prompt.agent.$n"
 env | grep '^BOUNDED_' >> "$d/leaked-env"
 mode="$(pop modes nothing)"

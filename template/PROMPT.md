@@ -10,6 +10,19 @@ its turn. Write both files for a stranger, because every reader is one.
 outcome is a finite list of tasks, say so and set QUIET_STOP in config.sh — a loop
 that can finish should be allowed to.>
 
+## Done looks like
+
+<What would convince you the job is done: an example or a check, not an
+adjective. "The landing page renders with the brand fonts and colours at 375 and
+1440 px", "every pricing endpoint answers in under 200 ms by scripts/bench.sh".
+The reviewer holds each commit against it.>
+
+## Direction
+
+<For a loop that runs open-ended: what to look for, in which order, and what to
+leave alone. Without it, a loop whose list is done drifts into whatever it
+happens to find.>
+
 ## The repository
 
 - Commit on the branch you are on. Do not push: the harness checks every commit
@@ -43,5 +56,8 @@ that can finish should be allowed to.>
 - Leave the tree clean. Scratch scripts and measurement directories get deleted
   before the commit, not gitignored.
 - Never edit the frozen files. The measurement is not yours to move.
+- A closed item is deleted from PROGRESS.md, not carried from entry to entry.
+- If the last three commits under "What this loop shipped recently" share a
+  topic, pick a different one, unless PROGRESS.md says why this one still pays.
 - <Project rules: what must never be touched, what must be regenerated rather than
   edited, where commits are made from.>

@@ -1101,8 +1101,10 @@ make_loop "$D" "$T/app-cap" 'MAX_ITER=2 PROGRESS_KEEP=8 PROGRESS_MAX_BYTES=4000'
 } > "$D/PROGRESS.md"
 run_loop "$D" "$S"
 
+# Measured over PROMPT.md, so a template that grows does not move the bar:
+# PROGRESS_MAX_BYTES of memory plus the harness's own sections, and no more.
 check "one entry under the entry cap is still bounded by bytes" \
-  test "$(wc -c < "$S/prompt.agent.2" | tr -d ' ')" -lt 8000
+  test $(( $(wc -c < "$S/prompt.agent.2") - $(wc -c < "$D/PROMPT.md") )) -lt 8000
 check "the entry cap left that file alone, as it should" \
   test "$(grep -c '^### ' "$D/PROGRESS.md")" = 1
 
@@ -1941,6 +1943,44 @@ check "the template leaves NOTIFY_CMD empty, with its examples commented out" \
   bash -c 'NOTIFY_CMD=x; . "$1/template/config.sh" >/dev/null 2>&1
            test -z "$NOTIFY_CMD" && grep -q "osascript" "$1/template/config.sh" &&
            grep -q "api.telegram.org" "$1/template/config.sh"' _ "$ROOT"
+
+# ---------------------------------------------------------------------------
+section "the reviewer sees what done looks like; the loop sees what it shipped"
+
+# A loop read "a landing page" as unstyled text. The human's picture of the
+# finished result goes to the reviewer, as a thing a commit may not contradict,
+# never as a bar every single step must clear.
+make_repo "$T/app-done" "$T/remote-done.git"
+S="$T/stub-done"; mkdir -p "$S"
+printf '%s\n' commit commit commit > "$S/modes"
+make_loop "$T/loops/done" "$T/app-done" 'WORKTREE=1 PUSH=1 REVIEW=1 MAX_ITER=3' \
+  'VERIFY_CMD="./measure.sh"' 'REVIEW_MODEL="haiku-for-review"'
+done_text='The landing page renders with the brand fonts and colours at 375 px and 1440 px.'
+awk -v d="$done_text" '
+  /^## Done looks like/ { print; print ""; print d; print ""; skip = 1; next }
+  skip && /^## /        { skip = 0 }
+  !skip
+' "$T/loops/done/PROMPT.md" > "$T/loops/done/PROMPT.tmp" && mv "$T/loops/done/PROMPT.tmp" "$T/loops/done/PROMPT.md"
+run_loop "$T/loops/done" "$S" "$T/remote-done.git"
+
+check "the reviewer is shown what done looks like" grep -qF "$done_text" "$S/prompt.review.1"
+check "and told a step toward it is not a reason to reject" grep -qi 'not the finished result yet' "$S/prompt.review.1"
+check "the reviewer runs on REVIEW_MODEL" grep -q -- '--model haiku-for-review' "$S/argv.review.1"
+check "the agent still runs on MODEL" bash -c '! grep -q haiku-for-review "$1"' _ "$S/argv.agent.1"
+check "the third prompt lists what the loop shipped, from git" \
+  bash -c 'sed -n "/^# What this loop shipped recently/,\$p" "$1" | grep -q "stub: work (agent call 2)"' _ "$S/prompt.agent.3"
+check "and the first prompt, with nothing shipped yet, has no such list" \
+  bash -c '! grep -q "^# What this loop shipped recently" "$1"' _ "$S/prompt.agent.1"
+
+# The template's own placeholder is not a picture of anything.
+make_repo "$T/app-done2" "$T/remote-done2.git"
+S="$T/stub-done2"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+make_loop "$T/loops/done2" "$T/app-done2" 'WORKTREE=1 PUSH=1 REVIEW=1 MAX_ITER=1' 'VERIFY_CMD="./measure.sh"'
+run_loop "$T/loops/done2" "$S" "$T/remote-done2.git"
+check "a Done looks like left as the template's placeholder is not shown" \
+  bash -c '! grep -q "What done looks like" "$1"' _ "$S/prompt.review.1"
+check "without REVIEW_MODEL the reviewer runs on MODEL" grep -q -- '--model opus' "$S/argv.review.1"
 
 # ---------------------------------------------------------------------------
 echo

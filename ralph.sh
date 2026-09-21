@@ -118,6 +118,9 @@ REVIEW=0
 # past a session limit's reset and well short of a weekly one. 0 or a
 # non-number means no ceiling, which is how this behaved before.
 REVIEW_LIMIT_TRIES=12
+# The reviewer's model. Empty means MODEL. A cheaper one saves the plan limit
+# the loop shares with its human.
+REVIEW_MODEL=""
 RATE_LIMIT_SLEEP=1800
 ERROR_SLEEP=300
 ERROR_STOP=0
@@ -494,6 +497,23 @@ inject_progress() {
   INJECT_WARNED=1
 }
 
+# The commits this loop kept, newest first, as git has them. Each agent otherwise
+# knows only what its predecessors wrote down, and that is how a loop carried a
+# closed item forward for three entries and spent three iterations on one topic.
+# Built from the keep rows, not from `git log`, which on a shared branch also
+# shows commits by people and by other loops. Subjects are cut, so the prompt
+# stays bounded whatever the agents write.
+shipped_recently() {
+  [ -f "$RESULTS" ] || return 0
+  local lines
+  lines="$(tail -n +2 "$RESULTS" \
+    | awk -F'\t' '$5 ~ /^keep/ {r[n++] = $3 " " $4} END {for (i = n - 1; i >= 0 && i >= n - 5; i--) print r[i]}' \
+    | while read -r b a; do git log --format='%h %s' "$b..$a" 2>/dev/null; done \
+    | cut -c1-200 | head -n 10)"
+  [ -n "$lines" ] || return 0
+  printf '\n---\n\n# What this loop shipped recently (from git, newest first)\n\n%s\n' "$lines"
+}
+
 build_prompt() {
   INJECT_NOTE=""
   {
@@ -510,6 +530,7 @@ build_prompt() {
       head -n 1 "$RESULTS"
       tail -n +2 "$RESULTS" | tail -n 10
     fi
+    shipped_recently
 
     if [ "$WORKTREE" = 1 ]; then
       printf '\n---\n\n# Where you work\n\n'
@@ -672,6 +693,22 @@ review() {
   # reviewer reads all of it than judges the diff against nothing at all.
   [ -n "$job" ] || job="$(cat "$DIR/PROMPT.md")"
   steering="$(awk '/^## Steering/{f=1; next} /^## /{f=0} f' "$DIR/PROMPT.md")"
+  # The human's picture of the finished result, unless it is still the
+  # template's <placeholder>, which pictures nothing.
+  local done_like done_block=""
+  done_like="$(awk '/^## Done looks like/{f=1; next} /^## /{f=0} f' "$DIR/PROMPT.md")"
+  if printf '%s' "$done_like" | grep -q '[^[:space:]]' \
+    && ! printf '%s' "$done_like" | tr -d '\n' | grep -Eq '^[[:space:]]*<.*>[[:space:]]*$'; then
+    done_block="
+## What done looks like (from the human)
+
+$done_like
+
+Hold the commit against this, as one step toward it. Reject a commit that
+contradicts it, or one that claims the job is done while this is not met. A step
+that is merely not the finished result yet is not a reason to reject.
+"
+  fi
   # Steering handed to the agent mid-iteration by hooks/steer.sh.
   if [ -s "$DIR/STEER.md.delivered" ]; then
     steering="${steering:+$steering
@@ -688,7 +725,7 @@ $job
 ## Steering from the human (outranks the job)
 
 ${steering:-(none)}
-
+$done_block
 ## What to review
 
 The commits are in $DIR/review.diff: a stat, then the full diff, capped at 200 KB.
@@ -712,7 +749,7 @@ EOF
     : > "$DIR/review.out"
     run_bounded "$ITER_TIMEOUT" "$DIR/.review-prompt" "$DIR/review.out" \
       claude -p --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
-      --permission-prompts none --add-dir "$DIR" --model "$MODEL"
+      --permission-prompts none --add-dir "$DIR" --model "${REVIEW_MODEL:-$MODEL}"
     cat "$DIR/review.out" >> "$LOG"
     verdict="$(grep -a '^VERDICT:' "$DIR/review.out" | tail -n 1)"
     # A limit is not an answer: wait it out and ask again, rather than ship the
