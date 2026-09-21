@@ -48,27 +48,23 @@ The rest — backing off instead of stopping when an iteration ships nothing, re
 the prompt file every iteration so a running loop can be redirected — follows from
 those two.
 
-## Install
-
-```bash
-git clone git@github.com:vkuprin/ralph-harness.git ~/Desktop/Coding/ralph-harness
-ln -s ~/Desktop/Coding/ralph-harness/ralph ~/.local/bin/ralph
-```
-
-Needs `bash`, `git`, and the `claude` CLI on `PATH`. Loops live in `$RALPH_HOME`,
-which defaults to `~/.claude/ralph`.
-
 ## Use
 
+Clone it and run `./ralph` from the checkout. It needs `bash`, `git`, and the `claude`
+CLI on `PATH`; nothing gets installed anywhere.
+
 ```bash
-ralph new audit ~/code/my-app     # scaffold ~/.claude/ralph/audit
+./ralph new audit ~/code/my-app     # scaffold ~/.claude/ralph/audit
 $EDITOR ~/.claude/ralph/audit/PROMPT.md
-ralph start audit
-ralph status                      # all loops: running, iterations, HEAD
-ralph tail audit
-ralph steer audit "drop the CSS work, the login flow is broken"
-ralph stop audit
+./ralph start audit
+./ralph status                      # all loops: running, iterations, HEAD
+./ralph tail audit
+./ralph steer audit "drop the CSS work, the login flow is broken"
+./ralph stop audit
 ```
+
+Loops live in `$RALPH_HOME`, which defaults to `~/.claude/ralph`, so it does not matter
+which directory you call it from.
 
 `steer` writes into `PROMPT.md`, which is re-read at the top of every iteration, so it
 redirects a loop that is already running. It lands on the next iteration, not the one
