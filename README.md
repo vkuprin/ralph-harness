@@ -239,6 +239,15 @@ writes one with the values in the first column. A setting left out takes the val
 in the second, which is how a loop written for an earlier version keeps behaving
 the same.
 
+Sourced means the values are read back as bash, so `ralph new` writes the repo
+path already quoted for the shell. Unlike the loop name, a repo path is not
+restricted — it is a directory that already exists — and one holding a `$`, a
+backtick or a `"` used to arrive at the loop as something else: expanded to a
+different path, or with the command in it actually run, every start and every
+`ralph status`. A plain path is still written bare, so the file reads the same as
+it always did. `ralph migrate` writes the path it recovers the same way. Edit it by hand and ordinary bash applies again: `REPO="$HOME/app"`
+does what it looks like.
+
 A setting the harness could not read is not one you left out. Bash abandons the
 rest of a file it cannot parse, so a stray bracket used to leave every setting
 below it at its default — most of all `WORKTREE=0`, which puts an ungated loop in

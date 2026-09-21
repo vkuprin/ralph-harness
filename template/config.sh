@@ -1,7 +1,9 @@
 # Settings for the __NAME__ loop. Sourced by ralph.sh at every start.
 
-# The checkout the loop works in. Required.
-REPO="__REPO__"
+# The checkout the loop works in. Required. Written already quoted for the
+# shell, because this file is sourced: an unquoted $ or backtick in a path
+# would be expanded or run on the way back in.
+REPO=__REPO_SH__
 
 # Which model runs an iteration (and the reviewer).
 MODEL="opus"

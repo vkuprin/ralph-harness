@@ -170,7 +170,10 @@ printf '%s\n' sleep > "$S/modes"
 export RALPH_HOME="$T/home"
 "$ROOT/ralph" new demo "$T/app-d" >/dev/null
 check "ralph new scaffolds the loop" test -f "$RALPH_HOME/demo/config.sh"
-check "ralph new fills in the repo path" grep -q "REPO=\"$T/app-d\"" "$RALPH_HOME/demo/config.sh"
+# The value config.sh hands back when sourced, not the byte form of the line:
+# the repo path is written shell-quoted so bash reads it back unchanged.
+check "ralph new fills in the repo path" \
+  bash -c 'REPO=; . "$1/demo/config.sh" >/dev/null 2>&1; test "$REPO" = "$2"' _ "$RALPH_HOME" "$T/app-d"
 echo 'QUIET_SLEEP=0 STEP_SLEEP=0 ERROR_SLEEP=0 ITER_TIMEOUT=600 REVIEW=0 PUSH=0' >> "$RALPH_HOME/demo/config.sh"
 STUB_DIR="$S" "$ROOT/ralph" start demo >/dev/null
 for _ in $(seq 1 50); do [ -s "$S/modes.done" ] && break; sleep 0.2; done
@@ -426,7 +429,8 @@ wait "$legacy_pid" 2>/dev/null
 
 check "migrate converts a stopped loop" \
   bash -c 'RALPH_HOME="$1/home-m" "$2" migrate legacy' _ "$T" "$ROOT/ralph"
-check "it carries the repo over" grep -qx "REPO=\"$T/app-m\"" "$T/home-m/legacy/config.sh"
+check "it carries the repo over" \
+  bash -c 'REPO=; . "$1/home-m/legacy/config.sh" >/dev/null 2>&1; test "$REPO" = "$2"' _ "$T" "$T/app-m"
 check "it carries MAX_ITER over" grep -qx 'MAX_ITER=7' "$T/home-m/legacy/config.sh"
 check "it carries QUIET_STOP over" grep -qx 'QUIET_STOP=3' "$T/home-m/legacy/config.sh"
 check "it leaves the settings that loop never had at the harness defaults" \
@@ -440,6 +444,23 @@ check "migrating twice is refused" \
   bash -c '! RALPH_HOME="$1/home-m" "$2" migrate legacy' _ "$T" "$ROOT/ralph"
 check "migrate refuses a directory that is no loop at all" \
   bash -c 'mkdir -p "$1/home-m/notaloop"; ! RALPH_HOME="$1/home-m" "$2" migrate notaloop' _ "$T" "$ROOT/ralph"
+
+# migrate is the other writer of REPO into config.sh, and that file is sourced,
+# so it needs the same quoting `ralph new` does. old_var refuses a line holding
+# `$(` or a backtick, but a single-quoted literal $ in the old ralph.sh reaches
+# it intact — and used to be expanded away at the next start.
+mkdir -p "$T/home-m/legacy2"
+cat > "$T/home-m/legacy2/ralph.sh" <<EOF
+#!/usr/bin/env bash
+REPO='$T/mig\$HOME-m/app'
+MAX_ITER=2
+EOF
+cp "$ROOT/template/PROMPT.md" "$ROOT/template/PROGRESS.md" "$T/home-m/legacy2/"
+RALPH_HOME="$T/home-m" "$ROOT/ralph" migrate legacy2 >/dev/null 2>&1
+check "migrate writes a repo path with a \$ in it so bash reads it back whole" \
+  bash -c 'REPO=; . "$1/home-m/legacy2/config.sh" >/dev/null 2>&1; test "$REPO" = "$2"' _ "$T" "$T/mig\$HOME-m/app"
+check "and the settings after it are still read" \
+  bash -c 'MAX_ITER=; . "$1/home-m/legacy2/config.sh" >/dev/null 2>&1; test "$MAX_ITER" = 2' _ "$T"
 
 # The proof that the values mean the same thing after the move: the migrated
 # loop runs under this repo's ralph.sh and stops at the MAX_ITER it carried.
@@ -1017,13 +1038,18 @@ section "ralph new writes the path it was given, not sed's reading of it"
 # the s/// early, and a backslash escaped whatever followed it.
 export RALPH_HOME="$T/home-scaf"
 S="$T/stub-scaf"; mkdir -p "$S"
+# What the loop receives, rather than what the line looks like: since the repo
+# path is written shell-quoted (see the sourcing section below), the byte form
+# of the line is an encoding detail and the value bash reads back is the claim.
+# shellcheck disable=SC1090  # the path is a fixture built by this script
+scaf_repo() { ( REPO=; . "$RALPH_HOME/$1/config.sh" >/dev/null 2>&1; printf '%s' "$REPO" ); }
 printf '%s\n' commit > "$S/modes"
 tame='QUIET_SLEEP=0 STEP_SLEEP=0 ERROR_SLEEP=0 PUSH=0 REVIEW=0 MAX_ITER=1'
 
 make_repo "$T/r&d-scaf" "$T/remote-scaf1.git"
 "$ROOT/ralph" new amp "$T/r&d-scaf" >/dev/null 2>&1
 check "an & in the repo path reaches config.sh whole" \
-  grep -Fq "REPO=\"$T/r&d-scaf\"" "$RALPH_HOME/amp/config.sh"
+  test "$(scaf_repo amp)" = "$T/r&d-scaf"
 echo "$tame" >> "$RALPH_HOME/amp/config.sh"
 run_loop "$RALPH_HOME/amp" "$S"
 check "and the loop it scaffolded runs and keeps its commit" \
@@ -1032,12 +1058,12 @@ check "and the loop it scaffolded runs and keeps its commit" \
 make_repo "$T/p|q-scaf" "$T/remote-scaf2.git"
 "$ROOT/ralph" new pipe "$T/p|q-scaf" >/dev/null 2>&1
 check "a | in the repo path does not leave config.sh empty" \
-  grep -Fq "REPO=\"$T/p|q-scaf\"" "$RALPH_HOME/pipe/config.sh"
+  test "$(scaf_repo pipe)" = "$T/p|q-scaf"
 
 make_repo "$T/back\\slash-scaf" "$T/remote-scaf3.git"
 "$ROOT/ralph" new esc "$T/back\\slash-scaf" >/dev/null 2>&1
 check "a backslash in the repo path is not eaten" \
-  grep -Fq "REPO=\"$T/back\\slash-scaf\"" "$RALPH_HOME/esc/config.sh"
+  test "$(scaf_repo esc)" = "$T/back\\slash-scaf"
 
 # The loop's own name goes through the same substitution, into PROMPT.md as
 # well as config.sh.
@@ -1053,7 +1079,7 @@ check "an & in the loop name reaches PROMPT.md whole" \
 check "an ordinary loop keeps every line of the template" \
   test "$(wc -l < "$RALPH_HOME/plain/config.sh")" = "$(wc -l < "$ROOT/template/config.sh")"
 check "with no placeholder left behind" \
-  bash -c '! grep -q "__REPO__\|__NAME__" "$1/plain/config.sh" "$1/plain/PROMPT.md"' _ "$RALPH_HOME"
+  bash -c '! grep -q "__[A-Z_]*__" "$1/plain/config.sh" "$1/plain/PROMPT.md"' _ "$RALPH_HOME"
 check "and its last line intact" \
   bash -c 'test "$(tail -1 "$1/plain/config.sh")" = "$(tail -1 "$2/template/config.sh" | sed "s|__REPO__|$1|")"' _ "$RALPH_HOME" "$ROOT"
 unset RALPH_HOME
@@ -1267,6 +1293,90 @@ check "the agent's prompt holds the text the human typed" \
   grep -qF "$esc_text" "$S/prompt.agent.1"
 check "the reviewer's steering section holds the text the human typed" \
   grep -qF "$esc_text" "$S/prompt.review.1"
+unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
+section "config.sh is sourced, so ralph new must write a value bash reads back"
+
+# fill writes the repo path correctly and config.sh is then *sourced*, so bash
+# read the value a second time as its own language. `REPO="__REPO__"` is double
+# quoted, and inside double quotes a $ expands, a backtick runs a command and a
+# " ends the string. So a path a directory may legally hold arrived at the loop
+# as something else, and `ralph new` had already said "created" and exited 0.
+# Same family as the sed bug above, one layer down: the tool rereading the value
+# is bash itself.
+export RALPH_HOME="$T/home-src"
+S="$T/stub-src"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+tame='QUIET_SLEEP=0 STEP_SLEEP=0 ERROR_SLEEP=0 PUSH=0 REVIEW=0 MAX_ITER=1'
+
+# sourced <loop>: REPO as ralph.sh and the CLI actually receive it. This is the
+# claim — not what the line looks like, which is an encoding detail.
+# shellcheck disable=SC1090  # the path is a fixture built by this script
+sourced() { ( REPO=; . "$RALPH_HOME/$1/config.sh" >/dev/null 2>&1; printf '%s' "$REPO" ); }
+
+# A $ is silent when the variable happens to be set: no error anywhere, and the
+# loop then dies about a path the user never typed.
+src_dollar="$T/pre\$HOME-src"
+make_repo "$src_dollar" "$T/remote-src1.git"
+"$ROOT/ralph" new dollar "$src_dollar" >/dev/null 2>&1
+check "a \$ in the repo path is not expanded when config.sh is sourced" \
+  test "$(sourced dollar)" = "$src_dollar"
+
+# The loud one: a backtick is command substitution, so merely reading the
+# settings of such a loop runs a command out of a directory name.
+src_tick="$T/q\`touch $T/SOURCED-RAN\`-src"
+make_repo "$src_tick" "$T/remote-src2.git"
+"$ROOT/ralph" new tick "$src_tick" >/dev/null 2>&1
+rm -f "$T/SOURCED-RAN"
+check "a backtick in the repo path stays text and is not run" \
+  bash -c '. "$1/tick/config.sh" >/dev/null 2>&1; test ! -e "$2/SOURCED-RAN"' _ "$RALPH_HOME" "$T"
+check "and that path too arrives whole" \
+  test "$(sourced tick)" = "$src_tick"
+
+# $(...) is the same substitution spelled differently, and a " ends the string
+# early — which swallows the settings after it rather than failing loudly.
+src_sub="$T/s\$(echo no)-src"
+make_repo "$src_sub" "$T/remote-src3.git"
+"$ROOT/ralph" new sub "$src_sub" >/dev/null 2>&1
+check "a \$(...) in the repo path is not run" \
+  test "$(sourced sub)" = "$src_sub"
+
+src_quote="$T/d\"q-src"
+make_repo "$src_quote" "$T/remote-src4.git"
+"$ROOT/ralph" new quote "$src_quote" >/dev/null 2>&1
+check "a \" in the repo path does not end the string early" \
+  test "$(sourced quote)" = "$src_quote"
+check "so the settings after REPO are still read" \
+  bash -c '. "$1/quote/config.sh" >/dev/null 2>&1; test -n "${MAX_ITER:-}"' _ "$RALPH_HOME"
+
+# The strongest check: the scaffold is not merely written, it works. A loop on
+# the $-path runs through the stub and has to reach a verdict.
+echo "$tame" >> "$RALPH_HOME/dollar/config.sh"
+run_loop "$RALPH_HOME/dollar" "$S"
+check "and the loop scaffolded on such a path runs and keeps its commit" \
+  test "$(statuses "$RALPH_HOME/dollar")" = "keep"
+
+# Guards, and they are what stops a fix that simply quotes everything into
+# uselessness. An ordinary path must still round-trip, the file must still hold
+# every line of the template, and no placeholder of any name may be left — the
+# old guard named __REPO__ and __NAME__ literally, which would not notice a new
+# one going unfilled.
+make_repo "$T/app-src" "$T/remote-src5.git"
+"$ROOT/ralph" new plainsrc "$T/app-src" >/dev/null 2>&1
+check "an ordinary path still sources back exactly" \
+  test "$(sourced plainsrc)" = "$T/app-src"
+check "an ordinary path is still written bare, with no quoting to read past" \
+  grep -qFx "REPO=$T/app-src" "$RALPH_HOME/plainsrc/config.sh"
+check "and the file still holds every line of the template" \
+  test "$(wc -l < "$RALPH_HOME/plainsrc/config.sh")" = "$(wc -l < "$ROOT/template/config.sh")"
+check "with no placeholder of any name left behind" \
+  bash -c '! grep -q "__[A-Z_]*__" "$1/plainsrc/config.sh" "$1/plainsrc/PROMPT.md"' _ "$RALPH_HOME"
+
+# The SETUP_CMD hint is a command the reader pastes, so the raw path belongs
+# there, not a shell-quoted one that is wrong inside its double quotes.
+check "the SETUP_CMD hint still shows the path as the reader would type it" \
+  grep -qF "cp $T/app-src/.env ." "$RALPH_HOME/plainsrc/config.sh"
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------

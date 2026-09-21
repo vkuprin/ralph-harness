@@ -32,6 +32,19 @@ path used to reach `PROMPT.md` in two pieces. Pass it in the environment and rea
 it back to `-v` reads better and is the bug. A numeric `-v` (`PROGRESS_KEEP`,
 `PROGRESS_MAX_BYTES`) is fine, because a number has no escapes to process.
 
+Nor a value written into `config.sh` unquoted, because that file is *sourced* and
+bash reads the value back as its own language: `REPO="__REPO__"` let a `$` in a
+repo path expand, a backtick or `$(…)` **run**, and a `"` end the string and
+swallow the settings after it. `fill` writes the code position from `__REPO_SH__`,
+which goes through `shq`; `__REPO__` stays raw for the `SETUP_CMD` comment, which
+is a line the reader pastes and where `shq`'s output would be wrong inside its
+double quotes. Two placeholders for one value reads like duplication and is not —
+and putting the quotes back (`REPO="__REPO_SH__"`) reads more natural and is the
+bug. `__REPO_SH__` is substituted before `__REPO__` because the short name is a
+prefix of the long one. There are **two** writers of `REPO` into `config.sh` and
+both go through `shq`: `fill`, and the `printf` in `cmd_migrate`. Fixing one and
+documenting both is the shape of a partial fix.
+
 ## Invariants: do not change these
 
 - Every iteration is a new `claude -p`. Nothing but files crosses iterations.

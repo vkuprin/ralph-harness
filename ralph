@@ -143,8 +143,18 @@ loop_pid() {
 
 # ------------------------------------------------------------------ commands
 
-# fill <template> <destination> <name> <repo>: copy a template with __NAME__
-# and __REPO__ replaced by exactly those two strings.
+# fill <template> <destination> <name> <repo>: copy a template, replacing
+# __NAME__ and __REPO__ with exactly those two strings, and __REPO_SH__ with
+# the repo path as a shell word.
+#
+# The two repo placeholders are two different jobs and both are needed.
+# config.sh is *sourced*, so the value fill writes is read a second time by
+# bash: `REPO="__REPO__"` let a $ expand, a backtick run, and a " end the
+# string and swallow the settings after it — silently, long after `ralph new`
+# said "created". __REPO_SH__ is the code position and goes through shq, so
+# bash reads back the path the user typed. __REPO__ stays raw for the
+# SETUP_CMD comment, which is a line the reader pastes: shq's output is
+# correct as a bare word and wrong inside the double quotes it sits in there.
 #
 # This was sed, and sed reads the value it is handed as syntax, not as a path.
 # Three characters a directory may legally hold each broke it, all silently and
@@ -165,8 +175,14 @@ fill() {
   # `|| [ -n "$line" ]` so a template with no trailing newline keeps its last
   # line. Both of ours have one.
   while IFS= read -r line || [ -n "$line" ]; do
-    for ph in __REPO__ __NAME__; do
-      case "$ph" in __REPO__) val="$repo" ;; *) val="$name" ;; esac
+    # __REPO_SH__ first: it has __REPO__ as a prefix, so substituting the
+    # shorter one first would leave <path>_SH__ behind.
+    for ph in __REPO_SH__ __REPO__ __NAME__; do
+      case "$ph" in
+        __REPO_SH__) val="$(shq "$repo")" ;;
+        __REPO__)    val="$repo" ;;
+        *)           val="$name" ;;
+      esac
       out=""
       while [ "${line#*"$ph"}" != "$line" ]; do
         out="$out${line%%"$ph"*}$val"
@@ -260,7 +276,11 @@ cmd_migrate() {
     printf '# harness default, which is what it did before: no worktree, no gates, no push.\n'
     printf '# See the template config.sh in the harness for the rest, and turn on WORKTREE=1\n'
     printf '# when you want the harness to check commits instead of keeping them all.\n\n'
-    printf 'REPO="%s"\n' "$repo"
+    # Shell-quoted for the same reason `fill` does it: config.sh is sourced,
+    # so an unquoted $ in the path would expand on the way back in. old_var
+    # already refuses a line holding `$(` or a backtick, but a single-quoted
+    # literal $ in the old ralph.sh comes through as one.
+    printf 'REPO=%s\n' "$(shq "$repo")"
     [ -n "$max" ]   && printf 'MAX_ITER=%s\n' "$max"
     [ -n "$quiet" ] && printf 'QUIET_STOP=%s\n' "$quiet"
   } > "$dir/config.sh"
