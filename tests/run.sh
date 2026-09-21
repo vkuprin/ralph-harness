@@ -2074,6 +2074,49 @@ check "an empty DENY passes nothing and breaks nothing" \
   bash -c '! grep -qx -- --disallowedTools "$1" && grep -q "finished after 1" "$2"' _ "$S/argv.agent.1" "$T/loops/deny0/ralph.log"
 
 # ---------------------------------------------------------------------------
+section "what an iteration costs"
+
+# Loops burn tokens and nobody saw how many. The agent and the reviewer answer
+# in JSON; the harness keeps the text for the log and the cost for results.tsv.
+if perl -MJSON::PP -e1 2>/dev/null; then
+  make_repo "$T/app-cost" "$T/remote-cost.git"
+  S="$T/stub-cost"; mkdir -p "$S"
+  printf '%s\n' commit limit commit > "$S/modes"
+  make_loop "$T/loops/cost" "$T/app-cost" 'WORKTREE=1 PUSH=1 REVIEW=1 MAX_ITER=2' 'VERIFY_CMD="./measure.sh"'
+  run_loop "$T/loops/cost" "$S" "$T/remote-cost.git"
+  C="$T/loops/cost/results.tsv"
+  check "the agent is asked for JSON" grep -qx -- --output-format "$S/argv.agent.1"
+  check "a limit is still read out of a JSON error" test "$(statuses "$T/loops/cost")" = "keep ratelimit keep"
+  check "results.tsv has cost and token columns" grep -q "$(printf 'reason\tcost_usd\ttokens')" "$C"
+  check "a kept row adds the agent's cost and the reviewer's" \
+    test "$(sed -n 2p "$C" | cut -f8,9)" = "$(printf '0.0143\t200')"
+  check "the verdict is found through the JSON path" grep -q '^VERDICT: ACCEPT' "$T/loops/cost/review.out"
+  check "the log holds the text, not the JSON" \
+    bash -c 'grep -q "Read the diff." "$1" && ! grep -q "total_cost_usd" "$1"' _ "$T/loops/cost/ralph.log"
+  check "the agent's verdict table keeps its seven columns" \
+    bash -c '! sed -n "/# Harness verdicts/,/^---/p" "$1" | grep -q cost_usd' _ "$S/prompt.agent.2"
+  check "review totals the cost, as an API-equivalent figure" \
+    bash -c 'RALPH_HOME="$1/loops" "$2" review cost | grep -q "API-equivalent"' _ "$T" "$ROOT/ralph"
+
+  # No JSON::PP (Debian's perl-base has none): the loop runs as it always did.
+  P5="$T/nojson"; mkdir -p "$P5"
+  printf '%s\n' '#!/bin/sh' 'case "$*" in *JSON::PP*) exit 2 ;; esac' "exec $(command -v perl) \"\$@\"" > "$P5/perl"
+  chmod +x "$P5/perl"
+  make_repo "$T/app-cost2" "$T/remote-cost2.git"
+  S="$T/stub-cost2"; mkdir -p "$S"
+  printf '%s\n' commit > "$S/modes"
+  make_loop "$T/loops/cost2" "$T/app-cost2" 'WORKTREE=1 PUSH=1 MAX_ITER=1'
+  # shellcheck disable=SC2030,SC2031  # the subshell is the point: only this run sees it
+  ( export PATH="$P5:$PATH"; run_loop "$T/loops/cost2" "$S" "$T/remote-cost2.git" )
+  check "without JSON::PP the agent is not asked for JSON" \
+    bash -c '! grep -qx -- --output-format "$1"' _ "$S/argv.agent.1"
+  check "and the iteration still ships" test "$(statuses "$T/loops/cost2")" = "keep"
+  check "and the log says why there is no cost" grep -q 'JSON::PP' "$T/loops/cost2/ralph.log"
+else
+  pass "(skipped: this perl has no JSON::PP, so the loop runs in text mode, as tested above)"
+fi
+
+# ---------------------------------------------------------------------------
 echo
 if [ "$fails" -eq 0 ]; then
   printf '\033[32mall tests passed\033[0m\n'

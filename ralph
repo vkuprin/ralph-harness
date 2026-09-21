@@ -450,6 +450,24 @@ status_last() {
 # Prints one loop, or returns 1 without printing if the directory is not a loop.
 # The caller counts the successes, so that a $RALPH_HOME full of other things
 # says "no loops" rather than printing nothing at all.
+# cost_line <results.tsv>: what the runs cost, from the columns the harness
+# fills when claude answers in JSON. Nothing when no run reported a cost. On a
+# subscription the dollars are what the API would have charged, not a bill, and
+# a run killed before it answered reports nothing, so the sum is a lower bound.
+cost_line() {
+  awk -F'\t' 'NR > 1 && NF >= 9 {
+      if ($8 != "-") { c += $8; any = 1 }
+      if ($9 != "-") t += $9
+      if ($5 ~ /^keep/) k++
+    }
+    END {
+      if (!any) exit
+      printf "$%.2f API-equivalent (a lower bound), %d tokens", c, t
+      if (k) printf ", $%.2f per kept commit", c / k
+      print ""
+    }' "$1"
+}
+
 status_one() {
   local dir="$1" name kind
   name="$(basename "$dir")"
@@ -481,6 +499,8 @@ status_one() {
     local verdicts
     verdicts="$(tail -n +2 "$dir/results.tsv" | cut -f5 | sort | uniq -c | awk '{printf "%s%s %s", sep, $1, $2; sep=", "}')"
     [ -n "$verdicts" ] && printf '  verdicts    %s\n' "$verdicts"
+    local cost; cost="$(cost_line "$dir/results.tsv")"
+    [ -n "$cost" ] && printf '  cost        %s\n' "$cost"
   fi
   status_last "$dir"
   # No REPO in config.sh leaves the work directory empty, and `git -C ""` is
@@ -552,6 +572,8 @@ cmd_review() {
   if [ -f "$results" ]; then
     printf '\nVerdicts   %s\n' "$(tail -n +2 "$results" | cut -f5 | sort | uniq -c | sort -rn \
       | awk '{printf "%s%s %s", sep, $1, $2; sep=", "}')"
+    local cost; cost="$(cost_line "$results")"
+    [ -n "$cost" ] && printf 'Cost       %s\n' "$cost"
 
     printf '\nShipped, newest first\n'
     local sha shown=0

@@ -241,6 +241,57 @@ RC=0
 TIMED_OUT=0
 PERL="$(command -v perl 2>/dev/null || true)"
 
+# What a run costs comes back only as JSON (--output-format json), and reading
+# JSON takes perl's JSON::PP, which Debian's perl-base ships without. Where it is
+# missing, claude runs in text mode as it always did and no cost is recorded.
+JSON_OK=0
+if [ -n "$PERL" ] && "$PERL" -MJSON::PP -e1 2>/dev/null; then JSON_OK=1; fi
+
+# json_text <json file> <text file>: appends the run's text, its result or, for
+# a run that failed, its errors, to <text file>, and sets RUN_COST (dollars,
+# as the CLI reports them) and RUN_TOKENS (input + output, cache reads not
+# counted), each "-" when the run did not say. The output is one object, or an
+# array of messages in verbose mode, whose last "result" is the one. A file that
+# is not JSON, as from a run killed before it answered, is appended as it is.
+RUN_COST="-"
+RUN_TOKENS="-"
+json_text() {
+  local meta
+  # shellcheck disable=SC2016  # perl's variables, not the shell's
+  meta="$("$PERL" -MJSON::PP -e '
+    local $/; my ($in, $out) = @ARGV;
+    open my $f, "<", $in or exit 0; my $raw = <$f> // "";
+    open my $o, ">>", $out or exit 0;
+    my $j = eval { JSON::PP->new->utf8->decode($raw) };
+    $j = (grep { ref $_ eq "HASH" && ($_->{type} // "") eq "result" } @$j)[-1] if ref $j eq "ARRAY";
+    if (ref $j ne "HASH") { print $o $raw; print "-\t-"; exit 0 }
+    binmode $o, ":utf8";
+    my $u = ref $j->{usage} eq "HASH" ? $j->{usage} : {};
+    my $tok = (defined $u->{input_tokens} || defined $u->{output_tokens})
+      ? ($u->{input_tokens} // 0) + ($u->{output_tokens} // 0) : "-";
+    my $cost = defined $j->{total_cost_usd} ? sprintf("%.4f", $j->{total_cost_usd}) : "-";
+    if (ref $j->{errors} eq "ARRAY" && @{$j->{errors}} && !(defined $j->{result} && length $j->{result})) {
+      print $o join("\n", map { ref $_ ? JSON::PP->new->canonical->encode($_) : $_ } @{$j->{errors}});
+    } elsif (exists $j->{result}) { print $o ($j->{result} // "") }
+    else { print $o $raw }
+    print $o "\n";
+    print "$cost\t$tok";
+  ' "$1" "$2" 2>/dev/null)" || meta=""
+  RUN_COST="${meta%%$'\t'*}"
+  RUN_TOKENS="${meta#*$'\t'}"
+  [ -n "$RUN_COST" ] && [ "$meta" != "$RUN_COST" ] || { RUN_COST="-"; RUN_TOKENS="-"; }
+}
+
+# add_cost / add_tokens <a> <b>: a sum in which "-" means nothing is known.
+add_cost() {
+  awk -v a="$1" -v b="$2" 'BEGIN { if (a == "-" && b == "-") { print "-"; exit }
+    printf "%.4f\n", (a == "-" ? 0 : a) + (b == "-" ? 0 : b) }'
+}
+add_tokens() {
+  awk -v a="$1" -v b="$2" 'BEGIN { if (a == "-" && b == "-") { print "-"; exit }
+    printf "%d\n", (a == "-" ? 0 : a) + (b == "-" ? 0 : b) }'
+}
+
 kill_group() {
   local pid="$1" i=0
   kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
@@ -396,13 +447,16 @@ trap on_signal INT TERM
 
 # ------------------------------------------------------------ bookkeeping
 
-# record <before> <after> <status> <seconds> <reason>
+# record <before> <after> <status> <seconds> <reason> [cost] [tokens]
+# The cost columns come after reason, so every reader that counts columns from
+# the left reads what it always read, and a file started by an older harness
+# keeps its seven-column header.
 record() {
-  [ -f "$RESULTS" ] || printf 'time\titer\tbefore\tafter\tstatus\tsecs\treason\n' > "$RESULTS"
+  [ -f "$RESULTS" ] || printf 'time\titer\tbefore\tafter\tstatus\tsecs\treason\tcost_usd\ttokens\n' > "$RESULTS"
   local reason
   reason="$(printf '%s' "${5:-}" | tr '\t\n\r' '   ' | cut -c1-300)"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$iter" \
-    "${1:0:12}" "${2:0:12}" "$3" "$4" "${reason:--}" >> "$RESULTS"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$iter" \
+    "${1:0:12}" "${2:0:12}" "$3" "$4" "${reason:--}" "${6:--}" "${7:--}" >> "$RESULTS"
 }
 
 # The streak the prompt escalates on, told to the human as it is reached and
@@ -564,8 +618,8 @@ build_prompt() {
     if [ -f "$RESULTS" ]; then
       printf '\n---\n\n# Harness verdicts (ground truth: where PROGRESS.md disagrees, this wins)\n\n'
       printf 'The last iterations as the harness recorded them. "revert:*" means the commits were reset and never shipped.\n\n'
-      head -n 1 "$RESULTS"
-      tail -n +2 "$RESULTS" | tail -n 10
+      head -n 1 "$RESULTS" | cut -f1-7
+      tail -n +2 "$RESULTS" | tail -n 10 | cut -f1-7
     fi
     shipped_recently
 
@@ -782,11 +836,24 @@ or
 VERDICT: REJECT: <one sentence saying why>
 EOF
   local verdict tries=0
+  local rargs=(-p --restricted --tools "Read,Grep,Glob" --strict-mcp-config
+    --permission-prompts none --add-dir "$DIR" --model "${REVIEW_MODEL:-$MODEL}")
   while :; do
     : > "$DIR/review.out"
-    run_bounded "$ITER_TIMEOUT" "$DIR/.review-prompt" "$DIR/review.out" \
-      claude -p --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
-      --permission-prompts none --add-dir "$DIR" --model "${REVIEW_MODEL:-$MODEL}"
+    if [ "$JSON_OK" = 1 ]; then
+      # stdout is JSON; stderr goes straight to review.out, and the text is
+      # appended after it, so the VERDICT line and a limit's message are read
+      # from text exactly as before.
+      : > "$DIR/.review.json"
+      # shellcheck disable=SC2016  # expanded by the inner sh, on purpose
+      run_bounded "$ITER_TIMEOUT" "$DIR/.review-prompt" "$DIR/.review.json" \
+        sh -c 'exec "$@" 2>>"$0"' "$DIR/review.out" claude "${rargs[@]}" --output-format json
+      json_text "$DIR/.review.json" "$DIR/review.out"
+      REVIEW_COST="$(add_cost "$REVIEW_COST" "$RUN_COST")"
+      REVIEW_TOKENS="$(add_tokens "$REVIEW_TOKENS" "$RUN_TOKENS")"
+    else
+      run_bounded "$ITER_TIMEOUT" "$DIR/.review-prompt" "$DIR/review.out" claude "${rargs[@]}"
+    fi
     cat "$DIR/review.out" >> "$LOG"
     verdict="$(grep -a '^VERDICT:' "$DIR/review.out" | tail -n 1)"
     # A limit is not an answer: wait it out and ask again, rather than ship the
@@ -948,6 +1015,7 @@ if [ "$LIVE_STEER" = 1 ]; then
 fi
 
 log "ralph start: loop=$NAME repo=$REPO work=$WORK model=$MODEL max_iter=$MAX_ITER quiet_stop=$QUIET_STOP worktree=$WORKTREE push=$PUSH review=$REVIEW verify=${VERIFY_CMD:+yes}"
+[ "$JSON_OK" = 1 ] || log "cost: this perl has no JSON::PP, so claude runs in text mode and no cost is recorded"
 
 quiet=0
 trouble=0
@@ -1041,9 +1109,25 @@ while :; do
   fi
 
   offset=$(wc -c < "$LOG" | tr -d ' ')
-  run_bounded "$ITER_TIMEOUT" "$PROMPT_FILE" "$LOG" env "${envs[@]}" claude "${args[@]}"
-  agent_rc=$RC
-  agent_timed_out=$TIMED_OUT
+  AGENT_COST="-"; AGENT_TOKENS="-"; REVIEW_COST="-"; REVIEW_TOKENS="-"
+  if [ "$JSON_OK" = 1 ]; then
+    # stdout is JSON; stderr goes to the log as it happens, and the text is
+    # appended after it, so the log reads as before and a limit's message is
+    # still among the last lines the limit check reads. The wrapper execs, so
+    # the pid and the process group are claude's.
+    : > "$DIR/.run.json"
+    # shellcheck disable=SC2016  # expanded by the inner sh, on purpose
+    run_bounded "$ITER_TIMEOUT" "$PROMPT_FILE" "$DIR/.run.json" \
+      sh -c 'exec "$@" 2>>"$0"' "$LOG" env "${envs[@]}" claude "${args[@]}" --output-format json
+    agent_rc=$RC
+    agent_timed_out=$TIMED_OUT
+    json_text "$DIR/.run.json" "$LOG"
+    AGENT_COST="$RUN_COST"; AGENT_TOKENS="$RUN_TOKENS"
+  else
+    run_bounded "$ITER_TIMEOUT" "$PROMPT_FILE" "$LOG" env "${envs[@]}" claude "${args[@]}"
+    agent_rc=$RC
+    agent_timed_out=$TIMED_OUT
+  fi
 
   status=""
   reason=""
@@ -1109,18 +1193,21 @@ while :; do
   [ -n "$status" ] || status="keep"
   [ "$agent_timed_out" = 1 ] && [ "${status%%:*}" != "timeout" ] && reason="${reason:+$reason; }agent timed out after ${ITER_TIMEOUT}s"
 
+  iter_cost="$(add_cost "$AGENT_COST" "$REVIEW_COST")"
+  iter_tokens="$(add_tokens "$AGENT_TOKENS" "$REVIEW_TOKENS")"
+
   case "$status" in
     revert:*)
       save_ref reverted "$after"
       if ! revert_to "$before"; then
-        record "$before" "$after" "$status" "$took" "$reason"
+        record "$before" "$after" "$status" "$took" "$reason" "$iter_cost" "$iter_tokens"
         stop_why="could not reset ralph/$NAME to $before after $status — fix the worktree by hand"
         log "stopping: $stop_why"
         break
       fi
       ;;
   esac
-  record "$before" "$after" "$status" "$took" "$reason"
+  record "$before" "$after" "$status" "$took" "$reason" "$iter_cost" "$iter_tokens"
 
   # A limit streak clears the moment claude answers again, whatever the verdict
   # of that iteration is. Said once, at the end of the streak, like the limit
