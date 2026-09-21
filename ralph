@@ -131,6 +131,41 @@ loop_pid() {
 
 # ------------------------------------------------------------------ commands
 
+# fill <template> <destination> <name> <repo>: copy a template with __NAME__
+# and __REPO__ replaced by exactly those two strings.
+#
+# This was sed, and sed reads the value it is handed as syntax, not as a path.
+# Three characters a directory may legally hold each broke it, all silently and
+# all after "created <dir>": & means the whole match in a replacement, so a repo
+# at ~/r&d was written as ~/r__REPO__d; a | ended the s||| early, so sed refused
+# the script and the redirect left config.sh zero bytes; and a backslash escaped
+# whatever came after it, so ~/a\bc became ~/abc. The loop then failed at its
+# first start, blaming a repo path the user had never typed.
+#
+# ${line//__REPO__/$repo} is not the fix, and that is the trap worth naming:
+# bash 5.2 began reading & in a replacement as the matched text, the way sed
+# does, and bash 3.2 does not. The two bashes this harness supports would have
+# written different config.sh files from the same command. So there is no
+# replacement string here at all — cutting the line at the placeholder and
+# joining the pieces around the value leaves nothing for any bash to reread.
+fill() {
+  local src="$1" dst="$2" name="$3" repo="$4" line ph val out
+  # `|| [ -n "$line" ]` so a template with no trailing newline keeps its last
+  # line. Both of ours have one.
+  while IFS= read -r line || [ -n "$line" ]; do
+    for ph in __REPO__ __NAME__; do
+      case "$ph" in __REPO__) val="$repo" ;; *) val="$name" ;; esac
+      out=""
+      while [ "${line#*"$ph"}" != "$line" ]; do
+        out="$out${line%%"$ph"*}$val"
+        line="${line#*"$ph"}"
+      done
+      line="$out$line"
+    done
+    printf '%s\n' "$line"
+  done < "$src" > "$dst"
+}
+
 cmd_new() {
   local name="${1:-}" repo="${2:-}"
   if [ -z "$name" ] || [ -z "$repo" ]; then die "usage: ralph new <name> <repo-path>"; fi
@@ -141,11 +176,9 @@ cmd_new() {
   [ -e "$dir" ] && die "loop already exists: $dir"
 
   mkdir -p "$dir"
-  cp "$HARNESS/template/PROMPT.md"   "$dir/PROMPT.md"
-  cp "$HARNESS/template/PROGRESS.md" "$dir/PROGRESS.md"
-  sed "s|__REPO__|$repo|g; s|__NAME__|$name|g" "$HARNESS/template/config.sh" > "$dir/config.sh"
-  sed -i '' "s|__NAME__|$name|g" "$dir/PROMPT.md" 2>/dev/null || \
-    sed -i "s|__NAME__|$name|g" "$dir/PROMPT.md"
+  cp "$HARNESS/template/PROGRESS.md" "$dir/PROGRESS.md"   # no placeholders in it
+  fill "$HARNESS/template/config.sh" "$dir/config.sh" "$name" "$repo"
+  fill "$HARNESS/template/PROMPT.md" "$dir/PROMPT.md"     "$name" "$repo"
 
   green "created $dir"
   dim   "  1. write the job into $dir/PROMPT.md"

@@ -19,6 +19,12 @@ short on purpose.
 
 No `wait -n`, `${x,,}`, `mapfile`, `declare -A` or other bash-4-only syntax.
 
+Nor `${x//a/b}` with user text as the replacement: bash 5.2 reads an `&` there as
+the matched text, the way `sed` does, and bash 3.2 reads it literally — so one
+command writes two different files under the two bashes this supports. `fill` in
+`ralph` shows the shape that is safe in both. `sed` has the same reading, and
+`&`, `|` and `\` are all legal in a path.
+
 ## Invariants: do not change these
 
 - Every iteration is a new `claude -p`. Nothing but files crosses iterations.

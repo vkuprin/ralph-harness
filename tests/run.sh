@@ -1009,6 +1009,56 @@ check "the loop it scaffolds comes from the real template" test -f "$T/home-e/vi
 check "a relative chain of symlinks finds the harness" bash -c '"$1/deep/bin/ralph" help | grep -q "ralph new"' _ "$T"
 
 # ---------------------------------------------------------------------------
+section "ralph new writes the path it was given, not sed's reading of it"
+
+# The template was filled in with sed, which reads the value it is handed as
+# syntax. Three characters a directory may legally hold broke it, all silently,
+# all after "created <dir>": & means the whole match in a replacement, | ended
+# the s/// early, and a backslash escaped whatever followed it.
+export RALPH_HOME="$T/home-scaf"
+S="$T/stub-scaf"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+tame='QUIET_SLEEP=0 STEP_SLEEP=0 ERROR_SLEEP=0 PUSH=0 REVIEW=0 MAX_ITER=1'
+
+make_repo "$T/r&d-scaf" "$T/remote-scaf1.git"
+"$ROOT/ralph" new amp "$T/r&d-scaf" >/dev/null 2>&1
+check "an & in the repo path reaches config.sh whole" \
+  grep -Fq "REPO=\"$T/r&d-scaf\"" "$RALPH_HOME/amp/config.sh"
+echo "$tame" >> "$RALPH_HOME/amp/config.sh"
+run_loop "$RALPH_HOME/amp" "$S"
+check "and the loop it scaffolded runs and keeps its commit" \
+  test "$(statuses "$RALPH_HOME/amp")" = "keep"
+
+make_repo "$T/p|q-scaf" "$T/remote-scaf2.git"
+"$ROOT/ralph" new pipe "$T/p|q-scaf" >/dev/null 2>&1
+check "a | in the repo path does not leave config.sh empty" \
+  grep -Fq "REPO=\"$T/p|q-scaf\"" "$RALPH_HOME/pipe/config.sh"
+
+make_repo "$T/back\\slash-scaf" "$T/remote-scaf3.git"
+"$ROOT/ralph" new esc "$T/back\\slash-scaf" >/dev/null 2>&1
+check "a backslash in the repo path is not eaten" \
+  grep -Fq "REPO=\"$T/back\\slash-scaf\"" "$RALPH_HOME/esc/config.sh"
+
+# The loop's own name goes through the same substitution, into PROMPT.md as
+# well as config.sh.
+"$ROOT/ralph" new "a&b" "$T/app-e" >/dev/null 2>&1
+check "an & in the loop name reaches PROMPT.md whole" \
+  grep -Fq "a&b" "$RALPH_HOME/a&b/PROMPT.md"
+
+# Guards. A fill that wrote nothing, or dropped the lines it could not read,
+# would satisfy every check above, so pin that an ordinary loop is scaffolded
+# exactly as the template reads: same number of lines, no placeholder left in
+# either file, and the closing line still there.
+"$ROOT/ralph" new plain "$T/app-e" >/dev/null 2>&1
+check "an ordinary loop keeps every line of the template" \
+  test "$(wc -l < "$RALPH_HOME/plain/config.sh")" = "$(wc -l < "$ROOT/template/config.sh")"
+check "with no placeholder left behind" \
+  bash -c '! grep -q "__REPO__\|__NAME__" "$1/plain/config.sh" "$1/plain/PROMPT.md"' _ "$RALPH_HOME"
+check "and its last line intact" \
+  bash -c 'test "$(tail -1 "$1/plain/config.sh")" = "$(tail -1 "$2/template/config.sh" | sed "s|__REPO__|$1|")"' _ "$RALPH_HOME" "$ROOT"
+unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
 section "live steer hook"
 
 printf 'drop the CSS work\n' > "$T/steer.md"
