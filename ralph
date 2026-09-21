@@ -10,7 +10,9 @@
 #   ralph review audit               later: what it shipped, what it threw away
 #
 # Commands
-#   ralph new <name> <repo-path>   scaffold a loop from the template
+#   ralph new <name> <repo-path>   scaffold a loop from the template. The name is
+#                                  a directory and, with WORKTREE=1, the branch
+#                                  ralph/<name>, so it has to be usable as both
 #   ralph start <name>             run it in the background
 #   ralph stop <name>              stop the loop and the agent inside it
 #   ralph status [name]            what is running, how long, how far
@@ -169,13 +171,30 @@ fill() {
 cmd_new() {
   local name="${1:-}" repo="${2:-}"
   if [ -z "$name" ] || [ -z "$repo" ]; then die "usage: ralph new <name> <repo-path>"; fi
+
+  # The name is not a label: it is a directory under $RALPH_HOME and, with the
+  # template's WORKTREE=1, the branch ralph/<name> the loop commits to. A name
+  # neither will take used to scaffold fine and then fail at every start, in
+  # git's words, about a worktree path the user never typed. Judge it here,
+  # before anything is written, so the complaint arrives with the name in it.
+  case "$name" in
+    */*) die "loop name cannot hold a /: $name — a loop is one directory in $RALPH_HOME" ;;
+  esac
+  git check-ref-format --branch "ralph/$name" >/dev/null 2>&1 \
+    || die "loop name is not usable as a git branch: $name — with WORKTREE=1 the loop runs on ralph/$name"
+
   repo="$(cd "$repo" 2>/dev/null && pwd)" || die "no such directory: ${2:-}"
   [ -d "$repo/.git" ] || die "not a git checkout: $repo"
 
   local dir="$RALPH_HOME/$name"
   [ -e "$dir" ] && die "loop already exists: $dir"
 
-  mkdir -p "$dir"
+  # Not every name git accepts is one the filesystem will take: past NAME_MAX,
+  # or with $RALPH_HOME somewhere it cannot be made, mkdir failed and the rest
+  # ran on anyway, so `ralph new` printed "created <dir>" and exited 0 having
+  # written nothing at all. A scaffold the harness could not write is not a
+  # scaffold, and the exit status is the only part a script can read.
+  mkdir -p "$dir" || die "cannot create the loop directory: $dir"
   cp "$HARNESS/template/PROGRESS.md" "$dir/PROGRESS.md"   # no placeholders in it
   fill "$HARNESS/template/config.sh" "$dir/config.sh" "$name" "$repo"
   fill "$HARNESS/template/PROMPT.md" "$dir/PROMPT.md"     "$name" "$repo"

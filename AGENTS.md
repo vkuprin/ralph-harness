@@ -61,4 +61,11 @@ command writes two different files under the two bashes this supports. `fill` in
   committing into the user's own checkout. Do not soften this to a warning. Judge
   the parse and not what sourcing returns: `[ -d x ] && ADD_DIRS=(x)` exits
   non-zero and is a valid config.
+- A scaffold the harness could not write is not a scaffold. `ralph new` judges
+  the loop name before it writes anything and fails loudly rather than leaving
+  a loop that only breaks later, somewhere else. Two rules, and the second is
+  not covered by the first: `ralph/a/b` is a perfectly valid *branch*, so
+  `git check-ref-format` alone lets a `/` through, and a `/` nests the loop
+  directory one level down where `ralph status` never looks. `mkdir` is checked
+  for the same reason — it used to fail and still print `created`.
 - Defaults keep a loop written for an older version behaving the same.

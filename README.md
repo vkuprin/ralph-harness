@@ -161,8 +161,13 @@ this; it backs off.
 ./ralph stop <name>           # stop the loop and everything the agent started
 ```
 
-Loops live in `$RALPH_HOME`, which defaults to `~/.claude/ralph`. A loop directory
-holds `config.sh`, `PROMPT.md` (the job) and `PROGRESS.md` (the memory), plus the
+Loops live in `$RALPH_HOME`, which defaults to `~/.claude/ralph`. The name is not
+just a label: it is the directory under `$RALPH_HOME`, and with `WORKTREE=1` it is
+also the branch `ralph/<name>` the loop commits to. So `ralph new` refuses a name
+that cannot be both — anything holding a `/`, and anything
+`git check-ref-format --branch` rejects, such as a space, `..`, `~`, `^`, `:` or a
+leading dot. A loop directory holds `config.sh`, `PROMPT.md` (the job) and
+`PROGRESS.md` (the memory), plus the
 log, the verdicts and the archive the harness writes. None of it goes into your
 repository: `PROMPT.md` tends to carry hostnames and per-project rules, and
 `PROGRESS.md` grows into a long journal. Only the newest `PROGRESS_KEEP` Log

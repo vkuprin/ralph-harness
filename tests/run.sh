@@ -1059,6 +1059,62 @@ check "and its last line intact" \
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------
+section "ralph new refuses a name the harness cannot use"
+
+# WORKTREE=1 is the template's default, and it puts the loop on branch
+# ralph/<name>. A name git will not take as a branch component therefore
+# scaffolds a loop that can never start: `ralph new` says "created" and exits
+# 0, and every later start dies in git, in the log, naming a worktree path.
+export RALPH_HOME="$T/home-name"
+make_repo "$T/app-name" "$T/remote-name.git"
+
+out="$("$ROOT/ralph" new "my loop" "$T/app-name" 2>&1)"; rc=$?
+check "a name with a space is refused" test "$rc" != 0
+check "and nothing is left behind for it" test ! -e "$RALPH_HOME/my loop"
+check "the refusal names the loop name and says that is what is wrong" \
+  bash -c 'printf "%s\n" "$1" | grep -q "loop name" && printf "%s\n" "$1" | grep -Fq "my loop"' _ "$out"
+
+check "a name with .. in it is refused" \
+  bash -c '! "$1/ralph" new "a..b" "$2"' _ "$ROOT" "$T/app-name"
+
+# A / is the case git would let through: ralph/a/b is a perfectly good branch
+# name. It still has to go, because the loop directory is $RALPH_HOME/<name>,
+# so a / nests it one level down and `ralph status` — which looks one level
+# deep — never lists it. check-ref-format alone does not cover this.
+check "a name with a / is refused" \
+  bash -c '! "$1/ralph" new "a/b" "$2"' _ "$ROOT" "$T/app-name"
+check "and no directory is made for its first component" test ! -e "$RALPH_HOME/a"
+
+# Guards. Refusing every name would satisfy all of the above, so pin that
+# ordinary names still scaffold, including punctuation git is happy with, and
+# that an accepted name really does work as a branch.
+check "an ordinary name still scaffolds" \
+  bash -c '"$1/ralph" new plain-name "$2"' _ "$ROOT" "$T/app-name"
+check "a dot inside a name still scaffolds" \
+  bash -c '"$1/ralph" new plain.name "$2"' _ "$ROOT" "$T/app-name"
+check "and ralph status lists what was scaffolded" \
+  bash -c '"$1/ralph" status | grep -q plain-name' _ "$ROOT"
+
+# Not every name git accepts is one the filesystem will take. mkdir failed,
+# the rest of cmd_new ran anyway, and it printed "created <dir>" and exited 0
+# with nothing written. $RALPH_HOME under a regular file reproduces that on
+# any filesystem and for root too, where a NAME_MAX or a chmod would not.
+: > "$T/afile-name"
+out="$(RALPH_HOME="$T/afile-name/sub" "$ROOT/ralph" new plain "$T/app-name" 2>/dev/null)"; rc=$?
+check "a loop directory it could not make is not a loop" test "$rc" != 0
+check "and it does not say it created one" \
+  bash -c '! printf "%s\n" "$1" | grep -q created' _ "$out"
+
+S="$T/stub-name"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+printf '%s\n' 'QUIET_SLEEP=0 STEP_SLEEP=0 ERROR_SLEEP=0 PUSH=0 REVIEW=0 MAX_ITER=1' \
+  >> "$RALPH_HOME/plain.name/config.sh"
+run_loop "$RALPH_HOME/plain.name" "$S"
+check "and a name with a dot runs on its own branch and keeps its commit" \
+  test "$(statuses "$RALPH_HOME/plain.name")" = "keep"
+unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
 section "live steer hook"
 
 printf 'drop the CSS work\n' > "$T/steer.md"
