@@ -109,6 +109,13 @@ PROGRESS_KEEP=8
 LOG_MAX_BYTES=10000000
 LOG_KEEP=3
 
+# Every commit a gate throws away is kept under refs/ralph/reverted/ or
+# refs/ralph/dropped/, so `ralph review` can still show it and you can still get
+# it back. That ref is also the only thing keeping the commit reachable, so
+# unbounded they stop `git gc` from ever reclaiming the objects. The newest
+# REF_KEEP of each kind are kept and the older ones let go. 0 keeps every ref.
+REF_KEEP=20
+
 # `ralph steer` also reaches the iteration in flight, at its next tool call.
 LIVE_STEER=1
 

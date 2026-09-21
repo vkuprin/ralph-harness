@@ -590,6 +590,64 @@ check "rotation still keeps the LOG_KEEP files below it" \
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------
+section "refs/ralph/ is a safety net, not a leak"
+
+# Every reverted or dropped iteration saved its commits under refs/ralph/, and
+# nothing ever removed one. A ref is also the only thing keeping those commits
+# reachable, so `git gc` could never reclaim the objects: a long run pinned one
+# whole tree per thrown-away iteration, for good, in the repository being
+# worked on. The refs are now kept like the logs are, newest REF_KEEP of each.
+make_repo "$T/app-refs" "$T/remote-refs.git"
+S="$T/stub-refs"; mkdir -p "$S"
+printf '%s\n' commit-bad commit-bad commit-bad commit-bad commit-bad > "$S/modes"
+make_loop "$T/loops/refs" "$T/app-refs" \
+  'WORKTREE=1 MAX_ITER=5 REF_KEEP=2' 'VERIFY_CMD="./measure.sh"'
+run_loop "$T/loops/refs" "$S"
+W="$T/app-refs-ralph-refs"
+refs_gone="$(tail -n +2 "$T/loops/refs/results.tsv" | head -n 1 | cut -f4)"
+
+check "five iterations were reverted, so the checks below mean something" \
+  test "$(statuses "$T/loops/refs")" = "revert:verify revert:verify revert:verify revert:verify revert:verify"
+check "refs/ralph/reverted/ is bounded by REF_KEEP" \
+  test "$(git -C "$W" for-each-ref refs/ralph/reverted/ | wc -l | tr -d ' ')" = 2
+check "the newest thrown-away commits are the ones kept" \
+  bash -c 'git -C "$1" log --no-walk --format=%s $(git -C "$1" for-each-ref --format="%(refname)" refs/ralph/reverted/) | grep -q "agent call 5"' _ "$W"
+# Unreachable from every ref is the whole point: until then no amount of
+# `git gc` could shrink the repository back.
+check "a pruned commit is no longer reachable from any ref" \
+  bash -c '! git -C "$1" rev-list --all | grep -q "^$2"' _ "$W" "$refs_gone"
+check "and git gc can then reclaim it" \
+  bash -c 'git -C "$1" reflog expire --expire=now --expire-unreachable=now --all &&
+           git -C "$1" gc --prune=now -q && ! git -C "$1" cat-file -e "$2^{commit}"' _ "$W" "$refs_gone"
+
+# `ralph review` sorted these by refname, and refs/ralph/reverted/ sorts above
+# refs/ralph/dropped/, so a loop with more reverts than the listing shows never
+# showed a dropped commit at all — and dropped is the work thrown away whole,
+# which is the part a human most needs to see.
+make_repo "$T/app-mixed" "$T/remote-mixed.git"
+export RALPH_HOME="$T/home-refs"
+mkdir -p "$RALPH_HOME/mixed"
+printf 'REPO="%s"\n' "$T/app-mixed" > "$RALPH_HOME/mixed/config.sh"
+i=1
+while [ "$i" -le 12 ]; do
+  git -C "$T/app-mixed" commit -q --allow-empty -m "gate rejected this one ($i)"
+  git -C "$T/app-mixed" update-ref "refs/ralph/reverted/$((1758400000 + i))-$i" HEAD
+  i=$((i + 1))
+done
+git -C "$T/app-mixed" commit -q --allow-empty -m "a rebase conflict dropped this"
+git -C "$T/app-mixed" update-ref "refs/ralph/dropped/1758500000" HEAD
+git -C "$T/app-mixed" reset -q --hard "HEAD~13"
+
+check "review lists the newest thrown-away commits, dropped ones included" \
+  bash -c '"$1" review mixed | grep -q "a rebase conflict dropped this"' _ "$ROOT/ralph"
+check "review still lists the reverted ones" \
+  bash -c '"$1" review mixed | grep -q "gate rejected this one (12)"' _ "$ROOT/ralph"
+# By epoch and not by name: 1758400010-10 sorts under 1758400002-2 lexically.
+check "review orders them newest first by time, not by name" \
+  bash -c 'test "$("$1" review mixed | sed -n "/Reverted or dropped/,\$p" | sed -n 3p | sed "s/.*  //")" = "(ralph/reverted/1758400012-12)"' _ "$ROOT/ralph"
+unset RALPH_HOME
+
+# ---------------------------------------------------------------------------
 section "CLI through a symlink on PATH"
 
 mkdir -p "$T/bin" "$T/deep/bin"

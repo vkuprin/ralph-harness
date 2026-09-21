@@ -83,6 +83,7 @@ ESCALATE_AFTER=3
 LIVE_STEER=1
 LOG_MAX_BYTES=10000000
 LOG_KEEP=3
+REF_KEEP=20
 # What claude prints when a limit ends a run: plan limits (5-hour, weekly), an
 # overloaded API, or an API key out of credit. Only consulted when claude exited
 # non-zero, and only on its last lines, so an audit whose own output mentions
@@ -340,6 +341,27 @@ revert_to() {
   git clean -qfd
 }
 
+# save_ref <reverted|dropped> <commit>: keep a commit the gates threw away, so
+# a human can still get it back through `ralph review`, and let go of the
+# oldest beyond REF_KEEP. A ref is the only thing keeping such a commit
+# reachable, so unbounded these make `git gc` unable to ever reclaim the
+# objects: a long run pins one whole tree per thrown-away iteration, for good,
+# in the repository being worked on. Bounded the way ralph.log is. REF_KEEP=0
+# keeps every ref, which is what the harness used to do.
+#
+# Oldest is by the epoch in the refname — when the work was set aside, which is
+# not the commit's own date: a commit from an interrupted iteration is set
+# aside long after it was made. Numeric, because by name 1758400010-10 sorts
+# under 1758400002-2.
+save_ref() {
+  local ns="$1" ref
+  git update-ref "refs/ralph/$ns/$(date +%s)-$iter" "$2" 2>/dev/null
+  [ "${REF_KEEP:-0}" -ge 1 ] 2>/dev/null || return 0
+  git for-each-ref --format='%(refname)' "refs/ralph/$ns/" \
+    | sort -t/ -k4,4 -rn | tail -n +$((REF_KEEP + 1)) \
+    | while IFS= read -r ref; do git update-ref -d "$ref"; done
+}
+
 # The repository a checkout belongs to, as an absolute path, or nothing.
 # Everything the harness does in $WORK resets and cleans it, so $WORK has to be
 # this REPO's own worktree and not merely some git checkout that happens to sit
@@ -498,7 +520,7 @@ drop_unjudged() {
   head="$(git rev-parse HEAD)"
   [ "$judged" != "$head" ] || return 0
   git cat-file -e "$judged^{commit}" 2>/dev/null || { mark_gated; return 0; }
-  git update-ref "refs/ralph/dropped/$(date +%s)" "$head"
+  save_ref dropped "$head"
   if ! revert_to "$judged"; then
     log "cannot reset ralph/$NAME to the last judged commit $judged — fix the worktree by hand"
     exit 1
@@ -532,7 +554,7 @@ sync_once() {
     head="$(git rev-parse HEAD)"
     if ! git rebase -q "$upstream" >> "$LOG" 2>&1; then
       git rebase --abort >/dev/null 2>&1
-      git update-ref "refs/ralph/dropped/$(date +%s)" "$head"
+      save_ref dropped "$head"
       git reset -q --hard "$upstream"
       record "$head" "$(git rev-parse HEAD)" "drop:conflict" 0 \
         "rebase onto $upstream conflicted; unpushed commits dropped, saved under refs/ralph/dropped/"
@@ -540,7 +562,7 @@ sync_once() {
       return 0
     fi
     if ! verify; then
-      git update-ref "refs/ralph/dropped/$(date +%s)" HEAD
+      save_ref dropped HEAD
       record "$head" "$(git rev-parse HEAD)" "drop:reverify" 0 "after rebase onto $upstream: $GATE_REASON"
       git reset -q --hard "$upstream"
       log "sync: rebased commits failed verify, dropped them (saved under refs/ralph/dropped/)"
@@ -700,7 +722,7 @@ while :; do
 
   case "$status" in
     revert:*)
-      git update-ref "refs/ralph/reverted/$(date +%s)-$iter" "$after" 2>/dev/null
+      save_ref reverted "$after"
       if ! revert_to "$before"; then
         record "$before" "$after" "$status" "$took" "$reason"
         log "stopping: could not reset ralph/$NAME to $before after $status — fix the worktree by hand"

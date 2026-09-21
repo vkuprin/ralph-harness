@@ -423,11 +423,22 @@ cmd_review() {
     dim "no verdicts yet"
   fi
 
-  local refs
-  refs="$(git -C "$work" for-each-ref --sort=-refname --count="$n" \
-    --format='  %(objectname:short)  %(subject)  (%(refname:short))' refs/ralph/reverted/ refs/ralph/dropped/ 2>/dev/null)"
+  # Newest first, by the epoch the harness put in the refname. Sorting by the
+  # refname instead put every refs/ralph/reverted/ above every
+  # refs/ralph/dropped/, so a loop with more reverts than this lists never
+  # showed a dropped commit at all — and dropped is work thrown away whole,
+  # which is the part you most need to see. Numeric, because by name
+  # 1758400010-10 sorts under 1758400002-2.
   printf '\nReverted or dropped by the gates, kept under refs/ralph/\n'
-  if [ -n "$refs" ]; then printf '%s\n' "$refs"; else dim "  nothing"; fi
+  local ref listed=0
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    git -C "$work" log -1 --format="  %h  %s  (${ref#refs/})" "$ref" 2>/dev/null \
+      && listed=$((listed + 1))
+  done < <(git -C "$work" for-each-ref --format='%(refname)' \
+             refs/ralph/reverted/ refs/ralph/dropped/ 2>/dev/null \
+           | sort -t/ -k4,4 -rn | head -n "$n")
+  [ "$listed" -gt 0 ] || dim "  nothing"
 
   if [ "$worktree" = 1 ] && [ "$push" != 1 ]; then
     local base="$branch" waiting

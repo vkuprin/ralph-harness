@@ -172,6 +172,14 @@ read the rotated files too, however many there are, so the iteration counts do
 not reset when it rotates. Lower `LOG_KEEP` and the files above the new number
 are removed at the next rotation, so the total stays where you set it.
 
+What the gates throw away is bounded too, and that one grows in your repository
+rather than in the loop directory. A reverted or dropped commit is kept under
+`refs/ralph/`, and that ref is the only thing left keeping it reachable — so
+while they accumulate, `git gc` can never reclaim the objects, and a long run
+pins one whole tree per thrown-away iteration for good. The newest `REF_KEEP` of
+each kind are kept and the rest are let go, which is all `git gc` needs to shrink
+the repository back.
+
 A loop that ends by `kill -9`, the OOM killer or a reboot leaves its `ralph.pid`
 and `ralph.lock` behind, and the kernel later hands that number to some unrelated
 process. Neither file is believed on the number alone: the process holding it has
@@ -227,6 +235,7 @@ the same.
 | `PROGRESS_KEEP` | `8` | `8` | Log entries kept in `PROGRESS.md`; `0` keeps all |
 | `LOG_MAX_BYTES` | `10000000` | `10000000` | rotate `ralph.log` once it passes this between iterations; `0` never rotates |
 | `LOG_KEEP` | `3` | `3` | rotated logs kept, `ralph.log.1` up, no ceiling; lowering it prunes the rest; `0` throws the old one away |
+| `REF_KEEP` | `20` | `20` | thrown-away commits kept under `refs/ralph/reverted/` and `refs/ralph/dropped/`, newest first, each counted separately; `0` keeps every ref and `git gc` can never reclaim them |
 | `LIVE_STEER` | `1` | `1` | let `ralph steer` reach the iteration in flight |
 | `CLOSING` | | see `ralph.sh` | the last line of every prompt |
 
