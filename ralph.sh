@@ -124,6 +124,14 @@ ERROR_STOP=0
 PROGRESS_KEEP=8
 PROGRESS_MAX_BYTES=120000
 ESCALATE_AFTER=3
+# A shell command the harness runs to tell a human what they would otherwise
+# only find by reading the log: the loop stopped, a start was refused, an error
+# streak reached ESCALATE_AFTER, a limit began or cleared, or the agent wrote
+# something new under "Needs a decision" in PROGRESS.md. Empty is silence,
+# which is what a loop written before this setting keeps. Never on a keep: a
+# notifier that speaks every iteration is one nobody reads.
+NOTIFY_CMD=""
+NOTIFY_TIMEOUT=30
 LIVE_STEER=1
 LOG_MAX_BYTES=10000000
 LOG_KEEP=3
@@ -154,13 +162,14 @@ fi
 # shellcheck disable=SC1091
 . "$DIR/config.sh"
 
-[ -n "${REPO:-}" ] || { log "ralph: config.sh must set REPO"; exit 2; }
-[ -e "$REPO/.git" ] || { log "ralph: REPO is not a git checkout: $REPO"; exit 2; }
-
 RESULTS="$DIR/results.tsv"
 PROMPT_FILE="$DIR/.prompt"
 NAME="$(basename "$DIR")"
-WORK="$REPO"
+# REPO itself is judged in the start section below rather than here, beside the
+# source: a refused start tells the human, and notify() needs run_bounded,
+# which is defined between the two. This default is the only thing between them
+# that reads REPO, and setup_worktree replaces it when WORKTREE=1.
+WORK="${REPO:-}"
 
 # Every agent's whole output goes into ralph.log, so a loop left running for days
 # writes gigabytes into one file that nothing can then read. Rotate it between
@@ -292,6 +301,69 @@ nap() {
   NAP=""
 }
 
+# notify <event> <message>: tell the human. The event reaches NOTIFY_CMD in the
+# environment and never in its text, so a message holding a quote, a newline or
+# a $(...) cannot become part of the command that runs — the hazard AGENTS.md
+# records for sed, awk and config.sh, one tool further out. RALPH_EVENT is one
+# of: stopped, refused, stuck, limit, limit-clear, decision.
+#
+# A notifier is not a gate. It is bounded by NOTIFY_TIMEOUT and its exit status
+# is dropped, because an unreachable host must not be able to hold up, or stop,
+# the loop the notification is about. RC and TIMED_OUT are put back for the
+# same reason: they are how the gates read their own run_bounded, so a
+# notification between a gate and its verdict must not be able to decide it.
+# Every call below is already past that point; putting them back is what keeps
+# the next call site from having to know.
+notify() {
+  [ -n "${NOTIFY_CMD:-}" ] || return 0
+  local secs rc="$RC" timed="$TIMED_OUT"
+  secs="${NOTIFY_TIMEOUT:-30}"
+  [ "$secs" -ge 1 ] 2>/dev/null || secs=30
+  run_bounded "$secs" /dev/null "$LOG" env \
+    "RALPH_EVENT=$1" "RALPH_LOOP=$NAME" "RALPH_DIR=$DIR" "RALPH_ITER=$iter" \
+    "RALPH_MESSAGE=$2" bash -c "$NOTIFY_CMD"
+  if [ "$TIMED_OUT" = 1 ]; then
+    log "notify: $1 timed out after ${secs}s and its process group was killed"
+  elif [ "$RC" -ne 0 ]; then
+    log "notify: $1 exited $RC (ignored; a notifier is not a gate)"
+  fi
+  RC="$rc"
+  TIMED_OUT="$timed"
+}
+
+# refuse <message> [exit code]: a start that will not run an iteration. The one
+# a human most needs to hear about, because a loop that never started has
+# nothing else to notice — no log line arriving, no commits, no results row.
+# One place, so every refusal below the config.sh source reaches the human and
+# the next one added does too. The refusals above it cannot: NOTIFY_CMD is in
+# the file they could not read or could not parse.
+refuse() {
+  log "$1"
+  notify refused "$1"
+  exit "${2:-1}"
+}
+
+# The "Needs a decision" section of PROGRESS.md is how the agent hands a
+# blocker back — the escalation prompt tells it to write one there and take
+# other work — and nothing read it: the loop went on, the note sat in a file
+# and the human found it days later. Notified when the section changes and has
+# text in it, once per change. What was already there when the loop started is
+# not news, and neither is the template's own placeholder.
+DECISION_SEEN="$DIR/.decision-seen"
+decisions() {
+  awk '/^## Needs a decision/{f=1; next} f && /^## /{f=0} f' "$DIR/PROGRESS.md" \
+    | grep -v '^[[:space:]]*$' | grep -Fv '_(nothing yet)_'
+}
+check_decisions() {
+  local now
+  now="$(decisions)"
+  [ "$now" != "$(cat "$DECISION_SEEN" 2>/dev/null)" ] || return 0
+  printf '%s\n' "$now" > "$DECISION_SEEN"
+  [ -n "$now" ] || return 0
+  log "PROGRESS.md has new text under \"Needs a decision\" — the agent is asking a human"
+  notify decision "$(printf '%s' "$now" | head -c 1000)"
+}
+
 iter=0
 on_signal() {
   [ -n "$CHILD" ] && kill_group "$CHILD"
@@ -313,6 +385,17 @@ record() {
   reason="$(printf '%s' "${5:-}" | tr '\t\n\r' '   ' | cut -c1-300)"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$iter" \
     "${1:0:12}" "${2:0:12}" "$3" "$4" "${reason:--}" >> "$RESULTS"
+}
+
+# The streak the prompt escalates on, told to the human as it is reached and
+# not again: from here the prompt is already telling the agent to pivot, and
+# every iteration after this one is the same news. Called from both arms that
+# raise $trouble, because a revert streak and a crash streak are the same
+# trouble to a human and the counter is shared.
+streak_notice() {
+  [ "$ESCALATE_AFTER" -gt 0 ] || return 0
+  [ "$trouble" -eq "$ESCALATE_AFTER" ] || return 0
+  notify stuck "$trouble iterations in a row were reverted or failed; the last: $status — ${reason:-no reason recorded}"
 }
 
 # Consecutive failures double the pause, up to an hour.
@@ -515,34 +598,32 @@ setup_worktree() {
   WORK="${WORKTREE_DIR:-$(dirname "$REPO")/$(basename "$REPO")-ralph-$NAME}"
   if git -C "$WORK" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     [ "$(git_home "$WORK")" = "$(git_home "$REPO")" ] && return 0
-    log "$WORK is not a worktree of $REPO — refusing to reset a checkout this loop does not own"
-    exit 1
+    refuse "$WORK is not a worktree of $REPO — refusing to reset a checkout this loop does not own"
   fi
   git -C "$REPO" worktree prune
   if git -C "$REPO" show-ref --verify --quiet "refs/heads/ralph/$NAME"; then
     # Reuse the branch as it is. `worktree add -B` would reset it and lose kept work.
     git -C "$REPO" worktree add -q "$WORK" "ralph/$NAME" >> "$LOG" 2>&1 \
-      || { log "cannot create worktree $WORK"; exit 1; }
+      || refuse "cannot create worktree $WORK"
   else
     local base="$BRANCH"
     git -C "$REPO" fetch -q origin "$BRANCH" >> "$LOG" 2>&1 && base="origin/$BRANCH"
     git -C "$REPO" worktree add -q -b "ralph/$NAME" "$WORK" "$base" >> "$LOG" 2>&1 \
-      || { log "cannot create worktree $WORK from $base"; exit 1; }
+      || refuse "cannot create worktree $WORK from $base"
     if [ -n "$SETUP_CMD" ]; then
       log "setup: $SETUP_CMD"
       if ! (cd "$WORK" && bash -c "$SETUP_CMD") >> "$LOG" 2>&1; then
         # The branch goes with the worktree. Keeping it sent the next start down
         # the "reuse the branch" path above, which never runs SETUP_CMD, so the
         # loop ran for good in a worktree its own setup had never prepared.
-        log "SETUP_CMD failed; removing the new worktree and branch ralph/$NAME, so the next start runs setup again"
         git -C "$REPO" worktree remove --force "$WORK" >/dev/null 2>&1
         git -C "$REPO" branch -q -D "ralph/$NAME" >/dev/null 2>&1
-        exit 1
+        refuse "SETUP_CMD failed; removed the new worktree and branch ralph/$NAME, so the next start runs setup again"
       fi
     fi
   fi
   [ "$(git_home "$WORK")" = "$(git_home "$REPO")" ] \
-    || { log "worktree $WORK is not usable"; exit 1; }
+    || refuse "worktree $WORK is not usable"
   log "worktree $WORK on ralph/$NAME"
 }
 
@@ -748,6 +829,12 @@ sync_once() {
 
 # ------------------------------------------------------------------ start
 
+# The config's own two fatals. Same words, same exit code and same log line as
+# when they sat beside the source above; what is new is that they come through
+# refuse(), so a human hears about a loop that never started.
+[ -n "${REPO:-}" ] || refuse "ralph: config.sh must set REPO" 2
+[ -e "$REPO/.git" ] || refuse "ralph: REPO is not a git checkout: $REPO" 2
+
 # PUSH with nowhere to push. Every sync would fetch, fail, and copy git's
 # four-line complaint into the log; over days that is the whole log. Say it
 # once and keep the commits local, which is what PUSH=0 does anyway.
@@ -760,7 +847,7 @@ fi
 if [ "$WORKTREE" = 1 ]; then
   setup_worktree
 fi
-cd "$WORK" || exit 1
+cd "$WORK" || refuse "cannot enter the work directory $WORK"
 if [ "$WORKTREE" = 1 ]; then
   drop_unjudged
 fi
@@ -775,11 +862,21 @@ log "ralph start: loop=$NAME repo=$REPO work=$WORK model=$MODEL max_iter=$MAX_IT
 quiet=0
 trouble=0
 errors=0
+limits=0
+# Why the loop ended, for the one notification at the bottom. Every break below
+# sets it and logs it in the same words, so a stop the human hears about and a
+# stop in the log can never say different things — and a break added later is
+# notified whether or not whoever writes it knows this exists.
+stop_why=""
+# What the loop was already being asked before it started is not news; only
+# what an agent of this run writes is.
+decisions > "$DECISION_SEEN"
 while :; do
   iter=$((iter + 1))
   if [ "$iter" -gt "$MAX_ITER" ]; then
     iter=$((iter - 1))   # this one never ran; do not count it
-    log "stopping: hit MAX_ITER=$MAX_ITER"
+    stop_why="hit MAX_ITER=$MAX_ITER"
+    log "stopping: $stop_why"
     break
   fi
   # The other gate on whether this iteration runs at all. Refusing is the same
@@ -788,7 +885,8 @@ while :; do
   # with it. A human who wants the loop back puts the file back and restarts.
   if ! have_files PROMPT.md PROGRESS.md; then
     iter=$((iter - 1))   # this one never ran; do not count it
-    log "stopping: $MISSING_FILE is gone or unreadable at $DIR/$MISSING_FILE — every iteration re-reads it, and the harness will not run an agent without it"
+    stop_why="$MISSING_FILE is gone or unreadable at $DIR/$MISSING_FILE — every iteration re-reads it, and the harness will not run an agent without it"
+    log "stopping: $stop_why"
     break
   fi
 
@@ -903,12 +1001,25 @@ while :; do
       save_ref reverted "$after"
       if ! revert_to "$before"; then
         record "$before" "$after" "$status" "$took" "$reason"
-        log "stopping: could not reset ralph/$NAME to $before after $status — fix the worktree by hand"
+        stop_why="could not reset ralph/$NAME to $before after $status — fix the worktree by hand"
+        log "stopping: $stop_why"
         break
       fi
       ;;
   esac
   record "$before" "$after" "$status" "$took" "$reason"
+
+  # A limit streak clears the moment claude answers again, whatever the verdict
+  # of that iteration is. Said once, at the end of the streak, like the limit
+  # itself: the iterations in between are the same news over again.
+  if [ "$status" != ratelimit ] && [ "$limits" -gt 0 ]; then
+    notify limit-clear "claude answered again after $limits iteration(s) waiting out a limit"
+    limits=0
+  fi
+  # Before the case below, not after: a human hears about a question now rather
+  # than up to an hour later, once the naps in there have had their turn, and
+  # the two `break`s inside it cannot jump over a call made above it.
+  check_decisions
 
   case "$status" in
     keep*)
@@ -921,13 +1032,18 @@ while :; do
       quiet=$((quiet + 1)); trouble=0; errors=0
       log "iteration $iter shipped nothing in ${took}s (quiet streak $quiet)"
       if [ "$QUIET_STOP" -gt 0 ] && [ "$quiet" -ge "$QUIET_STOP" ]; then
-        log "stopping: $QUIET_STOP consecutive iterations shipped nothing"
+        stop_why="$QUIET_STOP consecutive iterations shipped nothing"
+        log "stopping: $stop_why"
         break
       fi
       nap "$QUIET_SLEEP"
       ;;
     ratelimit)
+      limits=$((limits + 1))
       log "iteration $iter hit a limit: $reason — trying it again in ${RATE_LIMIT_SLEEP}s"
+      # The first of the streak only. A loop can wait out a weekly limit over
+      # dozens of iterations, and a human needs to hear that once.
+      [ "$limits" -eq 1 ] && notify limit "$reason"
       # Waiting out a limit is not work, so it does not use up MAX_ITER.
       iter=$((iter - 1))
       nap "$RATE_LIMIT_SLEEP"
@@ -935,8 +1051,10 @@ while :; do
     timeout|error)
       trouble=$((trouble + 1)); errors=$((errors + 1))
       log "iteration $iter $status: $reason (errors in a row $errors)"
+      streak_notice
       if [ "$ERROR_STOP" -gt 0 ] && [ "$errors" -ge "$ERROR_STOP" ]; then
-        log "stopping: $ERROR_STOP consecutive iterations failed"
+        stop_why="$ERROR_STOP consecutive iterations failed"
+        log "stopping: $stop_why"
         break
       fi
       nap "$(trouble_sleep)"
@@ -944,6 +1062,7 @@ while :; do
     revert:*)
       trouble=$((trouble + 1)); errors=0
       log "iteration $iter reverted to $before: $status — $reason"
+      streak_notice
       nap "$(trouble_sleep)"
       ;;
   esac
@@ -954,3 +1073,8 @@ done
 
 rm -f "$DIR/ralph.pid"
 log "ralph finished after $iter iterations"
+# The one stop notification, for every way the loop can end. Not for a signal:
+# `ralph stop` and a reboot are the human's own doing, and on_signal exits
+# before this. ${stop_why:-...} because a break added later that forgets to set
+# it should still be heard about, if less usefully.
+notify stopped "${stop_why:-the loop ended} (after $iter iterations)"

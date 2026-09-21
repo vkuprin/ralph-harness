@@ -170,4 +170,16 @@ process above the trap, as the two strangers are, or wait until `ps` can see it
   `ralph new` hint, the three `ralph start` prints, the `ralph migrate` hint,
   the message sending an old-layout loop to `ralph migrate`, and both commands
   in `ralph review`'s footer — a seventh added later needs `shq` too.
+- A notifier is not a gate. `NOTIFY_CMD` is bounded by `NOTIFY_TIMEOUT`, its
+  exit status is dropped, and `notify` puts `RC` and `TIMED_OUT` back before it
+  returns — those two are how the gates read their own `run_bounded`, so a
+  notification placed between a gate and its verdict must not be able to
+  decide it. The event goes in the environment (`RALPH_EVENT`, `RALPH_MESSAGE`,
+  …) and never into the command's text, for the reason the sed and awk rules
+  above give. Every stop notifies from **one** place, after the loop, out of
+  `stop_why`, and every refusal through `refuse`, so a reason the human is told
+  and the reason in the log cannot drift apart and a stop added later is heard
+  about without its author knowing any of this. The refusals above the
+  `config.sh` source cannot notify at all: the setting is in the file they
+  could not read.
 - Defaults keep a loop written for an older version behaving the same.

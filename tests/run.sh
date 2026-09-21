@@ -1773,6 +1773,157 @@ check "the overflow file does not outlive the iteration" \
   bash -c '! ls "$1"/.progress-overflow.* >/dev/null 2>&1' _ "$BS_STEAL"
 
 # ---------------------------------------------------------------------------
+section "NOTIFY_CMD: the loop tells the human instead of failing quietly"
+
+# A loop runs for days beside a human who is not reading its log. Everything it
+# had to say — it stopped, it never started, it is going round in circles on one
+# defect, it is waiting out a limit, the agent wrote down something only a human
+# can settle — was one line in ralph.log among thousands. NOTIFY_CMD is a shell
+# command the harness runs on exactly those events, and on nothing else: not on
+# a keep, which is the noise that makes a human stop reading.
+#
+# mk_notifier <log file> <script path>: a notifier that records one line per
+# event. It takes no arguments and reads its environment, which is how the
+# harness passes the event — a message holding a quote, a newline or a $(...)
+# must never reach the shell that runs the command.
+mk_notifier() {
+  printf '#!/usr/bin/env bash\nout="%s"\n' "$1" > "$2"
+  cat >> "$2" <<'EOF'
+{ printf '%s\t%s\t%s\t%s\t' "$RALPH_EVENT" "$RALPH_LOOP" "$RALPH_ITER" "$RALPH_DIR"
+  printf '%s' "$RALPH_MESSAGE" | tr '\n\t' '  '
+  echo
+} >> "$out"
+EOF
+  chmod +x "$2"
+}
+events() { cut -f1 "$1" 2>/dev/null | tr '\n' ' '; }
+# field <n> <event> <log>: one column of the row for that event.
+field() { awk -F'\t' -v n="$1" -v e="$2" '$1 == e { print $n; exit }' "$3"; }
+
+make_repo "$T/app-nc" "$T/remote-nc.git"
+S="$T/stub-nc"; mkdir -p "$S"
+printf '%s\n' limit limit commit decide nothing fail fail fail > "$S/modes"
+mk_notifier "$T/notify-nc.log" "$T/notify-nc.sh"
+make_loop "$T/loops/nc" "$T/app-nc" \
+  'WORKTREE=1 MAX_ITER=6 ESCALATE_AFTER=3 ITER_TIMEOUT=10' \
+  'VERIFY_CMD="./measure.sh"' "NOTIFY_CMD=\"$T/notify-nc.sh\""
+# A question that was already in PROGRESS.md when the loop started is not news.
+# Only what an agent of *this* run writes under that heading is.
+awk '{print} /^## Needs a decision/{print ""; print "- an older loop left this one here"}' \
+  "$T/loops/nc/PROGRESS.md" > "$T/loops/nc/PROGRESS.md.new"
+mv "$T/loops/nc/PROGRESS.md.new" "$T/loops/nc/PROGRESS.md"
+run_loop "$T/loops/nc" "$S"
+
+# Two limits, then a commit, then a question, then a quiet iteration that
+# changes nothing, then three failures, then MAX_ITER. What a human hears: the
+# limit began, it cleared, there is a question, the loop is stuck, it stopped.
+check "one notification per event a human needs, and none for a keep or a quiet" \
+  test "$(events "$T/notify-nc.log")" = "limit limit-clear decision stuck stopped "
+check "the verdicts are what they are without a notifier" \
+  test "$(statuses "$T/loops/nc")" = "ratelimit ratelimit keep quiet quiet error error error"
+check "the loop is named in the event" test "$(field 2 stuck "$T/notify-nc.log")" = nc
+check "the loop directory is in the event" \
+  test "$(field 4 stuck "$T/notify-nc.log")" = "$T/loops/nc"
+check "the iteration is in the event" test "$(field 3 stuck "$T/notify-nc.log")" = 6
+check "the limit event says what claude said" \
+  grep -q 'hit your limit' <<<"$(field 5 limit "$T/notify-nc.log")"
+check "the stuck event says how many iterations in a row" \
+  grep -q '3 iterations in a row' <<<"$(field 5 stuck "$T/notify-nc.log")"
+check "the stop event says which stop it was" \
+  grep -q 'MAX_ITER=6' <<<"$(field 5 stopped "$T/notify-nc.log")"
+check "the decision event carries what the agent wrote" \
+  grep -q 'only a human can settle this one' <<<"$(field 5 decision "$T/notify-nc.log")"
+# The agent writes the message, so it is the notifier's command that must not
+# be built out of it. This one holds a quote and a $(touch ...); it arrives as
+# text or it runs.
+check "a message holding shell syntax reaches the notifier as text" \
+  grep -Fq '$(touch' <<<"$(field 5 decision "$T/notify-nc.log")"
+check "and nothing in it ran" test ! -e "$T/stub-nc/OWNED"
+check "the log still says everything the notifier was told" \
+  bash -c 'grep -q "Needs a decision" "$1/ralph.log"' _ "$T/loops/nc"
+
+# A keep and a quiet on their own say nothing; the stop says why it stopped.
+# QUIET_STOP, not MAX_ITER, so the other stop reason is exercised too.
+S="$T/stub-nq"; mkdir -p "$S"
+printf '%s\n' commit nothing > "$S/modes"
+mk_notifier "$T/notify-nq.log" "$T/notify-nq.sh"
+make_loop "$T/loops/nq" "$T/app-nc" \
+  'WORKTREE=1 MAX_ITER=5 QUIET_STOP=1' 'VERIFY_CMD="./measure.sh"' \
+  "NOTIFY_CMD=\"$T/notify-nq.sh\""
+run_loop "$T/loops/nq" "$S"
+check "a loop that ships and then goes quiet notifies only the stop" \
+  test "$(events "$T/notify-nq.log")" = "stopped "
+check "and the stop event says it was QUIET_STOP" \
+  grep -q 'shipped nothing' <<<"$(field 5 stopped "$T/notify-nq.log")"
+
+# A notifier is not a gate. One that hangs is killed with its process group at
+# NOTIFY_TIMEOUT and the loop carries on — the stuck event here lands in
+# iteration 1, so a loop held up by its own notifier never reaches the commit.
+S="$T/stub-nh"; mkdir -p "$S"
+printf '%s\n' fail commit nothing > "$S/modes"
+printf '#!/usr/bin/env bash\nsleep 999 &\nprintf "%%s\\n" "$!" > "%s"\nwait\n' \
+  "$T/notify-hang.pid" > "$T/notify-hang.sh"
+chmod +x "$T/notify-hang.sh"
+make_loop "$T/loops/nh" "$T/app-nc" \
+  'WORKTREE=1 MAX_ITER=3 ESCALATE_AFTER=1 NOTIFY_TIMEOUT=1' \
+  'VERIFY_CMD="./measure.sh"' "NOTIFY_CMD=\"$T/notify-hang.sh\""
+run_loop "$T/loops/nh" "$S"
+check "a hanging notifier does not hold up the loop" \
+  test "$(statuses "$T/loops/nh")" = "error keep quiet"
+check "the hanging notifier was killed with its process group" sleeper_gone "$T/notify-hang.pid"
+check "and the log says a notification was killed" \
+  bash -c 'grep -q "notify: .* timed out" "$1/ralph.log"' _ "$T/loops/nh"
+
+# NOTIFY_CMD is a shell command, not a program: this one is `exit 7` and there
+# is no such file. Its failure is logged and changes nothing.
+S="$T/stub-nf"; mkdir -p "$S"
+printf '%s\n' commit nothing > "$S/modes"
+make_loop "$T/loops/nf" "$T/app-nc" \
+  'WORKTREE=1 MAX_ITER=2 NOTIFY_CMD="exit 7"' 'VERIFY_CMD="./measure.sh"'
+run_loop "$T/loops/nf" "$S"
+check "a notifier that fails is ignored" \
+  test "$(statuses "$T/loops/nf")" = "keep quiet"
+check "and its exit status is logged rather than swallowed" \
+  bash -c 'grep -q "notify: stopped exited 7" "$1/ralph.log"' _ "$T/loops/nf"
+
+# The event a human most needs: a start that never ran an iteration, because
+# then there is nothing to watch at all. The refusals above the config.sh
+# source cannot notify — NOTIFY_CMD is in the file they could not read — and
+# the ones below it all go through one place, so the next one added does too.
+mk_notifier "$T/notify-nr.log" "$T/notify-nr.sh"
+mkdir -p "$T/loops/nr" "$T/not-a-checkout"
+cp "$ROOT/template/PROMPT.md" "$ROOT/template/PROGRESS.md" "$T/loops/nr/"
+printf 'REPO="%s"\nNOTIFY_CMD="%s"\n' "$T/not-a-checkout" "$T/notify-nr.sh" \
+  > "$T/loops/nr/config.sh"
+run_loop "$T/loops/nr" "$S"; nr_rc=$?
+check "a refused start notifies, once" test "$(events "$T/notify-nr.log")" = "refused "
+check "and says why it was refused" \
+  grep -q 'not a git checkout' <<<"$(field 5 refused "$T/notify-nr.log")"
+# Guards: the refusal must still do what it did before it also notified.
+check "the refusal still exits 2" test "$nr_rc" = 2
+check "the refusal is still in the log the reader is sent to" \
+  grep -q 'not a git checkout' "$T/loops/nr/ralph.log"
+
+S="$T/stub-ns"; mkdir -p "$S"
+printf '%s\n' nothing > "$S/modes"
+mk_notifier "$T/notify-ns.log" "$T/notify-ns.sh"
+make_loop "$T/loops/ns" "$T/app-nc" \
+  'WORKTREE=1 MAX_ITER=1 SETUP_CMD="exit 3"' "NOTIFY_CMD=\"$T/notify-ns.sh\""
+run_loop "$T/loops/ns" "$S"; ns_rc=$?
+check "a start refused because SETUP_CMD failed notifies too" \
+  test "$(events "$T/notify-ns.log")" = "refused "
+check "and names SETUP_CMD" grep -q 'SETUP_CMD' <<<"$(field 5 refused "$T/notify-ns.log")"
+check "that refusal still exits 1" test "$ns_rc" = 1
+check "and still leaves no half-built worktree behind" test ! -e "$T/app-nc-ralph-ns"
+
+# The template must not ship a notifier that runs: a fresh loop is silent
+# until its human picks one, and both examples are there to be uncommented.
+check "the template leaves NOTIFY_CMD empty, with its examples commented out" \
+  bash -c 'NOTIFY_CMD=x; . "$1/template/config.sh" >/dev/null 2>&1
+           test -z "$NOTIFY_CMD" && grep -q "osascript" "$1/template/config.sh" &&
+           grep -q "api.telegram.org" "$1/template/config.sh"' _ "$ROOT"
+
+# ---------------------------------------------------------------------------
 echo
 if [ "$fails" -eq 0 ]; then
   printf '\033[32mall tests passed\033[0m\n'

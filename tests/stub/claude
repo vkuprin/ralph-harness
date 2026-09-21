@@ -92,6 +92,21 @@ case "$mode" in
                   echo "note $n.$i: the agent kept its memory in a shape of its own" >> "$p"
                   i=$((i + 1))
                 done ;;
+  decide)       # The agent hands something back: text under "Needs a decision"
+                # in PROGRESS.md, which is where the escalation prompt tells it
+                # to put a blocker. It commits nothing, so this iteration is
+                # quiet — which is exactly the shape a human must still hear
+                # about, because nothing else in the run says a word.
+                # The text holds a quote and a $(...) naming a file under
+                # $STUB_DIR: the agent's words reach the notifier as text or
+                # they run as a command, and a loop is told to write here.
+                # ENVIRON, not -v, because $d is a path and awk rereads a -v
+                # value as escape sequences.
+                p="$(dirname "$RALPH_STEER_FILE")/PROGRESS.md"
+                RALPH_D="$d" awk '{print} /^## Needs a decision/{
+                       print ""
+                       print "- the staging key is not in the vault: only a human can settle this one \"$(touch " ENVIRON["RALPH_D"] "/OWNED)\""
+                     }' "$p" > "$p.new" && mv "$p.new" "$p" ;;
   drop-branch)  # the branch goes out from under the loop, as a stray
                 # `git update-ref -d` or a human tidying refs would do
                 commit work

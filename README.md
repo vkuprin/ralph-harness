@@ -149,6 +149,24 @@ the agent to stop retrying and pivot. After twice as many, it tells it to write 
 blocker under "Needs a decision" and move on. The loop itself never gives up on
 this; it backs off.
 
+`NOTIFY_CMD` is how the loop tells you instead of writing it down where nobody
+looks. It is a shell command the harness runs on the events you would otherwise
+have to go and find: `stopped` (every way the loop can end), `refused` (a start
+that never ran an iteration), `stuck` (`ESCALATE_AFTER` reached), `limit` and
+`limit-clear` (the first iteration of a limit streak, and claude answering
+again), and `decision` — new text under "Needs a decision" in `PROGRESS.md`,
+which is the agent handing you a question it cannot settle. Not on a keep, and
+not on a quiet iteration: a notifier that speaks every iteration is one you stop
+reading. The event arrives in the environment — `RALPH_EVENT`, `RALPH_LOOP`,
+`RALPH_DIR`, `RALPH_ITER`, `RALPH_MESSAGE` — and never pasted into the command,
+so a message holding a quote or a `$(...)` cannot become part of what runs. The
+command is bounded by `NOTIFY_TIMEOUT` and its exit status is thrown away: a
+notifier is not a gate, and a phone that is off must not be able to hold up, or
+stop, the loop. `template/config.sh` has a macOS notification and a Telegram
+`curl` ready to uncomment. Two things it does not say: `ralph stop` and a reboot
+(you did those), and the refusals before `config.sh` is read — a missing or
+unparseable `config.sh` is where `NOTIFY_CMD` would have been.
+
 ## Commands
 
 ```bash
@@ -291,6 +309,8 @@ parse is judged, not what sourcing returns: a config ending in a false test, lik
 | `ERROR_SLEEP` | `300` | `300` | wait after a failure or reset, doubling in a row up to an hour |
 | `ERROR_STOP` | `0` | `0` | stop after this many crashes or timeouts in a row; `0` never stops |
 | `ESCALATE_AFTER` | `3` | `3` | failures in a row before the prompt says pivot |
+| `NOTIFY_CMD` | | | a command run on the events above; the event is in `RALPH_EVENT`, `RALPH_LOOP`, `RALPH_DIR`, `RALPH_ITER` and `RALPH_MESSAGE`. Empty is silence |
+| `NOTIFY_TIMEOUT` | `30` | `30` | seconds `NOTIFY_CMD` may take, counted awake; its exit status is ignored either way |
 | `PROGRESS_KEEP` | `8` | `8` | Log entries kept in `PROGRESS.md`; `0` keeps all |
 | `PROGRESS_MAX_BYTES` | `120000` | `120000` | most of `PROGRESS.md` put into one prompt, first bytes kept; the file is never touched; `0` injects all of it |
 | `LOG_MAX_BYTES` | `10000000` | `10000000` | rotate `ralph.log` once it passes this between iterations; `0` never rotates |

@@ -105,6 +105,39 @@ ERROR_STOP=0
 # decision" and move on.
 ESCALATE_AFTER=3
 
+# ------------------------------------------------------------ telling you
+
+# A command the harness runs when something happens that you would otherwise
+# only find by reading ralph.log:
+#
+#   stopped      the loop ended (MAX_ITER, QUIET_STOP, ERROR_STOP, a file of
+#                its own gone, a worktree it could not put back)
+#   refused      a start that never ran an iteration
+#   stuck        ESCALATE_AFTER iterations in a row reverted or failed
+#   limit        the first iteration of a limit streak
+#   limit-clear  claude answered again
+#   decision     new text under "Needs a decision" in PROGRESS.md — the agent
+#                asking you something it cannot settle
+#
+# Never on a keep or a quiet iteration: that is the noise that makes you stop
+# reading them. The event arrives in the environment, not pasted into the
+# command: RALPH_EVENT, RALPH_LOOP, RALPH_DIR, RALPH_ITER, RALPH_MESSAGE. It is
+# run with a timeout and its exit status is thrown away — a notifier is not a
+# gate, and an unreachable host must never be able to stop the loop.
+#
+# macOS notification centre. `system attribute` reads the environment from
+# inside AppleScript, for the same reason the harness does not paste the
+# message into this command: interpolated, a message holding a " would end the
+# AppleScript string early and the notification would be lost.
+# NOTIFY_CMD='osascript -e '\''display notification (system attribute "RALPH_MESSAGE") with title ("ralph: " & (system attribute "RALPH_LOOP")) subtitle (system attribute "RALPH_EVENT")'\'''
+#
+# Telegram (BotFather for the token, @userinfobot for the chat id):
+# NOTIFY_CMD='curl -sS -m 20 -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" -d chat_id="$TG_CHAT" --data-urlencode text="ralph/$RALPH_LOOP $RALPH_EVENT: $RALPH_MESSAGE" >/dev/null'
+NOTIFY_CMD=""
+# Seconds the notifier may take before its process group is killed. Seconds the
+# machine was awake for, like every other timeout here.
+NOTIFY_TIMEOUT=30
+
 # ---------------------------------------------------------------- memory
 
 # Log entries kept in PROGRESS.md. Older ones move to PROGRESS-archive.md, which
