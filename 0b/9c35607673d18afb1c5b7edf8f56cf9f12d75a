@@ -1,0 +1,26 @@
+tests/run.sh
+  s_efc28c126bc5b9::t_1ed8b99976edc0 1968,1983-2033,2035-2074
+  s_efc28c126bc5b9::t_2cf9564d108652 2034
+tests/stub/claude
+  s_efc28c126bc5b9::t_1ed8b99976edc0 28,39,64
+template/config.sh
+  s_efc28c126bc5b9::t_088b283be6baaa 73-95
+ralph.sh
+  s_efc28c126bc5b9::t_265a3d252e9688 121-135,532-553,965,992-1004,1007-1010,1025-1027
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "0b9c35607673d18afb1c5b7edf8f56cf9f12d75a",
+  "prompts": {},
+  "sessions": {
+    "s_efc28c126bc5b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9dfe7d39-b0c9-412c-bdf8-b4710d1b8016",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}

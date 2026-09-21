@@ -1,0 +1,23 @@
+ralph
+  s_efc28c126bc5b9::t_ba4d3008fb8e82 140-157,173-191
+  s_efc28c126bc5b9::t_17bea995f9f3ac 192-193
+tests/run.sh
+  s_efc28c126bc5b9::t_b668baf98488e7 481-491,525-531
+  s_efc28c126bc5b9::t_ccd5c37eb327cc 532
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b71923b7bbc96c29d9d35a5c0dce2a77931fbb3c",
+  "prompts": {},
+  "sessions": {
+    "s_efc28c126bc5b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9dfe7d39-b0c9-412c-bdf8-b4710d1b8016",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
