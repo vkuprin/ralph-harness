@@ -155,7 +155,8 @@ have to go and find: `stopped` (every way the loop can end), `refused` (a start
 that never ran an iteration), `stuck` (`ESCALATE_AFTER` reached), `limit` and
 `limit-clear` (the first iteration of a limit streak, and claude answering
 again), and `decision` — new text under "Needs a decision" in `PROGRESS.md`,
-which is the agent handing you a question it cannot settle. Not on a keep, and
+which is the agent handing you a question it cannot settle (a line not there
+before; a question settled or moved is not news). Not on a keep, and
 not on a quiet iteration: a notifier that speaks every iteration is one you stop
 reading. The event arrives in the environment — `RALPH_EVENT`, `RALPH_LOOP`,
 `RALPH_DIR`, `RALPH_ITER`, `RALPH_MESSAGE` — and never pasted into the command,
@@ -166,6 +167,31 @@ stop, the loop. `template/config.sh` has a macOS notification and a Telegram
 `curl` ready to uncomment. Two things it does not say: `ralph stop` and a reboot
 (you did those), and the refusals before `config.sh` is read — a missing or
 unparseable `config.sh` is where `NOTIFY_CMD` would have been.
+
+Three settings keep a loop pointed and within budget. `DONE_CMD` is your own
+check that the job is done, run in the work directory before every iteration and
+after the last push: exit 0 stops the loop and notifies `stopped`, so a loop
+whose list is finished does not wander off into whatever it finds next.
+`ACTIVE_HOURS="22-08"` keeps it to the hours you are not using the plan limit it
+shares with you; the wait comes between iterations and never counts toward
+`MAX_ITER`. `REVIEW_MODEL` puts the reviewer on a cheaper model.
+
+Two sections of the prompt template do the same from the other side. "Done looks
+like" is an example or a check of the finished result, not an adjective ("renders
+with the brand fonts at 375 and 1440 px", not "a nice landing page"); the
+reviewer holds each commit against it, rejecting one that contradicts it or
+claims to have met it, never one that is simply a step short of it. "Direction"
+is for open-ended loops: what to look for, in which order, and what to leave
+alone. Each prompt also lists what the loop shipped recently, from its own kept
+commits in git, so an agent sees when it keeps circling one topic.
+
+What an iteration costs is in `results.tsv`, after the reason: `cost_usd` and
+`tokens` (input plus output, the agent's and the reviewer's together), read from
+claude's JSON answer. `ralph review` and `ralph status` total them. On a
+subscription the dollars are what the API would have charged, not a bill, and a
+run killed before it answered reports nothing, so the total is a lower bound.
+Reading the JSON takes perl's `JSON::PP`; where it is missing (Debian's
+`perl-base`) the loop runs in text mode as before and records no cost.
 
 ## Commands
 
@@ -302,6 +328,10 @@ parse is judged, not what sourcing returns: a config ending in a false test, lik
 | `VERIFY_TIMEOUT` | `1800` | `1800` | seconds `VERIFY_CMD` may take, counted awake |
 | `FROZEN` | `()` | `()` | paths a commit may not touch |
 | `REVIEW` | `1` | `0` | a read-only reviewer judges each commit |
+| `REVIEW_MODEL` | | `MODEL` | the reviewer's model; a cheaper one saves the shared plan limit |
+| `DENY` | `()` | `()` | tool patterns the agent may not use, such as `"Bash(ssh *)"`, each passed as `--disallowedTools`; see Safety |
+| `DONE_CMD` | | | your check that the job is done, run before every iteration; exit 0 stops the loop |
+| `ACTIVE_HOURS` | | | local hours iterations may start in, like `22-08` (end excluded, wraps past midnight); empty is any hour |
 | `ITER_TIMEOUT` | `7200` | `7200` | seconds one agent run may take, counted awake |
 | `RATE_LIMIT_SLEEP` | `1800` | `1800` | wait before retrying after a limit |
 | `RATE_LIMIT_RE` | | see `ralph.sh` | what counts as a limit; extend it with `RATE_LIMIT_RE="$RATE_LIMIT_RE\|your proxy's message"` |
@@ -339,6 +369,12 @@ user can. The harness narrows what that can do to your code, not to your machine
   it; only the harness pushes, and only what passed the gates. The block is keyed
   on the remote's URL, so a push to some other repository — the throwaway remote
   a test suite makes for itself, say — still works.
+- `DENY` turns tool patterns into `--disallowedTools` flags, which claude
+  enforces ahead of `--dangerously-skip-permissions`: checked with a real call,
+  where `Bash(touch *)` was refused under skip-permissions and allowed without
+  the rule. It guards against accidents, not against an agent set on getting
+  round it (`bash -c`, a script), so keep production credentials out of the
+  loop's reach as well.
 - The reviewer runs with `claude -p --restricted --tools "Read,Grep,Glob"`: no
   shell, no settings or MCP servers from your machine or from the repository, and
   permission prompts are denied rather than left hanging.
