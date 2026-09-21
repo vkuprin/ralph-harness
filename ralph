@@ -19,7 +19,17 @@
 set -uo pipefail
 
 RALPH_HOME="${RALPH_HOME:-$HOME/.claude/ralph}"
-HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Follow symlinks to the real checkout, so `ln -s <checkout>/ralph ~/.local/bin/ralph`
+# works and ralph.sh, hooks/ and template/ are found next to the real file.
+# (macOS readlink has no -f before 12.3, so walk the chain by hand.)
+self="${BASH_SOURCE[0]}"
+while [ -L "$self" ]; do
+  link_dir="$(cd -P "$(dirname "$self")" && pwd)"
+  self="$(readlink "$self")"
+  case "$self" in /*) ;; *) self="$link_dir/$self" ;; esac
+done
+HARNESS="$(cd -P "$(dirname "$self")" && pwd)"
 LOOPSH="$HARNESS/ralph.sh"
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }

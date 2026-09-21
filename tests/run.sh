@@ -177,6 +177,18 @@ check "status counts the verdicts" bash -c '"$1" status demo | grep -q "verdicts
 unset RALPH_HOME
 
 # ---------------------------------------------------------------------------
+section "CLI through a symlink on PATH"
+
+mkdir -p "$T/bin" "$T/deep/bin"
+ln -s "$ROOT/ralph" "$T/bin/ralph"                  # absolute link
+ln -s ../../bin/ralph "$T/deep/bin/ralph"           # relative link to a link
+make_repo "$T/app-e" "$T/remote-e.git"
+check "an absolute symlink finds the harness" \
+  bash -c 'RALPH_HOME="$1/home-e" "$1/bin/ralph" new viasymlink "$1/app-e"' _ "$T"
+check "the loop it scaffolds comes from the real template" test -f "$T/home-e/viasymlink/PROMPT.md"
+check "a relative chain of symlinks finds the harness" bash -c '"$1/deep/bin/ralph" help | grep -q "ralph new"' _ "$T"
+
+# ---------------------------------------------------------------------------
 section "live steer hook"
 
 printf 'drop the CSS work\n' > "$T/steer.md"

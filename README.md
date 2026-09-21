@@ -16,6 +16,13 @@ $EDITOR ~/.claude/ralph/audit/PROMPT.md
 ./ralph status
 ```
 
+To run it from anywhere, link it onto your PATH. It follows the link back to the
+checkout, so `git pull` there updates it:
+
+```bash
+ln -s "$PWD/ralph" ~/.local/bin/ralph
+```
+
 ## What makes it different
 
 The idea is Geoffrey Huntley's: [Ralph is a bash loop](https://ghuntley.com/ralph/)
