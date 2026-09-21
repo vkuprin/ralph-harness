@@ -70,7 +70,7 @@ printf '%s\n' commit commit-bad touch-frozen commit sleep limit fail nothing che
 printf '%s\n' ACCEPT "REJECT: not what the job asks for" ACCEPT ACCEPT > "$S/verdicts"
 make_loop "$T/loops/a" "$T/app" \
   'WORKTREE=1 PUSH=1 REVIEW=1 ITER_TIMEOUT=3 MAX_ITER=10' \
-  'VERIFY_CMD="./measure.sh"' 'FROZEN=("measure.sh")'
+  "VERIFY_CMD=\"env > '$T/loops/a/verify-env'; ./measure.sh\"" 'FROZEN=("measure.sh")'
 app_head="$(git -C "$T/app" rev-parse HEAD)"
 run_loop "$T/loops/a" "$S" "$T/remote.git"
 
@@ -102,6 +102,10 @@ check "the reviewer was only asked about commits that passed verify" test "$(cat
 check "the reviewer prompt points at the diff file" grep -q 'review.diff' "$S/prompt.review.1"
 check "timeout killed the agent's process group" bash -c '! pgrep -f "sleep 99[9]" >/dev/null'
 check "usage-limit reason recorded" grep -q "hit your limit" "$T/loops/a/results.tsv"
+check "no harness variable leaks into the agent's environment" test ! -s "$S/leaked-env"
+check "no harness variable leaks into VERIFY_CMD" bash -c '! grep -q "^BOUNDED_" "$1"' _ "$T/loops/a/verify-env"
+check "reverted commits are kept under refs/ralph/reverted/" \
+  test "$(git -C "$W" for-each-ref refs/ralph/reverted/ | wc -l | tr -d ' ')" -ge 4
 
 # ---------------------------------------------------------------------------
 section "escalation and the PROGRESS.md cap"

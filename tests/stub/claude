@@ -36,6 +36,7 @@ esac
 
 n="$(bump agent_calls)"
 cat > "$d/prompt.agent.$n"
+env | grep '^BOUNDED_' >> "$d/leaked-env"
 mode="$(pop modes nothing)"
 echo "$mode" >> "$d/modes.done"
 

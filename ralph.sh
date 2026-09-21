@@ -107,24 +107,26 @@ kill_group() {
   kill -KILL -- "-$pid" 2>/dev/null
 }
 
-# run_bounded <seconds> <command...>
-# stdin comes from $BOUNDED_STDIN (default /dev/null), output is appended to
-# $BOUNDED_OUT (default the log). Sets RC and TIMED_OUT. Never call it inside
+# run_bounded <seconds> <stdin file> <output file> <command...>
+# Output is appended. Sets RC and TIMED_OUT. The files are arguments, not
+# `VAR=x run_bounded` prefixes, because bash exports a prefix assignment to
+# every process the function starts: a VERIFY_CMD that runs another ralph loop
+# (as this repo's own tests do) would inherit it. Never call it inside
 # $(...): the command would become a grandchild that `ralph stop` cannot see.
 run_bounded() {
-  local secs="$1" start polls=0
-  shift
+  local secs="$1" input="$2" output="$3" start polls=0
+  shift 3
   TIMED_OUT=0
   if [ -n "$PERL" ]; then
     # The command becomes the leader of a new process group, with pid == pgid.
     # shellcheck disable=SC2016  # $ARGV is perl's, not the shell's
     "$PERL" -e 'setpgrp(0, 0); exec { $ARGV[0] } @ARGV or exit 127' "$@" \
-      < "${BOUNDED_STDIN:-/dev/null}" >> "${BOUNDED_OUT:-$LOG}" 2>&1 &
+      < "$input" >> "$output" 2>&1 &
   else
     # Job control gives background jobs their own group, but only where the
     # shell can enable it; without a terminal on Linux it cannot.
     set -m
-    "$@" < "${BOUNDED_STDIN:-/dev/null}" >> "${BOUNDED_OUT:-$LOG}" 2>&1 &
+    "$@" < "$input" >> "$output" 2>&1 &
     set +m
   fi
   CHILD=$!
@@ -319,7 +321,7 @@ GATE_REASON=""
 verify() {
   [ -n "$VERIFY_CMD" ] || return 0
   : > "$DIR/verify.out"
-  BOUNDED_STDIN=/dev/null BOUNDED_OUT="$DIR/verify.out" run_bounded "$VERIFY_TIMEOUT" bash -c "$VERIFY_CMD"
+  run_bounded "$VERIFY_TIMEOUT" /dev/null "$DIR/verify.out" bash -c "$VERIFY_CMD"
   cat "$DIR/verify.out" >> "$LOG"
   if [ "$TIMED_OUT" = 1 ]; then
     GATE_REASON="verify timed out after ${VERIFY_TIMEOUT}s"
@@ -378,7 +380,7 @@ EOF
   local verdict
   while :; do
     : > "$DIR/review.out"
-    BOUNDED_STDIN="$DIR/.review-prompt" BOUNDED_OUT="$DIR/review.out" run_bounded "$ITER_TIMEOUT" \
+    run_bounded "$ITER_TIMEOUT" "$DIR/.review-prompt" "$DIR/review.out" \
       claude -p --restricted --tools "Read,Grep,Glob" --strict-mcp-config \
       --permission-prompts none --add-dir "$DIR" --model "$MODEL"
     cat "$DIR/review.out" >> "$LOG"
@@ -470,7 +472,7 @@ sync_once() {
       return 0
     fi
   fi
-  BOUNDED_STDIN=/dev/null run_bounded 300 git push -q origin "HEAD:$BRANCH"
+  run_bounded 300 /dev/null "$LOG" git push -q origin "HEAD:$BRANCH"
   if [ "$RC" -eq 0 ]; then
     log "pushed $(git rev-parse HEAD) to $upstream"
   else
@@ -535,7 +537,7 @@ while :; do
   fi
 
   offset=$(wc -c < "$LOG" | tr -d ' ')
-  BOUNDED_STDIN="$PROMPT_FILE" run_bounded "$ITER_TIMEOUT" env "${envs[@]}" claude "${args[@]}"
+  run_bounded "$ITER_TIMEOUT" "$PROMPT_FILE" "$LOG" env "${envs[@]}" claude "${args[@]}"
   agent_rc=$RC
   agent_timed_out=$TIMED_OUT
 
@@ -605,6 +607,7 @@ while :; do
 
   case "$status" in
     revert:*)
+      git update-ref "refs/ralph/reverted/$(date +%s)-$iter" "$after" 2>/dev/null
       if ! revert_to "$before"; then
         record "$before" "$after" "$status" "$took" "$reason"
         log "stopping: could not reset ralph/$NAME to $before after $status — fix the worktree by hand"
