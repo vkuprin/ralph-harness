@@ -1,0 +1,44 @@
+ralph.sh
+  s_6af58d3b1a04dd::t_66d199bc5e0358 372
+  s_6af58d3b1a04dd::t_9e6f8cea0173f7 82
+  s_6af58d3b1a04dd::t_c677b6ece50e21 296-306,315,317-328,330-332,338
+  s_6af58d3b1a04dd::t_d416cc48806eed 307-311
+  s_6af58d3b1a04dd::t_eca60b89f06dcb 266-271
+  s_6af58d3b1a04dd::t_381ac56c7d723b 312-314,316,329,334
+tests/run.sh
+  s_6af58d3b1a04dd::t_0607c1f61d8fba 684-762
+  s_199acbe0ae621c::t_4a94723b8b5ba6 683
+tests/stub/claude
+  s_6af58d3b1a04dd::t_77b13f8fbf1633 64-75
+template/config.sh
+  s_6af58d3b1a04dd::t_c8a28df8b0955d 103-111
+AGENTS.md
+  s_6af58d3b1a04dd::t_574c07254dcb8e 30-34
+README.md
+  s_6af58d3b1a04dd::t_09e6136e4e20ef 167-175
+  s_6af58d3b1a04dd::t_5246a54b481a9f 249
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f3c7960079ce7be347b05842ef664e4fe9d9bd67",
+  "prompts": {},
+  "sessions": {
+    "s_199acbe0ae621c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b2cc9d91-e8f8-4ef2-94dd-8f528cdc6ddc",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    },
+    "s_6af58d3b1a04dd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2fe0dc-e0f1-4818-a238-d00be4cd5f88",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
