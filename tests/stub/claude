@@ -371,7 +371,12 @@ switch (mode) {
   case "run-hook": {
     // Claude Code calls the PreToolUse hook before every tool call. The stub
     // makes one "tool call": it runs the hook the way the settings file says,
-    // and records what came back, then commits.
+    // and records what came back, then commits. $STUB_DIR/steer-text, when it
+    // is there, is a `ralph steer` that arrives mid-iteration, just before.
+    const steerText = join(d, "steer-text");
+    if (existsSync(steerText) && process.env.RALPH_STEER_FILE) {
+      appendFileSync(process.env.RALPH_STEER_FILE, readFileSync(steerText, "utf8"));
+    }
     const settings = argv[argv.indexOf("--settings") + 1] ?? "";
     let command = "";
     try {

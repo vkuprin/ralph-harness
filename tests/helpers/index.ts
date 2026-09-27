@@ -50,7 +50,8 @@ export const templateConfig = () => join(ROOT, "template", CONFIG);
 export type Val = string | number | boolean | string[];
 export type Config = Record<string, Val>;
 
-const sq = (s: string) => `'${s.split("'").join(`'\\''`)}'`;
+/** A word single-quoted for sh. */
+export const sq = (s: string) => `'${s.split("'").join(`'\\''`)}'`;
 function bashVal(v: Val): string {
   if (typeof v === "boolean") return v ? "1" : "0";
   if (typeof v === "number") return String(v);
@@ -382,3 +383,38 @@ export const strangers = () =>
   (globalThis as { ralphStrangers?: { sleep: number; soak: number; dir: string } }).ralphStrangers!;
 
 export { basename, dirname, join };
+
+// ---------------------------------------------------------------- notifiers
+
+/**
+ * A NOTIFY_CMD that records one line per event: event, loop, iteration, dir,
+ * message, tab separated, with newlines and tabs in the message turned to
+ * spaces. It reads its environment, which is how the harness passes the event.
+ */
+export function mkNotifier(log: string, script: string): void {
+  writeFileSync(
+    script,
+    `#!/bin/sh
+out=${sq(log)}
+{ printf '%s\\t%s\\t%s\\t%s\\t' "$RALPH_EVENT" "$RALPH_LOOP" "$RALPH_ITER" "$RALPH_DIR"
+  printf '%s' "$RALPH_MESSAGE" | tr '\\n\\t' '  '
+  echo
+} >> "$out"
+`,
+  );
+  chmodSync(script, 0o755);
+}
+
+/** The events a notifier log holds, in order. */
+export function events(log: string): string[] {
+  return lines(log).map((l) => l.split("\t")[0]!);
+}
+
+/** Column `n` (1-based) of the first row for `event`. */
+export function field(n: number, event: string, log: string): string {
+  for (const l of lines(log)) {
+    const f = l.split("\t");
+    if (f[0] === event) return f[n - 1] ?? "";
+  }
+  return "";
+}

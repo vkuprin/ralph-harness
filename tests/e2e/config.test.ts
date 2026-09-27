@@ -1,20 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import {
-  CONFIG,
-  Fx,
-  IMPL,
-  ROOT,
   bashOnly,
   cliPath,
+  CONFIG,
   count,
+  Fx,
+  IMPL,
   join,
   loopArgv,
   patchConfig,
   rawConfig,
   read,
   readConfigValue,
+  ROOT,
   setup,
+  sq,
   statuses,
   templateConfig,
   writeConfig,
@@ -23,7 +24,6 @@ import {
 const fx = new Fx("config");
 const T = fx.T;
 
-const sq = (s: string) => `'${s.split("'").join(`'\\''`)}'`;
 const isDir = (p: string) => existsSync(p) && statSync(p).isDirectory();
 /** What `wc -l` says: the number of newlines. */
 const newlines = (text: string) => text.split("\n").length - 1;

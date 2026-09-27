@@ -1,28 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, writeFileSync } from "node:fs";
-import { type LoopRun, Fx, count, join, lines, read, rows, setup, statuses } from "../helpers/index.ts";
+import {
+  count,
+  events,
+  Fx,
+  join,
+  lines,
+  mkNotifier,
+  read,
+  rows,
+  setup,
+  sq,
+  statuses,
+  type LoopRun,
+} from "../helpers/index.ts";
 
 const fx = new Fx("features");
 
-const sq = (s: string) => `'${s.split("'").join(`'\\''`)}'`;
 
-/** A notifier that records one line per event: event, loop, iteration, dir, message. */
-function mkNotifier(log: string, script: string): void {
-  writeFileSync(
-    script,
-    `#!/bin/sh
-out=${sq(log)}
-{ printf '%s\\t%s\\t%s\\t%s\\t' "$RALPH_EVENT" "$RALPH_LOOP" "$RALPH_ITER" "$RALPH_DIR"
-  printf '%s' "$RALPH_MESSAGE" | tr '\\n\\t' '  '
-  echo
-} >> "$out"
-`,
-  );
-  chmodSync(script, 0o755);
-}
-function events(log: string): string[] {
-  return lines(log).map((l) => l.split("\t")[0]!);
-}
 
 /** The line after each line that is exactly `flag`, as `grep -A1 -x -- flag` finds them. */
 function after(file: string, flag: string): string[] {

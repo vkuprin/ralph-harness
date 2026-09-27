@@ -1,25 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, writeFileSync } from "node:fs";
-import { Fx, count, join, lines, read, setup, statuses } from "../helpers/index.ts";
+import { count, Fx, join, lines, mkNotifier, read, setup, sq, statuses } from "../helpers/index.ts";
 
 const fx = new Fx("pr");
 
-const sq = (s: string) => `'${s.split("'").join(`'\\''`)}'`;
 
-/** A notifier that records one line per event: event, loop, iteration, dir, message. */
-function mkNotifier(log: string, script: string): void {
-  writeFileSync(
-    script,
-    `#!/bin/sh
-out=${sq(log)}
-{ printf '%s\\t%s\\t%s\\t%s\\t' "$RALPH_EVENT" "$RALPH_LOOP" "$RALPH_ITER" "$RALPH_DIR"
-  printf '%s' "$RALPH_MESSAGE" | tr '\\n\\t' '  '
-  echo
-} >> "$out"
-`,
-  );
-  chmodSync(script, 0o755);
-}
 /** The notifier log's rows for one event. */
 function rowsOf(log: string, event: string): string[] {
   return lines(log).filter((l) => l.startsWith(`${event}\t`));

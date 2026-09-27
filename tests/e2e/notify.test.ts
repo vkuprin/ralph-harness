@@ -1,14 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import {
+  events,
+  field,
   Fx,
-  ROOT,
   join,
   lines,
+  mkNotifier,
   read,
   readConfigValue,
+  ROOT,
   setup,
   sleeperGone,
+  sq,
   statuses,
   templateConfig,
   writeConfig,
@@ -16,42 +20,9 @@ import {
 
 const fx = new Fx("notify");
 
-const sq = (s: string) => `'${s.split("'").join(`'\\''`)}'`;
 
-/**
- * A notifier that records one line per event: event, loop, iteration, loop
- * directory and message, tab separated, with the message's own tabs and
- * newlines turned to spaces. It takes no arguments and reads its environment,
- * which is how the harness passes the event — a message holding a quote, a
- * newline or a $(...) must never reach the shell that runs the command.
- */
-function mkNotifier(log: string, script: string): void {
-  writeFileSync(
-    script,
-    `#!/bin/sh
-out=${sq(log)}
-{ printf '%s\\t%s\\t%s\\t%s\\t' "$RALPH_EVENT" "$RALPH_LOOP" "$RALPH_ITER" "$RALPH_DIR"
-  printf '%s' "$RALPH_MESSAGE" | tr '\\n\\t' '  '
-  echo
-} >> "$out"
-`,
-  );
-  chmodSync(script, 0o755);
-}
 
-/** The events a notifier log holds, in order. */
-function events(log: string): string[] {
-  return lines(log).map((l) => l.split("\t")[0]!);
-}
 
-/** Column `n` (1-based) of the first row for `event`. */
-function field(n: number, event: string, log: string): string {
-  for (const l of lines(log)) {
-    const f = l.split("\t");
-    if (f[0] === event) return f[n - 1] ?? "";
-  }
-  return "";
-}
 
 /** A question that was already in PROGRESS.md when the loop started. */
 function seedOldQuestion(loop: string): void {

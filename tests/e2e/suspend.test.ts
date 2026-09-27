@@ -1,10 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
-import { Fx, join, read, rows, setup, sleeperGone, statuses } from "../helpers/index.ts";
+import { Fx, join, read, rows, setup, sleeperGone, sq, statuses } from "../helpers/index.ts";
 
 const fx = new Fx("suspend");
 
-const sq = (s: string) => `'${s.split("'").join(`'\\''`)}'`;
 
 describe("time asleep is not time worked", () => {
   // Every timeout was wall clock, so a laptop suspended mid-iteration killed a

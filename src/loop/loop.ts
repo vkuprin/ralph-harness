@@ -40,6 +40,48 @@ export function missingFile(dir: string, ...names: string[]): string | null {
   return null;
 }
 
+/**
+ * How the agent is started: a fresh `claude -p` with no permission prompts, the
+ * loop directory readable, and its answer as JSON so the run's cost can be read.
+ * DENY patterns are enforced by claude ahead of the skipped permissions.
+ */
+export function agentArgs(c: Config, dir: string): string[] {
+  const args = ["-p", "--dangerously-skip-permissions", "--add-dir", dir, "--model", c.MODEL];
+  for (const d of c.ADD_DIRS) args.push("--add-dir", d);
+  if (c.LIVE_STEER) args.push("--settings", join(dir, ".agent-settings.json"));
+  for (const d of c.DENY) args.push("--disallowedTools", d);
+  args.push("--output-format", "json");
+  return args;
+}
+
+/** How the reviewer is started: read-only tools, no MCP servers, nobody to ask. */
+export function reviewerArgs(c: Config, dir: string): string[] {
+  return [
+    "-p",
+    "--restricted",
+    "--tools",
+    "Read,Grep,Glob",
+    "--strict-mcp-config",
+    "--permission-prompts",
+    "none",
+    "--add-dir",
+    dir,
+    "--model",
+    c.REVIEW_MODEL || c.MODEL,
+    "--output-format",
+    "json",
+  ];
+}
+
+/** The PreToolUse hook that delivers `ralph steer` to the iteration in flight. */
+export function agentSettings(): object {
+  return {
+    hooks: {
+      PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: `${shq(process.execPath)} ${shq(STEER_HOOK)}` }] }],
+    },
+  };
+}
+
 export class Stop extends Error {
   constructor(readonly code: number) {
     super(`exit ${code}`);
@@ -330,12 +372,7 @@ export class Loop {
     if (c.WORKTREE) await this.dropUnjudged();
 
     if (c.LIVE_STEER) {
-      const settings = {
-        hooks: {
-          PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: `${shq(process.execPath)} ${shq(STEER_HOOK)}` }] }],
-        },
-      };
-      writeFileSync(this.p(".agent-settings.json"), `${JSON.stringify(settings)}\n`);
+      writeFileSync(this.p(".agent-settings.json"), `${JSON.stringify(agentSettings())}\n`);
     }
 
     this.log.line(
@@ -419,10 +456,7 @@ export class Loop {
     // redirects the loop without restarting it.
     await this.buildPrompt();
 
-    const args = ["-p", "--dangerously-skip-permissions", "--add-dir", this.dir, "--model", c.MODEL];
-    for (const d of c.ADD_DIRS) args.push("--add-dir", d);
-    if (c.LIVE_STEER) args.push("--settings", this.p(".agent-settings.json"));
-    for (const d of c.DENY) args.push("--disallowedTools", d);
+    const args = agentArgs(c, this.dir);
     const env: Record<string, string> = { RALPH_STEER_FILE: this.p("STEER.md") };
     if (this.harnessPushes()) {
       // The agent's own push to this repository fails; only the harness
@@ -443,7 +477,7 @@ export class Loop {
     // message is among the last lines the limit check reads.
     const runJson = this.p(".run.json");
     writeFileSync(runJson, "");
-    const agent = await this.bounded(c.ITER_TIMEOUT, ["claude", ...args, "--output-format", "json"], {
+    const agent = await this.bounded(c.ITER_TIMEOUT, ["claude", ...args], {
       stdin: this.promptFile,
       out: runJson,
       err: this.log.file,
@@ -990,21 +1024,7 @@ VERDICT: REJECT: <one sentence saying why>
 `,
     );
 
-    const args = [
-      "-p",
-      "--restricted",
-      "--tools",
-      "Read,Grep,Glob",
-      "--strict-mcp-config",
-      "--permission-prompts",
-      "none",
-      "--add-dir",
-      this.dir,
-      "--model",
-      c.REVIEW_MODEL || c.MODEL,
-      "--output-format",
-      "json",
-    ];
+    const args = reviewerArgs(c, this.dir);
     const reviewOut = this.p("review.out");
     const reviewJson = this.p(".review.json");
     let verdict = "";
