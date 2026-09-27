@@ -1,0 +1,5 @@
+[test]
+# Loops run for real in the e2e suite: a test waits on a whole run of the loop,
+# and the slowest (the 200-iteration soak) takes most of a minute.
+timeout = 600000
+preload = ["./tests/helpers/preload.ts"]

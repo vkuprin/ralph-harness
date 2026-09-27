@@ -1,241 +1,389 @@
-#!/usr/bin/env bash
-# Stand-in for the claude CLI, driven by queue files in $STUB_DIR.
-#
-# The agent pops its next mode from $STUB_DIR/modes; the reviewer (recognised by
-# --restricted) pops its verdict from $STUB_DIR/verdicts. Every prompt read on
-# stdin is kept as prompt.agent.N or prompt.review.N so tests can inspect it.
+#!/usr/bin/env bun
+// Stand-in for the claude CLI, driven by queue files in $STUB_DIR.
+//
+// The agent pops its next mode from $STUB_DIR/modes; the reviewer (recognised by
+// --restricted) pops its verdict from $STUB_DIR/verdicts. Every prompt read on
+// stdin is kept as prompt.agent.N or prompt.review.N and every argv as
+// argv.agent.N or argv.review.N, one argument per line, so tests can inspect them.
+import { spawn, spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
-set -u
-d="${STUB_DIR:?STUB_DIR not set}"
-
-pop() {
-  local q="$d/$1" line
-  if [ ! -s "$q" ]; then echo "$2"; return; fi
-  line="$(head -n 1 "$q")"
-  tail -n +2 "$q" > "$q.tmp" && mv "$q.tmp" "$q"
-  echo "$line"
+const d = process.env.STUB_DIR;
+if (!d) {
+  process.stderr.write("STUB_DIR not set\n");
+  process.exit(2);
 }
-bump() {
-  local n
-  n=$(( $(cat "$d/$1" 2>/dev/null || echo 0) + 1 ))
-  echo "$n" > "$d/$1"
-  echo "$n"
+const argv = process.argv.slice(2);
+const has = (flag: string) => argv.includes(flag);
+const reviewer = has("--restricted");
+const json = argv.some((a, i) => a === "--output-format" && argv[i + 1] === "json");
+
+function pop(queue: string, fallback: string): string {
+  const q = join(d!, queue);
+  if (!existsSync(q)) return fallback;
+  const all = readFileSync(q, "utf8");
+  if (all === "") return fallback;
+  const nl = all.indexOf("\n");
+  const line = nl < 0 ? all : all.slice(0, nl);
+  writeFileSync(`${q}.tmp`, nl < 0 ? "" : all.slice(nl + 1));
+  renameSync(`${q}.tmp`, q);
+  return line;
 }
-
-# --output-format json: answer the way claude does, one result object on stdout
-# holding the text, a cost and the token usage. A failed run (exit 1) carries
-# its text in errors[] with no result, which is the shape the harness must read
-# a limit out of. Needs perl's JSON::PP, the same as the harness's JSON mode.
-# shellcheck disable=SC2329  # called by the EXIT trap below
-emit_json() {
-  local rc=$?
-  exec 1>&3
-  # shellcheck disable=SC2016  # perl's variables, not the shell's
-  perl -MJSON::PP -e '
-    local $/; open my $f, "<", $ARGV[0]; my $t = <$f> // "";
-    my %r = (type => "result", is_error => ($ARGV[1] ? JSON::PP::true : JSON::PP::false),
-             total_cost_usd => $ARGV[2] + 0,
-             usage => { input_tokens => $ARGV[3] + 0, output_tokens => $ARGV[4] + 0 });
-    if ($ARGV[1]) { $r{errors} = [ $t ] } else { $r{result} = $t }
-    print JSON::PP->new->canonical->encode(\%r), "\n";
-  ' "$json_out" "$rc" "$cost" "$tin" "$tout"
-  rm -f "$json_out"
-  exit "$rc"
-}
-case " $* " in
-  *" --output-format json "*)
-    json_out="$(mktemp)"
-    case " $* " in *" --restricted "*) cost=0.0020 tin=40 tout=10 ;; *) cost=0.0123 tin=100 tout=50 ;; esac
-    exec 3>&1 >"$json_out"
-    trap emit_json EXIT
-    ;;
-esac
-
-case " $* " in
-  *" --restricted "*)
-    n="$(bump review_calls)"
-    printf '%s\n' "$@" > "$d/argv.review.$n"
-    cat > "$d/prompt.review.$n"
-    v="$(pop verdicts ACCEPT)"
-    if [ "$v" = LIMIT ]; then
-      if [ -f "$d/limit-text" ]; then cat "$d/limit-text"; else echo "You've hit your limit · resets 3am"; fi
-      exit 1
-    fi
-    echo "Read the diff."
-    echo "VERDICT: $v"
-    exit 0
-    ;;
-esac
-
-n="$(bump agent_calls)"
-printf '%s\n' "$@" > "$d/argv.agent.$n"
-cat > "$d/prompt.agent.$n"
-env | grep '^BOUNDED_' >> "$d/leaked-env"
-mode="$(pop modes nothing)"
-echo "$mode" >> "$d/modes.done"
-
-commit() {
-  echo "$1 $n" >> work.txt
-  git add -A
-  git commit -qm "stub: $1 (agent call $n)"
+function bump(counter: string): number {
+  const f = join(d!, counter);
+  const n = (existsSync(f) ? Number(readFileSync(f, "utf8").trim()) || 0 : 0) + 1;
+  writeFileSync(f, `${n}\n`);
+  return n;
 }
 
-# human <command...>: run it in a fresh clone of the remote, as a human
-# somewhere else would, without the push block the harness gave the agent.
-human() {
-  (
-    unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
-    [ -d "$d/human-clone" ] || git clone -q "$STUB_REMOTE" "$d/human-clone" || exit 1
-    cd "$d/human-clone" && git fetch -q origin && git checkout -q -B main origin/main && "$@"
-  ) >/dev/null 2>&1
+// --output-format json: answer the way claude does, one result object on stdout
+// holding the text, a cost and the token usage. A failed run carries its text in
+// errors[] with no result, which is the shape the harness must read a limit out of.
+let text = "";
+const say = (s: string) => {
+  if (json) text += `${s}\n`;
+  else process.stdout.write(`${s}\n`);
+};
+function end(rc: number): never {
+  if (json) {
+    const [cost, tin, tout] = reviewer ? [0.002, 40, 10] : [0.0123, 100, 50];
+    const r: Record<string, unknown> = {
+      is_error: rc !== 0,
+      total_cost_usd: cost,
+      type: "result",
+      usage: { input_tokens: tin, output_tokens: tout },
+    };
+    if (rc !== 0) r.errors = [text];
+    else r.result = text;
+    process.stdout.write(`${JSON.stringify(r)}\n`);
+  }
+  process.exit(rc);
 }
 
-# nap <seconds>: sleep as a child and record its PID, so a test can ask whether
-# *this* process went with the agent's process group. A plain `sleep 999` leaves
-# a command line no test can tell from a sleep a human typed in another
-# terminal, and grepping the machine for one is how an unrelated process used to
-# fail a run.
-nap() {
-  sleep "$1" &
-  printf '%s\n' "$!" > "$d/sleeper.pid"
-  wait "$!"
+const stdin = await Bun.stdin.text();
+
+if (reviewer) {
+  const n = bump("review_calls");
+  writeFileSync(join(d, `argv.review.${n}`), argv.map((a) => `${a}\n`).join(""));
+  writeFileSync(join(d, `prompt.review.${n}`), stdin);
+  const v = pop("verdicts", "ACCEPT");
+  if (v === "LIMIT") {
+    const lt = join(d, "limit-text");
+    say(existsSync(lt) ? readFileSync(lt, "utf8").replace(/\n$/, "") : "You've hit your limit · resets 3am");
+    end(1);
+  }
+  if (v === "CRASH") {
+    say("the reviewer fell over");
+    end(1);
+  }
+  if (v === "SILENT") {
+    say("Read the diff, and forgot to say what it thought.");
+    end(0);
+  }
+  say("Read the diff.");
+  say(`VERDICT: ${v}`);
+  end(0);
 }
 
-case "$mode" in
-  commit)       commit work ;;
-  finish)       echo "finished" > FINISHED; commit finish ;;
-  commit-bad)   touch BAD; commit bad ;;
-  touch-frozen) echo "# edited" >> measure.sh; commit frozen ;;
-  cheat)        # commits a failing change, then quietly defangs the check without committing it
-                touch BAD; commit cheat; printf '#!/bin/sh\nexit 0\n' > measure.sh ;;
-  sleep)        nap 999 ;;
-  limit)        echo "You've hit your limit · resets 3am (Europe/Berlin)"; exit 1 ;;
-  say-limit)    # a limit whose text the test wrote, reset time and all
-                cat "$d/limit-text"; exit 1 ;;
-  sicken)       # a commit that breaks production: HEALTH_CMD reads $d/sick
-                touch "$d/sick"; commit sicken ;;
-  heal)         rm -f "$d/sick"; commit heal ;;
-  fail)         echo "boom: something broke"; exit 1 ;;
-  credit)       echo "Credit balance is too low"; exit 1 ;;
-  weekly)       echo "Weekly limit reached · resets Mon 9am"; exit 1 ;;
-  custom-limit) echo "our proxy says: quota window closed"; exit 1 ;;
-  fail429)      echo "the audit found: upstream returned HTTP 429 on /login"
-                echo "then the agent crashed"; exit 1 ;;
-  nothing)      echo "Measured again; nothing new." ;;
-  suspend)      # The machine is put to sleep for hours in the middle of the
-                # iteration and then woken: `date` jumps by the whole nap while
-                # the agent goes on working. Only meaningful with the fake
-                # clock the "time asleep" section puts on PATH. FAKE_WORK=999
-                # is the same jump with an agent that then really does hang.
-                echo "${FAKE_JUMP:-20000}" > "${FAKE_CLOCK:?FAKE_CLOCK not set}"
-                nap "${FAKE_WORK:-1}"
-                commit work ;;
-  grow-progress)
-                # PROGRESS.md is the agent's to rewrite, so the agent is what
-                # decides whether the shape the entry cap reads ('## Log' with
-                # '### ' entries under it) is there at all. This one writes a
-                # lot and never that shape, which is how the cap gets switched
-                # off by accident and the prompt then grows for ever.
-                p="$(dirname "$RALPH_STEER_FILE")/PROGRESS.md"
-                i=0
-                while [ "$i" -lt 60 ]; do
-                  echo "note $n.$i: the agent kept its memory in a shape of its own" >> "$p"
-                  i=$((i + 1))
-                done ;;
-  decide)       # The agent hands something back: text under "Needs a decision"
-                # in PROGRESS.md, which is where the escalation prompt tells it
-                # to put a blocker. It commits nothing, so this iteration is
-                # quiet — which is exactly the shape a human must still hear
-                # about, because nothing else in the run says a word.
-                # The text holds a quote and a $(...) naming a file under
-                # $STUB_DIR: the agent's words reach the notifier as text or
-                # they run as a command, and a loop is told to write here.
-                # ENVIRON, not -v, because $d is a path and awk rereads a -v
-                # value as escape sequences.
-                p="$(dirname "$RALPH_STEER_FILE")/PROGRESS.md"
-                RALPH_D="$d" awk '{print} /^## Needs a decision/{
-                       print ""
-                       print "- the staging key is not in the vault: only a human can settle this one \"$(touch " ENVIRON["RALPH_D"] "/OWNED)\""
-                     }' "$p" > "$p.new" && mv "$p.new" "$p" ;;
-  settle)       # The agent settles one question and moves another up, the way an
-                # agent rewriting PROGRESS.md whole does: the section changes,
-                # nothing new is asked. (A reworded line is text never seen
-                # before, and it may say something new, so it is not tested as
-                # silence: telling a rewording from a new question is a guess.)
-                p="$(dirname "$RALPH_STEER_FILE")/PROGRESS.md"
-                awk '/only a human can settle this one/ {next}
-                     /^## Needs a decision/ {print; print ""; print "- an older loop left this one here"; skip = 1; next}
-                     skip && /an older loop left this one here/ {next}
-                     {print}' "$p" > "$p.new" && mv "$p.new" "$p" ;;
-  drop-branch)  # the branch goes out from under the loop, as a stray
-                # `git update-ref -d` or a human tidying refs would do
-                commit work
-                git update-ref -d "$(git symbolic-ref HEAD)" ;;
-  branch-collision)
-                # A human, or a stray script, makes a branch underneath this
-                # loop's own name. refs/heads/ralph/<name> is then a directory
-                # and cannot be created again, so the harness cannot put the
-                # branch back and the run has to stop.
-                commit work
-                b="$(git rev-parse --abbrev-ref HEAD)"
-                git branch -m "$b" "$b/sub" ;;
-  drop-prompt)  # PROMPT.md is the job, and the harness re-reads it every
-                # iteration. The agent is told to rewrite PROGRESS.md in the
-                # loop directory, so it has write access to PROMPT.md beside
-                # it; this is that access used by accident. It commits too, so
-                # the gates — including the reviewer, which reads PROMPT.md for
-                # the job — run in the same iteration.
-                rm -f "$(dirname "$RALPH_STEER_FILE")/PROMPT.md"
-                commit work ;;
-  drop-progress) # The loop's whole memory, gone. No commit, so this iteration
-                # is quiet and only the next prompt shows the damage.
-                rm -f "$(dirname "$RALPH_STEER_FILE")/PROGRESS.md" ;;
-  push-attempt) commit pushed
-                git push -q origin HEAD:main >/dev/null 2>&1
-                echo "$?" > "$d/push-attempt.rc"
-                # Another repository entirely, with an origin of its own. Only
-                # this loop's own origin is out of bounds, so this must work:
-                # an agent whose test suite pushes to a throwaway remote has to
-                # be able to run it.
-                rm -rf "$d/other" "$d/other.git"
-                ( git init -q --bare -b main "$d/other.git" \
-                  && git init -q -b main "$d/other" \
-                  && cd "$d/other" \
-                  && git commit -q --allow-empty -m probe \
-                  && git remote add origin "$d/other.git" \
-                  && git push -q origin main ) >/dev/null 2>&1
-                echo "$?" > "$d/push-other.rc" ;;
-  human-main)   # a human pushes an unrelated file to main meanwhile
-                human sh -c 'echo human > human.txt && git add human.txt && git commit -qm "human: add human.txt" && git push -q origin HEAD:main'
-                commit work ;;
-  squash)       # a human squash-merges the loop's branch into main, and the
-                # host deletes the branch, the way GitHub does after a merge;
-                # gh then reports the merged head
-                b="$(git rev-parse --abbrev-ref HEAD)"
-                # shellcheck disable=SC2016  # $0 and $1 belong to the inner sh
-                human sh -c 'git fetch -q origin "$1" && git rev-parse FETCH_HEAD > "$0/gh-merged" \
-                  && git merge -q --squash FETCH_HEAD >/dev/null && git commit -qm "human: squash-merge $1" \
-                  && git push -q origin HEAD:main && git push -q origin --delete "$1"' "$d" "$b"
-                rm -f "$d/gh-open"
-                commit work ;;
-  foreign)      # a human pushes a commit of their own onto the loop's branch
-                b="$(git rev-parse --abbrev-ref HEAD)"
-                # shellcheck disable=SC2016  # $0 and $1 belong to the inner sh
-                human sh -c 'git fetch -q origin "$1" && git checkout -q -B mine FETCH_HEAD \
-                  && echo human > on-branch.txt && git add on-branch.txt && git commit -qm "human: on $1" \
-                  && git push -q origin "HEAD:refs/heads/$1" && git rev-parse HEAD > "$0/foreign.sha"' "$d" "$b"
-                commit work ;;
-  conflict)     # a human pushes to main meanwhile, rewriting the same file
-                (
-                  unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
-                  rm -rf "$d/human"
-                  git clone -q "$STUB_REMOTE" "$d/human"
-                  cd "$d/human" && echo "human edit" > work.txt \
-                    && git commit -qam "human: edit work.txt" && git push -q origin HEAD:main
-                )
-                echo "agent edit" > work.txt
-                git add -A
-                git commit -qm "stub: conflicting (agent call $n)" ;;
-  *)            echo "stub: unknown mode $mode" >&2; exit 3 ;;
-esac
-exit 0
+const n = bump("agent_calls");
+writeFileSync(join(d, `argv.agent.${n}`), argv.map((a) => `${a}\n`).join(""));
+writeFileSync(join(d, `prompt.agent.${n}`), stdin);
+const leaked = Object.entries(process.env)
+  .filter(([k]) => k.startsWith("BOUNDED_"))
+  .map(([k, v]) => `${k}=${v}\n`)
+  .join("");
+appendFileSync(join(d, "leaked-env"), leaked);
+const mode = pop("modes", "nothing");
+appendFileSync(join(d, "modes.done"), `${mode}\n`);
+const loopDir = process.env.RALPH_STEER_FILE ? dirname(process.env.RALPH_STEER_FILE) : "";
+
+function git(...args: string[]): number {
+  return spawnSync("git", args, { stdio: ["ignore", "ignore", "ignore"] }).status ?? 1;
+}
+function commit(what: string): void {
+  appendFileSync("work.txt", `${what} ${n}\n`);
+  git("add", "-A");
+  git("commit", "-qm", `stub: ${what} (agent call ${n})`);
+}
+function gitOut(...args: string[]): string {
+  return (spawnSync("git", args, { encoding: "utf8" }).stdout ?? "").trim();
+}
+
+// human(fn): act in a fresh clone of the remote, as a human somewhere else
+// would, without the push block the harness gave the agent.
+function humanEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.GIT_CONFIG_COUNT;
+  delete env.GIT_CONFIG_KEY_0;
+  delete env.GIT_CONFIG_VALUE_0;
+  return env;
+}
+function human(...commands: string[][]): boolean {
+  const env = humanEnv();
+  const clone = join(d!, "human-clone");
+  const run = (args: string[], cwd?: string) =>
+    spawnSync(args[0]!, args.slice(1), { cwd, env, stdio: ["ignore", "ignore", "ignore"] }).status === 0;
+  if (!existsSync(clone) && !run(["git", "clone", "-q", process.env.STUB_REMOTE ?? "", clone])) return false;
+  if (!run(["git", "fetch", "-q", "origin"], clone)) return false;
+  if (!run(["git", "checkout", "-q", "-B", "main", "origin/main"], clone)) return false;
+  for (const c of commands) if (!run(c, clone)) return false;
+  return true;
+}
+function humanOut(...args: string[]): string {
+  return (spawnSync("git", args, { cwd: join(d!, "human-clone"), env: humanEnv(), encoding: "utf8" }).stdout ?? "").trim();
+}
+
+// nap(seconds): sleep as a child and record its PID, so a test can ask whether
+// *this* process went with the agent's process group. A bare `sleep 999` leaves
+// a command line no test can tell from a sleep a human typed elsewhere.
+async function nap(seconds: string): Promise<void> {
+  const c = spawn("sleep", [seconds], { stdio: "ignore" });
+  writeFileSync(join(d!, "sleeper.pid"), `${c.pid}\n`);
+  await new Promise((r) => c.once("exit", r));
+}
+
+const progress = () => join(loopDir, "PROGRESS.md");
+
+switch (mode) {
+  case "commit":
+    commit("work");
+    break;
+  case "finish":
+    writeFileSync("FINISHED", "finished\n");
+    commit("finish");
+    break;
+  case "commit-bad":
+    writeFileSync("BAD", "");
+    commit("bad");
+    break;
+  case "touch-frozen":
+    appendFileSync("measure.sh", "# edited\n");
+    commit("frozen");
+    break;
+  case "cheat":
+    // commits a failing change, then quietly defangs the check without committing it
+    writeFileSync("BAD", "");
+    commit("cheat");
+    writeFileSync("measure.sh", "#!/bin/sh\nexit 0\n");
+    break;
+  case "sleep":
+    await nap("999");
+    break;
+  case "limit":
+    say("You've hit your limit · resets 3am (Europe/Berlin)");
+    end(1);
+  case "say-limit":
+    // a limit whose text the test wrote, reset time and all
+    say(readFileSync(join(d, "limit-text"), "utf8").replace(/\n$/, ""));
+    end(1);
+  case "sicken":
+    // a commit that breaks production: HEALTH_CMD reads $STUB_DIR/sick
+    writeFileSync(join(d, "sick"), "");
+    commit("sicken");
+    break;
+  case "heal":
+    rmSync(join(d, "sick"), { force: true });
+    commit("heal");
+    break;
+  case "fail":
+    say("boom: something broke");
+    end(1);
+  case "credit":
+    say("Credit balance is too low");
+    end(1);
+  case "weekly":
+    say("Weekly limit reached · resets Mon 9am");
+    end(1);
+  case "custom-limit":
+    say("our proxy says: quota window closed");
+    end(1);
+  case "fail429":
+    say("the audit found: upstream returned HTTP 429 on /login");
+    say("then the agent crashed");
+    end(1);
+  case "trap-term":
+    // An agent that will not die on TERM: `ralph stop` has to reach for KILL.
+    process.on("SIGTERM", () => {});
+    await nap("999");
+    break;
+  case "nothing":
+    say("Measured again; nothing new.");
+    break;
+  case "suspend": {
+    // The machine is put to sleep for hours in the middle of the iteration and
+    // then woken: the clock jumps by the whole nap while the agent goes on
+    // working. FAKE_WORK=999 is the same jump with an agent that then really
+    // does hang.
+    const clock = process.env.RALPH_TEST_CLOCK ?? process.env.FAKE_CLOCK;
+    if (!clock) {
+      process.stderr.write("RALPH_TEST_CLOCK not set\n");
+      process.exit(2);
+    }
+    writeFileSync(clock, `${process.env.FAKE_JUMP ?? "20000"}\n`);
+    await nap(process.env.FAKE_WORK ?? "1");
+    commit("work");
+    break;
+  }
+  case "grow-progress":
+    // PROGRESS.md is the agent's to rewrite, so the agent decides whether the
+    // shape the entry cap reads is there at all. This one writes a lot and never
+    // that shape, which is how the cap gets switched off by accident.
+    for (let i = 0; i < 60; i++) appendFileSync(progress(), `note ${n}.${i}: the agent kept its memory in a shape of its own\n`);
+    break;
+  case "decide": {
+    // The agent hands something back under "Needs a decision" and commits
+    // nothing. The text holds a quote and a $(...) naming a file under
+    // $STUB_DIR: the agent's words reach the notifier as text or they run.
+    const out: string[] = [];
+    for (const line of readFileSync(progress(), "utf8").split("\n")) {
+      out.push(line);
+      if (line.startsWith("## Needs a decision")) {
+        out.push("", `- the staging key is not in the vault: only a human can settle this one "$(touch ${d}/OWNED)"`);
+      }
+    }
+    writeFileSync(progress(), out.join("\n"));
+    break;
+  }
+  case "settle": {
+    // The agent settles one question and moves another up, the way an agent
+    // rewriting PROGRESS.md whole does: the section changes, nothing new is asked.
+    const out: string[] = [];
+    let skip = false;
+    for (const line of readFileSync(progress(), "utf8").split("\n")) {
+      if (line.includes("only a human can settle this one")) continue;
+      if (line.startsWith("## Needs a decision")) {
+        out.push(line, "", "- an older loop left this one here");
+        skip = true;
+        continue;
+      }
+      if (skip && line.includes("an older loop left this one here")) continue;
+      out.push(line);
+    }
+    writeFileSync(progress(), out.join("\n"));
+    break;
+  }
+  case "drop-branch":
+    // the branch goes out from under the loop, as a stray update-ref would do
+    commit("work");
+    git("update-ref", "-d", gitOut("symbolic-ref", "HEAD"));
+    break;
+  case "branch-collision": {
+    // A branch made underneath this loop's own name: refs/heads/ralph/<name> is
+    // then a directory and cannot be created again, so the run has to stop.
+    commit("work");
+    const b = gitOut("rev-parse", "--abbrev-ref", "HEAD");
+    git("branch", "-m", b, `${b}/sub`);
+    break;
+  }
+  case "drop-prompt":
+    // PROMPT.md deleted by accident, with a commit in the same iteration so the
+    // gates — the reviewer reads PROMPT.md for the job — run too.
+    rmSync(join(loopDir, "PROMPT.md"), { force: true });
+    commit("work");
+    break;
+  case "drop-progress":
+    // The loop's whole memory, gone. No commit.
+    rmSync(join(loopDir, "PROGRESS.md"), { force: true });
+    break;
+  case "push-attempt": {
+    commit("pushed");
+    writeFileSync(join(d, "push-attempt.rc"), `${git("push", "-q", "origin", "HEAD:main")}\n`);
+    // Another repository entirely, with an origin of its own. Only this loop's
+    // own origin is out of bounds: an agent whose test suite pushes to a
+    // throwaway remote has to be able to run it.
+    const other = join(d, "other");
+    rmSync(other, { recursive: true, force: true });
+    rmSync(`${other}.git`, { recursive: true, force: true });
+    const steps: [string[], string | undefined][] = [
+      [["git", "init", "-q", "--bare", "-b", "main", `${other}.git`], undefined],
+      [["git", "init", "-q", "-b", "main", other], undefined],
+      [["git", "commit", "-q", "--allow-empty", "-m", "probe"], other],
+      [["git", "remote", "add", "origin", `${other}.git`], other],
+      [["git", "push", "-q", "origin", "main"], other],
+    ];
+    let rc = 0;
+    for (const [args, cwd] of steps) {
+      rc = spawnSync(args[0]!, args.slice(1), { cwd, stdio: "ignore" }).status ?? 1;
+      if (rc !== 0) break;
+    }
+    writeFileSync(join(d, "push-other.rc"), `${rc}\n`);
+    break;
+  }
+  case "human-main":
+    // a human pushes an unrelated file to main meanwhile
+    human(
+      ["sh", "-c", "echo human > human.txt"],
+      ["git", "add", "human.txt"],
+      ["git", "commit", "-qm", "human: add human.txt"],
+      ["git", "push", "-q", "origin", "HEAD:main"],
+    );
+    commit("work");
+    break;
+  case "squash": {
+    // a human squash-merges the loop's branch into main and the host deletes the
+    // branch, the way GitHub does after a merge; gh then reports the merged head
+    const b = gitOut("rev-parse", "--abbrev-ref", "HEAD");
+    if (human(["git", "fetch", "-q", "origin", b])) {
+      writeFileSync(join(d, "gh-merged"), `${humanOut("rev-parse", "FETCH_HEAD")}\n`);
+      human(
+        ["git", "fetch", "-q", "origin", b],
+        ["git", "merge", "-q", "--squash", "FETCH_HEAD"],
+        ["git", "commit", "-qm", `human: squash-merge ${b}`],
+        ["git", "push", "-q", "origin", "HEAD:main"],
+        ["git", "push", "-q", "origin", "--delete", b],
+      );
+    }
+    rmSync(join(d, "gh-open"), { force: true });
+    commit("work");
+    break;
+  }
+  case "foreign": {
+    // a human pushes a commit of their own onto the loop's branch
+    const b = gitOut("rev-parse", "--abbrev-ref", "HEAD");
+    const ok = human(
+      ["git", "fetch", "-q", "origin", b],
+      ["git", "checkout", "-q", "-B", "mine", "FETCH_HEAD"],
+      ["sh", "-c", "echo human > on-branch.txt"],
+      ["git", "add", "on-branch.txt"],
+      ["git", "commit", "-qm", `human: on ${b}`],
+      ["git", "push", "-q", "origin", `HEAD:refs/heads/${b}`],
+    );
+    if (ok) writeFileSync(join(d, "foreign.sha"), `${humanOut("rev-parse", "HEAD")}\n`);
+    commit("work");
+    break;
+  }
+  case "conflict": {
+    // a human pushes to main meanwhile, rewriting the same file
+    const env = humanEnv();
+    const h = join(d, "human");
+    rmSync(h, { recursive: true, force: true });
+    const run = (args: string[], cwd?: string) => spawnSync(args[0]!, args.slice(1), { cwd, env, stdio: "ignore" });
+    run(["git", "clone", "-q", process.env.STUB_REMOTE ?? "", h]);
+    writeFileSync(join(h, "work.txt"), "human edit\n");
+    run(["git", "commit", "-qam", "human: edit work.txt"], h);
+    run(["git", "push", "-q", "origin", "HEAD:main"], h);
+    writeFileSync("work.txt", "agent edit\n");
+    git("add", "-A");
+    git("commit", "-qm", `stub: conflicting (agent call ${n})`);
+    break;
+  }
+  case "run-hook": {
+    // Claude Code calls the PreToolUse hook before every tool call. The stub
+    // makes one "tool call": it runs the hook the way the settings file says,
+    // and records what came back, then commits.
+    const settings = argv[argv.indexOf("--settings") + 1] ?? "";
+    let command = "";
+    try {
+      command = JSON.parse(readFileSync(settings, "utf8")).hooks.PreToolUse[0].hooks[0].command;
+    } catch {}
+    const r = spawnSync("sh", ["-c", command], { input: JSON.stringify({ tool_name: "Bash" }), encoding: "utf8" });
+    writeFileSync(join(d, `hook.${n}`), r.stdout ?? "");
+    commit("work");
+    break;
+  }
+  default:
+    process.stderr.write(`stub: unknown mode ${mode}\n`);
+    process.exit(3);
+}
+end(0);
