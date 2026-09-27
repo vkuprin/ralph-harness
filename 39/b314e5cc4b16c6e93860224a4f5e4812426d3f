@@ -1,0 +1,59 @@
+tests/unit/config.test.ts
+  s_de00132f8dc55c::t_714962884c0a86 4,27,62-74,94
+tests/e2e/merge.test.ts
+  s_de00132f8dc55c::t_d19e0e49b690de 1-213
+src/loop/loop.ts
+  s_de00132f8dc55c::t_5e763b65be8ab0 14,111,354-362,417,424-426,434-440,442,585,938-941,1178-1179,1183
+  s_de00132f8dc55c::t_528da37f960dbc 1357-1453
+  s_de00132f8dc55c::t_a13b5d5cb0aaeb 1184-1185
+AGENTS.md
+  s_de00132f8dc55c::t_686d576bfac581 11,19-21,60-63,178-186
+src/cli/main.ts
+  s_de00132f8dc55c::t_529b26d03a7b8f 150
+  s_de00132f8dc55c::t_af6d753c37ca96 19,36-37,39-42,172,309,319,322-395,412-421,430-431,433,530,582-583,684
+src/loop/merge.ts
+  s_de00132f8dc55c::t_6715b42e2744fd 1-47,50-51,53-74
+  s_de00132f8dc55c::t_528da37f960dbc 48-49,52
+tests/e2e/pr.test.ts
+  s_de00132f8dc55c::t_7bb8c7642fcc1f 74-77
+README.md
+  s_de00132f8dc55c::t_afc787f94f8c99 27-37,184-185,253-270,282-283,408-411
+template/config.schema.json
+  s_de00132f8dc55c::t_12aea27e793999 67-91
+tests/stub/gh
+  s_de00132f8dc55c::t_6da89f471b5445 10-18,20,48-90,95-99
+  s_de00132f8dc55c::t_dc4d5424374744 100
+tests/unit/merge.test.ts
+  s_de00132f8dc55c::t_49991a04f0e4d8 60
+  s_de00132f8dc55c::t_714962884c0a86 1-59,61-64
+template/config.json
+  s_de00132f8dc55c::t_12aea27e793999 51,61-73,203-206
+tests/stub/claude
+  s_de00132f8dc55c::t_18508f5bf00fa4 11,114-117
+skills/ralph-new/SKILL.md
+  s_de00132f8dc55c::t_e6cd67cd3829b1 1-186
+tests/stub/human.ts
+  s_de00132f8dc55c::t_18508f5bf00fa4 1-32
+src/lib/config.ts
+  s_de00132f8dc55c::t_b11d6e2d2a1153 14,29-32,95-98,135,150-153,198,223-224,297
+  s_de00132f8dc55c::t_df0e71bcbfa974 236-241
+  s_de00132f8dc55c::t_9be1d67e02ba23 242-243
+tests/e2e/cli.test.ts
+  s_de00132f8dc55c::t_685d46b0ea71e9 306-386
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "39b314e5cc4b16c6e93860224a4f5e4812426d3f",
+  "prompts": {},
+  "sessions": {
+    "s_de00132f8dc55c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "475edae4-8ac7-4b0b-a4d8-fee0f56d6e30",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
