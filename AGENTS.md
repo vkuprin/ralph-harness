@@ -8,7 +8,7 @@ is one class on purpose, so an iteration reads in order.
 
 - `src/loop/main.ts`: the loop process, one per loop directory — the lock, the
   config, signals. `src/loop/loop.ts`: the iteration, the gates, sync.
-- `src/loop/{cost,limits,progress,active-hours}.ts`: pure pieces with unit tests.
+- `src/loop/{cost,limits,progress,active-hours,merge}.ts`: pure pieces with unit tests.
 - `src/lib/`: `proc` (bounded runs, process groups, the freeze on a signal),
   `clock` (the one test seam into time), `config`, `log`, `results`, `shq`, `text`.
 - `src/cli/main.ts`: the CLI (`new`, `start`, `stop`, `status`, `results`,
@@ -16,6 +16,9 @@ is one class on purpose, so an iteration reads in order.
 - `bin/ralph`: the CLI's entry point, the file people link onto PATH.
 - `hooks/steer.ts`: PreToolUse hook that delivers `ralph steer` mid-iteration.
 - `template/`: what `ralph new` copies into a loop directory.
+- `skills/ralph-new/`: the Claude Code skill that asks how a loop should run
+  (AskUserQuestion) and scaffolds it with `ralph new --set`. It calls the CLI, so
+  a flag it uses changes with the CLI in the same commit.
 - `tests/e2e/`: end-to-end tests that drive the loop and the CLI as processes;
   `tests/unit/`: the pure parts; `tests/contract/`: the real `claude` CLI, only
   with `RALPH_REAL_CLAUDE=1`; `tests/stub/{claude,gh}` stand in for the CLIs.
@@ -54,8 +57,10 @@ check (`/ralph.*\.sh/`, for the bash harness this replaced) is a constant.
 Config values are written only through `JSON.stringify`. The config was once
 sourced bash, and a value written unquoted into it let a `$` expand, a backtick
 run and a `"` swallow the settings after it. JSON has none of that, but only as
-long as nothing builds a config by concatenating strings. `ralph new` and
-`ralph migrate` both go through `JSON.stringify`.
+long as nothing builds a config by concatenating strings. `ralph new` (its
+`--set` values included) and `ralph migrate` both go through `JSON.stringify`,
+and `ralph new` reads the config it wrote back through `parseConfig` before it
+creates the loop directory.
 
 A printed command is a command someone will paste. Every hint the CLI prints —
 `ralph start`, `status`, `tail`, `stop`, `migrate`, `results`, the `git merge`
@@ -170,6 +175,15 @@ answers.
   the harness last pushed, or on none, so a commit a human pushed to
   `ralph/<name>` is never overwritten. Reusing `syncOnce`'s drop path here
   looks like less code and is the bug.
+- `PR_MERGE` merges only when the loop ends by itself, and never after a signal:
+  `ralph stop` is the human deciding, and the merge is theirs too. It merges only
+  the head the harness pushed (`--match-head-commit`), only while that head sits
+  on `origin/BRANCH` (a branch `syncPr` left on its old base was never checked on
+  top of `BRANCH`), and only within `PR_MERGE_WAIT`, because the wait holds work
+  whose last gate has not answered. "No checks" counts as passing only with a
+  `VERIFY_CMD`, and only when two readings a poll apart say so: GitHub can take a
+  moment to register the checks a push starts. A stop that means the loop's own
+  state is broken (`stop(why, true)`) does not merge.
 - A reset time read from a limit message never lengthens the reviewer's wait.
   With `LIMIT_RESET` the ceiling is `REVIEW_LIMIT_TRIES × RATE_LIMIT_SLEEP`
   seconds, the same bound the retries always added up to; a reset past it gives

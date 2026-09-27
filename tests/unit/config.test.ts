@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_RATE_LIMIT_RE, KEYS, defaults, limitPattern, parseConfig, schema } from "../../src/lib/config.ts";
+import { DEFAULT_RATE_LIMIT_RE, KEYS, checkSetting, defaults, limitPattern, parseConfig, schema } from "../../src/lib/config.ts";
 
 const parse = (text: string) => parseConfig(text, "config.json", "/loops/x");
 const ok = (text: string) => {
@@ -24,6 +24,7 @@ describe("config.json", () => {
     expect(c.REVIEW).toBe(false);
     expect(c.CHURN_AT).toBe(0);
     expect(c.LIMIT_RESET).toBe(false);
+    expect(c.PR_MERGE).toBe(false);
   });
   test("the default closing line names this loop's PROGRESS.md", () => {
     expect(ok("{}").CLOSING).toContain("/loops/x/PROGRESS.md");
@@ -58,6 +59,19 @@ describe("config.json", () => {
     expect(ok('{ "PUSH": 1 }').PUSH).toBe(true);
     expect(ok('{ "PUSH": "pr" }').PUSH).toBe("pr");
   });
+  test("PR_MERGE_METHOD is one of the three merges GitHub knows", () => {
+    expect(ok('{ "PR_MERGE_METHOD": "squash" }').PR_MERGE_METHOD).toBe("squash");
+    expect(ok("{}").PR_MERGE_METHOD).toBe("merge");
+    expect(err('{ "PR_MERGE_METHOD": "fast" }')).toContain('"merge", "squash" or "rebase"');
+  });
+  test("a setting given outside a file is judged the same way", () => {
+    expect(checkSetting("PR_MERGE", 1)).toEqual({ ok: true, value: true });
+    expect(checkSetting("PUSH", "pr")).toEqual({ ok: true, value: "pr" });
+    expect(checkSetting("MAX_ITER", "3")).toEqual({ ok: false, error: 'MAX_ITER must be a whole number, not "3"' });
+    expect(checkSetting("MAX_ITERS", 3)).toEqual({ ok: false, error: "MAX_ITERS is not a setting this harness knows" });
+    // Not a key because every object has it.
+    expect(checkSetting("toString", "x").ok).toBe(false);
+  });
   test("a limit pattern that does not compile is refused", () => {
     expect(err('{ "RATE_LIMIT_EXTRA_RE": "(" }')).toContain("regular expression");
   });
@@ -77,6 +91,7 @@ describe("config.json", () => {
     expect(c.REPO).toBe("/code/app");
     expect(c.WORKTREE).toBe(true);
     expect(c.NOTIFY_CMD).toBe("");
+    expect(c.PR_MERGE).toBe(false);
   });
   test("the schema in template/ is the one the harness would write, and names every setting", () => {
     const committed = readFileSync(join(import.meta.dir, "../../template/config.schema.json"), "utf8");

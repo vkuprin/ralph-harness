@@ -7,8 +7,17 @@
 //   gh-auth-fail  present: `gh auth status` fails, as a gh nobody logged in does
 //   gh-open       the URL of the open pull request; `pr create` writes it
 //   gh-merged     the head sha of the last merged pull request
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+//   gh-checks     the checks `pr view` reports, one JSON array per line: each
+//                 call uses up a line and the last one stays, so a test can
+//                 script pending, then pass. No file: no checks at all.
+//   gh-merge-fail present: `pr merge` fails with its text, as branch protection does
+//
+// `pr merge` really merges, in a human's clone of $STUB_REMOTE, and only the
+// head --match-head-commit names, the way GitHub refuses a head that moved.
+import { spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { human } from "./human.ts";
 
 const d = process.env.STUB_DIR;
 if (!d) {
@@ -36,7 +45,56 @@ if (line === "auth status") {
   const url = `https://example.invalid/pull/${n}\n`;
   writeFileSync(join(d, "gh-open"), url);
   process.stdout.write(url);
+} else if (args[0] === "pr" && args[1] === "view") {
+  const lines = cat("gh-checks").split("\n").filter((l) => l !== "");
+  if (lines.length > 1) writeFileSync(join(d, "gh-checks"), lines.slice(1).map((l) => `${l}\n`).join(""));
+  process.stdout.write(
+    `${JSON.stringify({
+      url: cat("gh-open").trim(),
+      state: cat("gh-state").trim() || "OPEN",
+      headRefOid: originHead(args[2] ?? ""),
+      statusCheckRollup: JSON.parse(lines[0] ?? "[]"),
+    })}\n`,
+  );
+} else if (args[0] === "pr" && args[1] === "merge") {
+  const branch = args[2] ?? "";
+  const method = args.find((a) => a === "--merge" || a === "--squash" || a === "--rebase");
+  const at = args.indexOf("--match-head-commit");
+  const want = at >= 0 ? (args[at + 1] ?? "") : "";
+  if (existsSync(join(d, "gh-merge-fail"))) {
+    process.stderr.write(cat("gh-merge-fail"));
+    process.exit(1);
+  }
+  if (!method) {
+    process.stderr.write("--merge, --rebase, or --squash required when not running interactively\n");
+    process.exit(1);
+  }
+  const head = originHead(branch);
+  if (!head || want !== head) {
+    process.stderr.write("GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)\n");
+    process.exit(1);
+  }
+  const fetch = ["git", "fetch", "-q", "origin", branch];
+  const steps =
+    method === "--merge"
+      ? [fetch, ["git", "merge", "-q", "--no-ff", "-m", `Merge pull request from ${branch}`, "FETCH_HEAD"]]
+      : method === "--squash"
+        ? [fetch, ["git", "merge", "-q", "--squash", "FETCH_HEAD"], ["git", "commit", "-qm", `${branch} (squashed)`]]
+        : [fetch, ["git", "checkout", "-q", "-B", "rebased", "FETCH_HEAD"], ["git", "rebase", "-q", "origin/main"]];
+  if (!human(d, ...steps, ["git", "push", "-q", "origin", "HEAD:main"])) {
+    process.stderr.write("gh stub: the merge did not go through\n");
+    process.exit(1);
+  }
+  writeFileSync(join(d, "gh-merged"), `${head}\n`);
+  rmSync(join(d, "gh-open"), { force: true });
+  process.stdout.write(`✓ Merged pull request from ${branch}\n`);
 } else {
   process.stderr.write(`gh stub: unhandled: ${line}\n`);
   process.exit(2);
+}
+
+/** What origin holds for `branch`, as `git ls-remote` reads it from here. */
+function originHead(branch: string): string {
+  const out = spawnSync("git", ["ls-remote", "origin", `refs/heads/${branch}`], { encoding: "utf8" }).stdout ?? "";
+  return out.split("\t")[0]?.trim() ?? "";
 }

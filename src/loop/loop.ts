@@ -11,6 +11,7 @@ import { STEER_HOOK } from "../paths.ts";
 import { type Window, inWindow, parseHours } from "./active-hours.ts";
 import { addCost, addTokens, claudeText } from "./cost.ts";
 import { resetAt, limitLine, type Reset } from "./limits.ts";
+import { type Checks, readChecks } from "./merge.ts";
 import { ARCHIVE_HEADER, capProgress, decisions, injectProgress } from "./progress.ts";
 
 // One loop over one repository. Every iteration is a NEW `claude -p` with an
@@ -107,6 +108,7 @@ export class Loop {
   private errors = 0;
   private limits = 0;
   private stopWhy = "";
+  private broken = false;
   private ghOk = false;
   private window: Window | null = null;
   private healthState: "" | "ok" | "fail" = "";
@@ -349,6 +351,15 @@ export class Loop {
       else this.window = w;
     }
     if (!(c.ACTIVE_POLL >= 1)) c.ACTIVE_POLL = 300;
+    // PR_MERGE merges the pull request PUSH="pr" opens from the worktree's
+    // branch. Without both there is no such pull request, and a loop that was
+    // meant to land its work would quietly leave it wherever it ends up.
+    if (c.PR_MERGE && !(c.WORKTREE && c.PUSH === "pr")) {
+      await this.refuse(
+        `ralph: PR_MERGE merges the pull request that PUSH "pr" opens, so it needs WORKTREE true and PUSH "pr" (this config has WORKTREE ${c.WORKTREE}, PUSH ${JSON.stringify(c.PUSH)})`,
+        2,
+      );
+    }
 
     // PUSH with nowhere to push: every sync would fetch, fail and copy git's
     // complaint into the log. Say it once and keep the commits local.
@@ -403,12 +414,16 @@ export class Loop {
         this.iter--;
         this.stop(
           `${gone} is gone or unreadable at ${this.p(gone)} — every iteration re-reads it, and the harness will not run an agent without it`,
+          true,
         );
         break;
       }
       if (!(await this.iteration())) break;
     }
 
+    // While the pid file is still there: `ralph status` shows a loop waiting on
+    // its pull request's checks as running.
+    if (!this.broken) await this.mergeAtEnd();
     rmSync(this.p("ralph.pid"), { force: true });
     this.log.line(`ralph finished after ${this.iter} iterations`);
     // The one stop notification, for every way the loop can end. Not for a
@@ -416,9 +431,15 @@ export class Loop {
     await this.notify("stopped", `${this.stopWhy || "the loop ended"} (after ${this.iter} iterations)`);
   }
 
-  /** Why the loop ended: logged and remembered for the one notification, in the same words. */
-  private stop(why: string): void {
+  /**
+   * Why the loop ended: logged and remembered for the one notification, in the
+   * same words. `broken` when the loop stops because something is wrong with
+   * its own state, not because its job or a limit said so; PR_MERGE does not
+   * merge from a loop in that condition.
+   */
+  private stop(why: string, broken = false): void {
     this.stopWhy = why;
+    this.broken = broken;
     this.log.line(`stopping: ${why}`);
   }
 
@@ -561,7 +582,7 @@ export class Loop {
       await this.saveRef("reverted", after);
       if (!(await this.revertTo(before))) {
         record(this.results, this.iter, { before, after, status, secs: took, reason, cost, tokens });
-        this.stop(`could not reset ralph/${this.name} to ${before} after ${status} — fix the worktree by hand`);
+        this.stop(`could not reset ralph/${this.name} to ${before} after ${status} — fix the worktree by hand`, true);
         return false;
       }
     }
@@ -914,7 +935,10 @@ export class Loop {
         s +=
           "Commit your work, but do not push: the harness checks each commit and pushes the ones it keeps. A rejected commit is reset, and the verdict shows up above next time.\n";
       } else if (c.PUSH === "pr") {
-        s += `Commit your work, but do not push: the harness checks each commit, pushes the ones it keeps to ralph/${this.name}, and a human merges its pull request into ${c.BRANCH}. A rejected commit is reset, and the verdict shows up above next time.\n`;
+        const merges = c.PR_MERGE
+          ? `and merges its pull request into ${c.BRANCH} when the loop ends, if every check on it passes`
+          : `and a human merges its pull request into ${c.BRANCH}`;
+        s += `Commit your work, but do not push: the harness checks each commit, pushes the ones it keeps to ralph/${this.name}, ${merges}. A rejected commit is reset, and the verdict shows up above next time.\n`;
       } else {
         s += `Commit your work, but do not push. A human merges ralph/${this.name}.\n`;
       }
@@ -1151,13 +1175,14 @@ VERDICT: REJECT: <one sentence saying why>
   }
 
   // PUSH=pr: the harness pushes ralph/<name> to origin and keeps one pull
-  // request open into BRANCH; a human merges it. Nothing here pushes BRANCH.
+  // request open into BRANCH; a human merges it, or with PR_MERGE the harness
+  // does once the loop ends (mergeAtEnd). Nothing here pushes BRANCH.
   //
   // Unlike syncOnce, this never throws a kept commit away. There the unpushed
   // work is one iteration's at most; here it is everything since the last
-  // merge, and the human reading the pull request is the last gate anyway. A
-  // rebase that conflicts, or passes and then fails VERIFY_CMD, leaves the
-  // branch on its old base and tells the human once.
+  // merge, and the pull request's own checks, or the human reading it, are the
+  // last gate anyway. A rebase that conflicts, or passes and then fails
+  // VERIFY_CMD, leaves the branch on its old base and tells the human once.
 
   /** Said once per key — the upstream or remote sha it is about. */
   private async prBlocked(key: string, message: string): Promise<void> {
@@ -1328,5 +1353,102 @@ VERDICT: REJECT: <one sentence saying why>
     } else {
       this.log.line(`sync: gh pr create failed (exit ${this.lastGhRc}): ${lastNonBlank(splitLines(out))}; trying again next sync`);
     }
+  }
+
+  // ------------------------------------------------------------ merge at the end
+
+  /**
+   * PR_MERGE: once the loop has ended by itself, merge its pull request into
+   * BRANCH if every check on it passes. Three things tie what is merged to what
+   * was checked: the branch must sit on BRANCH as origin has it, so the checks
+   * ran on what BRANCH will hold; the head must be the one the harness pushed;
+   * and `--match-head-commit` makes GitHub refuse any other. The wait is bounded
+   * by PR_MERGE_WAIT, because it holds work whose last gate has not answered.
+   * A signal never gets here: a stop is the human's call, and so is the merge.
+   */
+  private async mergeAtEnd(): Promise<void> {
+    const c = this.cfg;
+    if (!c.PR_MERGE || c.PUSH !== "pr" || !this.harnessPushes()) return;
+    const branch = `ralph/${this.name}`;
+    if (!this.ghOk) {
+      this.log.line(`PR_MERGE: gh is missing or not logged in — merge the pull request from ${branch} by hand`);
+      return;
+    }
+    const upstream = `origin/${c.BRANCH}`;
+    const poll = c.PR_MERGE_POLL >= 1 ? c.PR_MERGE_POLL : 30;
+    const naps = Math.max(0, Math.floor(c.PR_MERGE_WAIT / poll));
+    this.log.line(`PR_MERGE: the loop ended; merging ${branch} into ${c.BRANCH} once its checks pass, waiting up to ${naps * poll}s`);
+    let url = "";
+    let none = 0;
+    for (let n = 0; ; n++) {
+      // Each reading syncs first, as an iteration does: BRANCH can move while
+      // the checks run, and what is merged has to be what they ran on.
+      await this.sync();
+      const head = await this.gitOut(["rev-parse", "HEAD"]);
+      if ((await this.gitOut(["rev-list", `${upstream}..HEAD`])) === "") {
+        this.log.line(`PR_MERGE: ${c.BRANCH} already holds everything on ${branch}; nothing to merge`);
+        return;
+      }
+      if (!(await this.gitOk(["merge-base", "--is-ancestor", upstream, "HEAD"], { quiet: true }))) {
+        return this.mergeBlocked(
+          `${branch} does not sit on ${upstream}: it conflicts with it, or fails VERIFY_CMD on top of it; not merging work nothing checked on top of ${c.BRANCH}`,
+          url,
+        );
+      }
+      let why: string;
+      if (this.read(this.p(".pr-pushed")).trim() !== head) {
+        none = 0;
+        why = `${head} is not on origin, because its push did not go through`;
+      } else {
+        const viewed = await this.ghRun(60, ["pr", "view", branch, "--json", "url,state,headRefOid,statusCheckRollup"]);
+        const r = viewed ? readChecks(this.read(this.p(".gh.out")), head) : { url: "", checks: { verdict: "unreadable" } as Checks };
+        url = r.url || url;
+        const k = r.checks;
+        if (k.verdict === "merged") {
+          this.log.line(`PR_MERGE: ${url || `the pull request from ${branch}`} is already merged`);
+          return;
+        }
+        if (k.verdict === "closed") return this.mergeBlocked(`the pull request from ${branch} was closed without merging`, url);
+        if (k.verdict === "fail") return this.mergeBlocked(`checks failed on ${head}: ${k.names.join(", ")}`, url);
+        if (k.verdict === "pass") return this.mergePr(branch, head, url, "every check passed");
+        if (k.verdict === "none") {
+          // Twice, a poll apart: just after a push GitHub may not have
+          // registered the checks it is about to run.
+          if (++none >= 2) {
+            if (c.VERIFY_CMD) return this.mergePr(branch, head, url, "no CI checks, and VERIFY_CMD passed on every commit");
+            return this.mergeBlocked(`the pull request has no CI checks and the loop has no VERIFY_CMD, so nothing tested ${head}`, url);
+          }
+          why = "no checks reported";
+        } else {
+          none = 0;
+          why =
+            k.verdict === "pending"
+              ? `checks still running: ${k.names.join(", ")}`
+              : k.verdict === "stale"
+                ? `GitHub shows ${k.seen || "no commit"} as the head of the pull request, not ${head}`
+                : `gh pr view gave no readable answer (exit ${this.lastGhRc})`;
+        }
+      }
+      if (n >= naps) return this.mergeBlocked(`gave up after PR_MERGE_WAIT=${c.PR_MERGE_WAIT}s: ${why}`, url);
+      await nap(poll);
+    }
+  }
+
+  private async mergePr(branch: string, head: string, url: string, why: string): Promise<void> {
+    const c = this.cfg;
+    const pr = url || `the pull request from ${branch}`;
+    if (!(await this.ghRun(120, ["pr", "merge", branch, `--${c.PR_MERGE_METHOD}`, "--match-head-commit", head]))) {
+      const said = lastNonBlank(splitLines(this.read(this.p(".gh.out"))));
+      return this.mergeBlocked(`gh pr merge did not merge ${pr} (exit ${this.lastGhRc}): ${said}`, "");
+    }
+    const message = `merged ${pr} into ${c.BRANCH} at ${head} (${c.PR_MERGE_METHOD}: ${why})`;
+    this.log.line(`PR_MERGE: ${message}`);
+    await this.notify("merged", message);
+  }
+
+  private async mergeBlocked(message: string, url: string): Promise<void> {
+    const full = `${message}${url ? ` — ${url}` : ""}`;
+    this.log.line(`PR_MERGE: ${full}`);
+    await this.notify("merge-blocked", full);
   }
 }

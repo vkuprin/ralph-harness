@@ -64,6 +64,31 @@
         1
       ]
     },
+    "PR_MERGE": {
+      "type": [
+        "boolean",
+        "integer"
+      ],
+      "enum": [
+        true,
+        false,
+        0,
+        1
+      ]
+    },
+    "PR_MERGE_METHOD": {
+      "enum": [
+        "merge",
+        "squash",
+        "rebase"
+      ]
+    },
+    "PR_MERGE_WAIT": {
+      "type": "integer"
+    },
+    "PR_MERGE_POLL": {
+      "type": "integer"
+    },
     "SETUP_CMD": {
       "type": "string"
     },

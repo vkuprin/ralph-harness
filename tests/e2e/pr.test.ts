@@ -71,6 +71,10 @@ describe("PUSH=pr: the harness pushes a branch and a human merges the pull reque
   test("the agent is told a human merges its pull request", () => {
     expect(read(join(S, "prompt.agent.1"))).toContain("a human merges its pull request");
   });
+  test("without PR_MERGE nothing reads the checks or merges", () => {
+    expect(read(join(S, "gh.calls"))).not.toMatch(/^pr (view|merge)/m);
+    expect(read(join(S2, "gh.calls"))).not.toMatch(/^pr (view|merge)/m);
+  });
   test("the branch is on origin", () => {
     expect(fx.gitOk(R, "rev-parse", "-q", "--verify", "refs/heads/ralph/pr")).toBe(true);
   });

@@ -16,6 +16,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stampMinutes } from "../lib/clock.ts";
+import { checkSetting, parseConfig } from "../lib/config.ts";
 import { readResults } from "../lib/results.ts";
 import { hint } from "../lib/shq.ts";
 import { splitLines } from "../lib/text.ts";
@@ -32,9 +33,13 @@ Getting started
   ralph review audit               later: what it shipped, what it threw away
 
 Commands
-  ralph new <name> <repo-path>   scaffold a loop from the template. The name is
+  ralph new <name> <repo-path> [--set KEY=VALUE]...
+                                 scaffold a loop from the template. The name is
                                  a directory and, with WORKTREE on, the branch
-                                 ralph/<name>, so it has to be usable as both
+                                 ralph/<name>, so it has to be usable as both.
+                                 --set writes a setting into its config.json:
+                                 VALUE as JSON (true, 3, "pr", ["a"]), or as a
+                                 plain string when it is not JSON
   ralph start <name>             run it in the background
   ralph stop <name>              stop the loop and the agent inside it
   ralph status [name]            what is running, how long, how far
@@ -142,6 +147,7 @@ interface Conf {
   worktree: boolean;
   branch: string;
   push: false | true | "pr";
+  merge: boolean;
   work: string;
 }
 
@@ -163,7 +169,7 @@ function loopConf(dir: string): Conf {
   const push = raw.PUSH === "pr" ? "pr" : bool(raw.PUSH);
   let work = repo;
   if (worktree && repo) work = str("WORKTREE_DIR", "") || join(dirname(repo), `${basename(repo)}-ralph-${basename(dir)}`);
-  return { repo, worktree, branch: str("BRANCH", "main"), push, work };
+  return { repo, worktree, branch: str("BRANCH", "main"), push, merge: bool(raw.PR_MERGE), work };
 }
 
 function stateLine(dir: string): string {
@@ -300,7 +306,7 @@ function loopNames(): string[] {
  * replaced first, since __REPO__ is its prefix. No replacement strings — a
  * `$&` in a path would be read as syntax — only cutting and joining.
  */
-function fill(src: string, dst: string, name: string, repo: string): void {
+function fill(src: string, name: string, repo: string): string {
   let text = read(src);
   for (const [ph, val] of [
     ['"__REPO_JSON__"', JSON.stringify(repo)],
@@ -310,11 +316,83 @@ function fill(src: string, dst: string, name: string, repo: string): void {
   ] as const) {
     text = text.split(ph).join(val);
   }
-  writeFileSync(dst, text);
+  return text;
 }
 
-function cmdNew(name?: string, repoArg?: string): void {
-  if (!name || !repoArg) die("usage: ralph new <name> <repo-path>");
+/**
+ * `--set KEY=VALUE` arguments, each judged as config.json would judge it.
+ * VALUE is read as JSON when it is JSON and suits the key, else as the string
+ * it is, so `PUSH=pr`, `REVIEW=false` and `VERIFY_CMD=bun test` all mean what
+ * they say.
+ */
+function parseSets(rest: string[]): [string, unknown][] {
+  const sets: [string, unknown][] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]!;
+    let kv: string;
+    if (a === "--set" && i + 1 < rest.length) kv = rest[++i]!;
+    else if (a.startsWith("--set=")) kv = a.slice("--set=".length);
+    else die(`ralph new takes <name> <repo-path> and --set KEY=VALUE, not ${JSON.stringify(a)}`);
+    const eq = kv.indexOf("=");
+    if (eq <= 0) die(`--set wants KEY=VALUE, not ${JSON.stringify(kv)}`);
+    const key = kv.slice(0, eq);
+    const text = kv.slice(eq + 1);
+    if (key === "REPO") die("REPO is the <repo-path> argument of ralph new, not a --set");
+    let parsed: unknown = text;
+    try {
+      parsed = JSON.parse(text);
+    } catch {}
+    let c = checkSetting(key, parsed);
+    if (!c.ok && parsed !== text) {
+      const raw = checkSetting(key, text);
+      if (raw.ok) c = raw;
+    }
+    if (!c.ok) die(`--set ${c.error}`);
+    sets.push([key, c.value]);
+  }
+  return sets;
+}
+
+/**
+ * The config template with each setting written in: on the key's own line
+ * when the template has one — commented out or not, so the documentation above
+ * it stays with it — else just before the closing brace. Values go in only
+ * through JSON.stringify, and lines are cut and joined, never replaced by a
+ * pattern.
+ */
+function setKeys(text: string, sets: [string, unknown][]): string {
+  const lines = text.split("\n");
+  const bare = (l: string) => {
+    const t = l.trimStart();
+    return t.startsWith("//") ? t.slice(2).trimStart() : t;
+  };
+  for (const [key, value] of sets) {
+    const own = `"${key}": ${JSON.stringify(value)},`;
+    let at = lines.findIndex((l) => l.trimStart().startsWith(`"${key}":`));
+    if (at < 0) at = lines.findIndex((l) => l.trimStart().startsWith("//") && bare(l).startsWith(`"${key}":`));
+    if (at >= 0) {
+      const line = lines[at]!;
+      lines[at] = line.slice(0, line.length - line.trimStart().length) + own;
+    } else {
+      at = lines.findLastIndex((l) => l.trim() === "}");
+      if (at < 0) die("template/config.json has no closing brace");
+      lines.splice(at, 0, `  ${own}`);
+    }
+    // The entry before it needs its comma now: the template's last setting has
+    // none, and a commented-out one after it becomes a setting of its own.
+    for (let i = at - 1; i >= 0; i--) {
+      const t = lines[i]!.trim();
+      if (t === "" || t.startsWith("//")) continue;
+      if (!t.endsWith(",") && !t.endsWith("{")) lines[i] = `${lines[i]!.trimEnd()},`;
+      break;
+    }
+  }
+  return lines.join("\n");
+}
+
+function cmdNew(args: string[]): void {
+  const [name, repoArg, ...rest] = args;
+  if (!name || !repoArg || name.startsWith("--") || repoArg.startsWith("--")) die("usage: ralph new <name> <repo-path> [--set KEY=VALUE]...");
   // The name is a directory under $RALPH_HOME and, with WORKTREE on, the branch
   // ralph/<name>. Judged before anything is written, so the complaint arrives
   // with the name in it rather than at every start, in git's words. A `/` is
@@ -331,6 +409,16 @@ function cmdNew(name?: string, repoArg?: string): void {
   if (repo.includes("\n")) die(`a repo path cannot hold a newline: ${JSON.stringify(repo)}`);
   const dir = join(HOME, name);
   if (existsSync(dir)) die(`loop already exists: ${dir}`);
+  // Every setting is judged, and the config written and read back, before the
+  // loop directory exists: a refused --set leaves nothing behind.
+  const sets = parseSets(rest);
+  const config = setKeys(fill(join(TEMPLATE, "config.json"), name, repo), sets);
+  const back = parseConfig(config, "config.json", dir);
+  if (!back.ok) die(`the config ralph new wrote does not read back: ${back.error}`);
+  for (const [key, value] of sets) {
+    const got = (back.config as unknown as Record<string, unknown>)[key];
+    if (JSON.stringify(got) !== JSON.stringify(value)) die(`--set ${key} did not reach config.json: it reads back as ${JSON.stringify(got)}`);
+  }
   // A scaffold the harness could not write is not a scaffold, and the exit
   // status is the only part a script can read.
   try {
@@ -339,9 +427,10 @@ function cmdNew(name?: string, repoArg?: string): void {
     die(`cannot create the loop directory: ${dir}`);
   }
   copyFileSync(join(TEMPLATE, "PROGRESS.md"), join(dir, "PROGRESS.md"));
-  fill(join(TEMPLATE, "config.json"), join(dir, "config.json"), name, repo);
-  fill(join(TEMPLATE, "PROMPT.md"), join(dir, "PROMPT.md"), name, repo);
+  writeFileSync(join(dir, "config.json"), config);
+  writeFileSync(join(dir, "PROMPT.md"), fill(join(TEMPLATE, "PROMPT.md"), name, repo));
   green(`created ${dir}`);
+  for (const [key, value] of sets) dim(`  ${key} = ${JSON.stringify(value)}`);
   dim(`  1. write the job into ${dir}/PROMPT.md`);
   dim(`  2. check the commands in ${dir}/config.json`);
   dim(`  3. ${hint("ralph", "start", name)}`);
@@ -438,7 +527,7 @@ function cmdReview(name?: string, nArg = "10"): void {
   if (c.worktree) {
     where = `works on ralph/${name} in ${c.work}`;
     if (c.push === true) where += `, pushes to origin/${c.branch}`;
-    else if (c.push === "pr") where += `, pushes it for a pull request into ${c.branch}`;
+    else if (c.push === "pr") where += `, pushes it for a pull request into ${c.branch}${c.merge ? ", and merges that when the loop ends if its checks pass" : ""}`;
     else where += ", you merge";
   }
   out(`${name} — ${where}\n`);
@@ -490,7 +579,8 @@ function cmdReview(name?: string, nArg = "10"): void {
     out(`\nWaiting to merge into ${c.branch}\n`);
     if (waiting.code === 0 && waiting.out.trim()) {
       out(waiting.out);
-      if (c.push === "pr") dim(`  merge them through the pull request from ralph/${name}`);
+      if (c.push === "pr" && c.merge) dim(`  PR_MERGE merges the pull request from ralph/${name} when the loop ends, if its checks pass`);
+      else if (c.push === "pr") dim(`  merge them through the pull request from ralph/${name}`);
       else dim(`  merge them: ${hint("git", "-C", c.repo, "merge", `ralph/${name}`)}`);
     } else {
       dim("  nothing");
@@ -591,7 +681,7 @@ function cmdHelp(): void {
 const [cmd = "help", ...args] = process.argv.slice(2);
 switch (cmd) {
   case "new":
-    cmdNew(args[0], args[1]);
+    cmdNew(args);
     break;
   case "migrate":
     cmdMigrate(args[0]);

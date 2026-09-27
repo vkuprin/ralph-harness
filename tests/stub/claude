@@ -8,6 +8,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { humanEnv, human as humanIn, humanOut as humanOutIn } from "./human.ts";
 
 const d = process.env.STUB_DIR;
 if (!d) {
@@ -110,29 +111,10 @@ function gitOut(...args: string[]): string {
   return (spawnSync("git", args, { encoding: "utf8" }).stdout ?? "").trim();
 }
 
-// human(fn): act in a fresh clone of the remote, as a human somewhere else
-// would, without the push block the harness gave the agent.
-function humanEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env.GIT_CONFIG_COUNT;
-  delete env.GIT_CONFIG_KEY_0;
-  delete env.GIT_CONFIG_VALUE_0;
-  return env;
-}
-function human(...commands: string[][]): boolean {
-  const env = humanEnv();
-  const clone = join(d!, "human-clone");
-  const run = (args: string[], cwd?: string) =>
-    spawnSync(args[0]!, args.slice(1), { cwd, env, stdio: ["ignore", "ignore", "ignore"] }).status === 0;
-  if (!existsSync(clone) && !run(["git", "clone", "-q", process.env.STUB_REMOTE ?? "", clone])) return false;
-  if (!run(["git", "fetch", "-q", "origin"], clone)) return false;
-  if (!run(["git", "checkout", "-q", "-B", "main", "origin/main"], clone)) return false;
-  for (const c of commands) if (!run(c, clone)) return false;
-  return true;
-}
-function humanOut(...args: string[]): string {
-  return (spawnSync("git", args, { cwd: join(d!, "human-clone"), env: humanEnv(), encoding: "utf8" }).stdout ?? "").trim();
-}
+// human(...commands): act in a fresh clone of the remote, as a human somewhere
+// else would, without the push block the harness gave the agent.
+const human = (...commands: string[][]) => humanIn(d!, ...commands);
+const humanOut = (...args: string[]) => humanOutIn(d!, ...args);
 
 // nap(seconds): sleep as a child and record its PID, so a test can ask whether
 // *this* process went with the agent's process group. A bare `sleep 999` leaves

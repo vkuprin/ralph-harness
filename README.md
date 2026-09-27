@@ -24,6 +24,17 @@ checkout, so `git pull` there updates it:
 ln -s "$PWD/bin/ralph" ~/.local/bin/ralph
 ```
 
+Or let Claude Code set a loop up for you. `skills/ralph-new` is a skill that looks
+at the repository, asks how the loop should run (where its work lands, whether its
+pull request is merged when it ends, the verify command, the reviewer, when it
+stops, the model, its hours, notifications), then runs `ralph new --set …` and
+writes `PROMPT.md` with you. Link it once, then say "set up a ralph loop here" in
+the repository:
+
+```bash
+ln -s "$PWD/skills/ralph-new" ~/.claude/skills/ralph-new
+```
+
 ## What makes it different
 
 The idea is Geoffrey Huntley's: [Ralph is a bash loop](https://ghuntley.com/ralph/)
@@ -170,7 +181,8 @@ again), `decision` — new text under "Needs a decision" in `PROGRESS.md`,
 which is the agent handing you a question it cannot settle (a line not there
 before; a question settled or moved is not news) — `health` and
 `health-clear`, `churn`, and with `"PUSH": "pr"`, `pr` (a pull request opened, with
-its URL) and `pr-blocked`, all described below. Not on a keep, and
+its URL) and `pr-blocked`, and with `PR_MERGE`, `merged` and `merge-blocked`, all
+described below. Not on a keep, and
 not on a quiet iteration: a notifier that speaks every iteration is one you stop
 reading. The event arrives in the environment — `RALPH_EVENT`, `RALPH_LOOP`,
 `RALPH_DIR`, `RALPH_ITER`, `RALPH_MESSAGE` — and never pasted into the command,
@@ -238,6 +250,24 @@ a merge is expected. Do not push to `ralph/<name>` yourself: the push is leased
 on the commit the harness last pushed, so commits it did not make are never
 overwritten, and the loop keeps its work local and says so until they are gone.
 
+`"PR_MERGE": true` merges that pull request for you, once, when the loop ends by
+itself: `DONE_CMD`, `MAX_ITER`, `QUIET_STOP` or `ERROR_STOP`. `ralph stop` never
+merges, because stopping is your call and so is what happens to the work after it.
+The harness syncs the branch one last time, then reads the pull request's checks
+every `PR_MERGE_POLL` seconds, for up to `PR_MERGE_WAIT` seconds of the machine
+being awake. When every check has passed it runs `gh pr merge` with
+`PR_MERGE_METHOD` (a merge commit unless you say `"squash"` or `"rebase"`) and
+`--match-head-commit`, so GitHub merges exactly the commit the checks ran on and
+refuses one that moved. It merges only while the branch sits on `BRANCH` as origin
+has it. A branch left on its old base by a conflict or a failed re-verify is never
+merged, because nothing checked it on top of `BRANCH`. A pull request with no checks
+at all (seen twice, a poll apart, since GitHub can take a moment to register them)
+merges on `VERIFY_CMD` alone, and not at all when there is none. A failed check, a
+wait that ran out, or GitHub refusing (a required review, branch protection) is
+`merge-blocked`, with the reason; a merge is `merged`, with the URL. Both come
+before `stopped`. It needs `"PUSH": "pr"` and `WORKTREE`, and a config that sets it
+without them is refused at start.
+
 What an iteration costs is in `results.tsv`, after the reason: `cost_usd` and
 `tokens` (input plus output, the agent's and the reviewer's together), read from
 claude's JSON answer. `ralph review` and `ralph status` total them. On a
@@ -249,6 +279,8 @@ run killed before it answered reports nothing, so the total is a lower bound.
 ```bash
 ralph                       # a short guide, then the loops you have
 ralph new <name> <repo>     # scaffold a loop from template/
+ralph new <name> <repo> --set PUSH=pr --set PR_MERGE=true
+                            # ...with settings written into its config.json
 ralph start <name>          # run it in the background
 ralph status [name]         # running or not, iterations, verdict counts, HEAD
 ralph review <name> [n]     # what it shipped, what the gates threw away, what waits to merge
@@ -373,6 +405,10 @@ or a quote arrives at the loop exactly as it is on disk.
 | `WORKTREE_DIR` | | `<repo>-ralph-<name>` next to the repo | where the worktree goes; a path holding anything but a worktree of `REPO` is refused |
 | `BRANCH` | `"main"` | `"main"` | the branch the worktree starts from and pushes to |
 | `PUSH` | `true` | `false` | push kept commits to `origin/BRANCH`; with `"pr"`, push `ralph/<name>` and keep one pull request open into `BRANCH`; with `false` they wait on `ralph/<name>` for you. With no `origin` it says so once and behaves as `false` |
+| `PR_MERGE` | `false` | `false` | with `"pr"`, merge the pull request when the loop ends by itself, if every check on it passes |
+| `PR_MERGE_METHOD` | `"merge"` | `"merge"` | how `PR_MERGE` merges: `"merge"`, `"squash"` or `"rebase"` |
+| `PR_MERGE_WAIT` | `3600` | `3600` | seconds `PR_MERGE` waits for checks still running, counted awake |
+| `PR_MERGE_POLL` | | `30` | seconds between two readings of the checks |
 | `SETUP_CMD` | `""` | | run once in a new worktree (`npm ci`, copy `.env`). If it fails the worktree and its branch go, so the next start runs it again |
 | `VERIFY_CMD` | `""` | | your check, run after every commit; failing resets the commit |
 | `VERIFY_TIMEOUT` | `1800` | `1800` | seconds `VERIFY_CMD` may take, counted awake |

@@ -48,7 +48,7 @@
 
   // true: the harness pushes kept commits to origin/BRANCH itself (the agent cannot).
   // "pr": the harness pushes ralph/__NAME__ to origin and keeps one pull request
-  //       open into BRANCH; you merge it. Nothing pushes BRANCH, so the loop's
+  //       open into BRANCH; you merge it, or PR_MERGE does. Nothing here pushes BRANCH, so the loop's
   //       credentials need only reach ralph/* — give an unattended box a deploy key
   //       that cannot push main, and protect main. Opens the pull request through
   //       gh when gh is logged in; without it the branch is still pushed. A rebase
@@ -57,6 +57,19 @@
   // false: commits stay on ralph/__NAME__ for you to merge.
   // A repository with no origin says so once at start and behaves as false.
   "PUSH": true,
+
+  // With PUSH "pr": once the loop ends by itself (DONE_CMD, MAX_ITER, QUIET_STOP,
+  // ERROR_STOP — never after `ralph stop`), merge its pull request into BRANCH if
+  // every check on it passes. It waits for checks still running, merges only the
+  // head it pushed and only while that head sits on BRANCH as origin has it, and
+  // tells you either way (the merged and merge-blocked events). A pull request
+  // with no checks at all merges on VERIFY_CMD alone, and not at all without one.
+  // Branch protection still applies: a required review blocks the merge.
+  "PR_MERGE": false,
+  // "merge" (a merge commit), "squash" or "rebase".
+  "PR_MERGE_METHOD": "merge",
+  // Seconds to wait for checks still running, counted while the machine is awake.
+  "PR_MERGE_WAIT": 3600,
 
   // Runs once in a new worktree. Untracked files such as .env and node_modules do
   // not exist there until something puts them there. If it fails the loop stops
@@ -187,6 +200,10 @@
   //   pr-blocked   PUSH "pr" cannot move ralph/__NAME__ forward: it conflicts
   //                with BRANCH, fails VERIFY_CMD after a rebase, or someone else
   //                pushed to it
+  //   merged       PR_MERGE merged the pull request when the loop ended
+  //   merge-blocked PR_MERGE did not: a check failed, checks were still running
+  //                after PR_MERGE_WAIT, the branch is not on BRANCH, or GitHub
+  //                refused (branch protection)
   //
   // Never on a keep or a quiet iteration: that is the noise that makes you stop
   // reading them. The event arrives in the environment, not pasted into the

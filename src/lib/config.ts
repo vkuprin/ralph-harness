@@ -11,6 +11,7 @@ import { isAbsolute, join } from "node:path";
 // written for a gated worktree once committed into the user's own checkout.
 
 export type Push = false | true | "pr";
+export type MergeMethod = "merge" | "squash" | "rebase";
 
 export interface Config {
   REPO: string;
@@ -25,6 +26,10 @@ export interface Config {
   WORKTREE_DIR: string;
   BRANCH: string;
   PUSH: Push;
+  PR_MERGE: boolean;
+  PR_MERGE_METHOD: MergeMethod;
+  PR_MERGE_WAIT: number;
+  PR_MERGE_POLL: number;
   SETUP_CMD: string;
   ITER_TIMEOUT: number;
   VERIFY_CMD: string;
@@ -87,6 +92,10 @@ export function defaults(dir: string): Config {
     WORKTREE_DIR: "",
     BRANCH: "main",
     PUSH: false,
+    PR_MERGE: false,
+    PR_MERGE_METHOD: "merge",
+    PR_MERGE_WAIT: 3600,
+    PR_MERGE_POLL: 30,
     SETUP_CMD: "",
     ITER_TIMEOUT: 7200,
     VERIFY_CMD: "",
@@ -123,7 +132,7 @@ export function defaults(dir: string): Config {
   };
 }
 
-type Kind = "string" | "int" | "bool" | "strings" | "push" | "path" | "regex";
+type Kind = "string" | "int" | "bool" | "strings" | "push" | "method" | "path" | "regex";
 
 const KINDS: Record<keyof Config, Kind> = {
   REPO: "path",
@@ -138,6 +147,10 @@ const KINDS: Record<keyof Config, Kind> = {
   WORKTREE_DIR: "path",
   BRANCH: "string",
   PUSH: "push",
+  PR_MERGE: "bool",
+  PR_MERGE_METHOD: "method",
+  PR_MERGE_WAIT: "int",
+  PR_MERGE_POLL: "int",
   SETUP_CMD: "string",
   ITER_TIMEOUT: "int",
   VERIFY_CMD: "string",
@@ -182,6 +195,7 @@ const WHAT: Record<Kind, string> = {
   bool: "true or false",
   strings: "a list of strings",
   push: 'false, true or "pr"',
+  method: '"merge", "squash" or "rebase"',
   regex: "a regular expression",
 };
 
@@ -206,6 +220,8 @@ function coerce(kind: Kind, v: unknown): { ok: true; value: unknown } | { ok: fa
       if (typeof v === "boolean") return { ok: true, value: v };
       if (v === 0 || v === 1) return { ok: true, value: v === 1 };
       return { ok: false };
+    case "method":
+      return v === "merge" || v === "squash" || v === "rebase" ? { ok: true, value: v } : { ok: false };
     case "regex":
       if (typeof v !== "string") return { ok: false };
       try {
@@ -215,6 +231,14 @@ function coerce(kind: Kind, v: unknown): { ok: true; value: unknown } | { ok: fa
         return { ok: false };
       }
   }
+}
+
+/** One setting given outside a file (`ralph new --set`), judged as config.json would judge it. */
+export function checkSetting(key: string, value: unknown): { ok: true; value: unknown } | { ok: false; error: string } {
+  if (!Object.hasOwn(KINDS, key)) return { ok: false, error: `${key} is not a setting this harness knows` };
+  const kind = KINDS[key as keyof Config];
+  const c = coerce(kind, value);
+  return c.ok ? c : { ok: false, error: `${key} must be ${WHAT[kind]}, not ${JSON.stringify(value)}` };
 }
 
 export type Loaded = { ok: true; config: Config } | { ok: false; error: string };
@@ -270,6 +294,7 @@ export function schema(): object {
     bool: { type: ["boolean", "integer"], enum: [true, false, 0, 1] },
     strings: { type: "array", items: { type: "string" } },
     push: { enum: [true, false, "pr", 0, 1] },
+    method: { enum: ["merge", "squash", "rebase"] },
   };
   const properties: Record<string, object> = { $schema: { type: "string" } };
   for (const k of KEYS) properties[k] = types[KINDS[k]];

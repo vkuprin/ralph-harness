@@ -303,6 +303,87 @@ describe("ralph new writes the path it was given, not sed's reading of it", () =
   });
 });
 
+describe("ralph new --set writes settings into config.json", () => {
+  // The way a setup that asked its questions first scaffolds a loop: every
+  // value through JSON.stringify, judged before anything is written.
+  const home = fx.p("home-set");
+  const app = fx.p("app-set");
+  let made = { code: -1, out: "", err: "" };
+  let text = "";
+  let cfg: Record<string, unknown> = {};
+  const refused: Record<string, { code: number; out: string; err: string }> = {};
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-set.git"));
+    made = fx.cli(home, [
+      "new", "set", app,
+      "--set", "PUSH=pr",
+      "--set", "PR_MERGE=true",
+      "--set", 'VERIFY_CMD=bun test && echo "$& \\ done"',
+      "--set=MAX_ITER=40",
+      "--set", "WORKTREE_DIR=/tmp/ralph-set-wt",
+      "--set", "PR_MERGE_POLL=5",
+      "--set", 'CLOSING="Go."',
+      "--set", 'FROZEN=["a b","c"]',
+    ]);
+    text = read(join(home, "set", "config.json"));
+    cfg = Bun.JSONC.parse(text) as Record<string, unknown>;
+    for (const [what, args] of Object.entries({
+      unknown: ["--set", "MAX_ITERS=3"],
+      type: ["--set", "MAX_ITER=forty"],
+      method: ["--set", "PR_MERGE_METHOD=fast"],
+      repo: ["--set", "REPO=/elsewhere"],
+      flag: ["--push", "pr"],
+      bare: ["--set", "NOEQUALS"],
+    })) {
+      refused[what] = fx.cli(home, ["new", `no-${what}`, app, ...args]);
+    }
+  });
+
+  test("it scaffolds, and lists what it set", () => {
+    expect(made.code).toBe(0);
+    expect(made.out).toContain('PUSH = "pr"');
+    expect(made.out).toContain("PR_MERGE = true");
+  });
+  test("each value reads back as given: JSON where it is JSON, a string where it is not", () => {
+    expect(cfg).toMatchObject({
+      PUSH: "pr",
+      PR_MERGE: true,
+      VERIFY_CMD: 'bun test && echo "$& \\ done"',
+      MAX_ITER: 40,
+      WORKTREE_DIR: "/tmp/ralph-set-wt",
+      PR_MERGE_POLL: 5,
+      CLOSING: "Go.",
+      FROZEN: ["a b", "c"],
+      REPO: app,
+    });
+  });
+  test("the documentation stays beside each setting", () => {
+    expect(text).toContain("// The branch the worktree starts from");
+    expect(text).toContain("// With PUSH \"pr\": once the loop ends by itself");
+  });
+  test("a setting the template had commented out is set, once", () => {
+    expect(text.split("\n").filter((l) => l.includes('"WORKTREE_DIR"'))).toEqual(['  "WORKTREE_DIR": "/tmp/ralph-set-wt",']);
+  });
+  test("and one after the template's last setting, and one it never had, still parse", () => {
+    expect(text).toContain('"LIVE_STEER": true,');
+    expect(text).toContain('  "PR_MERGE_POLL": 5,\n}');
+  });
+  for (const what of ["unknown", "type", "method", "repo", "flag", "bare"]) {
+    test(`a refused --set (${what}) leaves no loop behind`, () => {
+      expect(refused[what]!.code).not.toBe(0);
+      expect(existsSync(join(home, `no-${what}`))).toBe(false);
+    });
+  }
+  test("and the refusal says what was wrong", () => {
+    expect(both(refused.unknown!)).toContain("MAX_ITERS is not a setting");
+    expect(both(refused.type!)).toContain("MAX_ITER must be a whole number");
+    expect(both(refused.method!)).toContain('"merge", "squash" or "rebase"');
+    expect(both(refused.repo!)).toContain("REPO is the <repo-path> argument");
+    expect(both(refused.flag!)).toContain('not "--push"');
+  });
+});
+
 describe("ralph new refuses a name the harness cannot use", () => {
   // WORKTREE=1 is the template's default, and it puts the loop on branch
   // ralph/<name>. A name git will not take as a branch component therefore
