@@ -1,0 +1,57 @@
+src/paths.ts
+  s_812b14673bee04::t_8d69fce1c454d3 1-18
+src/loop/main.ts
+  s_812b14673bee04::t_15f9e8179e91fa 1-13,15-47,49-143
+  s_812b14673bee04::t_3e14a21b8923fc 14,48
+src/cli/main.ts
+  s_812b14673bee04::t_44fa913f315f66 295-296,305
+  s_812b14673bee04::t_899bbc518ff3ba 1-18,20-294,297-304,306-631
+  s_812b14673bee04::t_65b9b17c7132d0 19
+src/lib/text.ts
+  s_812b14673bee04::t_3a2638772c04b0 1-66
+src/loop/cost.ts
+  s_812b14673bee04::t_3a2638772c04b0 1-57
+src/lib/log.ts
+  s_812b14673bee04::t_8d69fce1c454d3 1-65
+src/lib/results.ts
+  s_812b14673bee04::t_3a2638772c04b0 1-53
+src/loop/loop.ts
+  s_812b14673bee04::t_512e8c154f72c5 2-25,43-108,110-129,131-720,722-1312
+  s_812b14673bee04::t_83ed26c3f9fa88 109
+  s_812b14673bee04::t_3e14a21b8923fc 1,26-42,130,721
+bin/ralph
+  s_812b14673bee04::t_65b9b17c7132d0 1-3
+src/lib/shq.ts
+  s_812b14673bee04::t_3a2638772c04b0 1-17
+src/loop/active-hours.ts
+  s_812b14673bee04::t_8101ce618edbe9 1-23
+src/lib/config.ts
+  s_812b14673bee04::t_c826e528e93374 1-268
+template/config.json
+  s_812b14673bee04::t_9b633daa707ae9 1-245
+src/loop/progress.ts
+  s_812b14673bee04::t_8101ce618edbe9 1-90
+hooks/steer.ts
+  s_812b14673bee04::t_8698014f9cc1d3 1-48
+src/cli/migrate.ts
+  s_812b14673bee04::t_65b9b17c7132d0 1,145-146
+  s_812b14673bee04::t_7b9b6214f2908d 2-144,147-203
+src/loop/limits.ts
+  s_812b14673bee04::t_8101ce618edbe9 1-127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "1b75f330330eb30ab4f075507964c969aaa5cc6a",
+  "prompts": {},
+  "sessions": {
+    "s_812b14673bee04": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e25e59e4-bda7-4d0e-825f-8588a900c31d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
