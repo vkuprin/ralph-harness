@@ -256,6 +256,33 @@ export function loadConfig(file: string, dir: string): Loaded {
   return parseConfig(text, file, dir);
 }
 
+/**
+ * A JSON Schema for config.json, for an editor's completion and checks. It is
+ * generated from the same table the harness reads with, and a unit test keeps
+ * the copy in template/ equal to it; the harness itself never reads it.
+ */
+export function schema(): object {
+  const types: Record<Kind, object> = {
+    string: { type: "string" },
+    path: { type: "string" },
+    regex: { type: "string", format: "regex" },
+    int: { type: "integer" },
+    bool: { type: ["boolean", "integer"], enum: [true, false, 0, 1] },
+    strings: { type: "array", items: { type: "string" } },
+    push: { enum: [true, false, "pr", 0, 1] },
+  };
+  const properties: Record<string, object> = { $schema: { type: "string" } };
+  for (const k of KEYS) properties[k] = types[KINDS[k]];
+  return {
+    $schema: "http://json-schema.org/draft-07/schema#",
+    title: "ralph loop settings (config.json)",
+    type: "object",
+    required: ["REPO"],
+    additionalProperties: false,
+    properties,
+  };
+}
+
 /** The limit pattern the loop reads: the default or its replacement, plus any extension. */
 export function limitPattern(c: Config): RegExp {
   const base = c.RATE_LIMIT_RE;

@@ -65,7 +65,7 @@ describe("limits heal themselves; interrupted iterations are set aside", () => {
   test("an agent crash whose output mentions 429 is an error, not a limit", () => {
     expect(first[4]?.[4]).toBe("error");
   });
-  test("config.sh can extend RATE_LIMIT_RE", () => {
+  test("config.json can extend the limit pattern (RATE_LIMIT_EXTRA_RE)", () => {
     expect(firstResults).toContain("quota window closed");
   });
   test("the reviewer waited out its limit and was asked again", () => {

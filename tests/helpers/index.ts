@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, test } from "bun:test";
+import { afterAll, beforeAll } from "bun:test";
 import {
   appendFileSync,
   chmodSync,
@@ -18,83 +18,42 @@ import { basename, dirname, join, resolve } from "node:path";
 
 export const ROOT = resolve(import.meta.dir, "../..");
 
-// ---------------------------------------------------------------- which harness
-// The suite is written once and run against either implementation: the bash
-// one it was ported from (the oracle) and the TypeScript one replacing it.
-// Everything that differs between the two — the command that starts a loop,
-// the file a config lives in, how time is faked — is in this block and
-// nowhere else, so the switch can be deleted whole at cutover.
-export const IMPL: "bash" | "ts" = process.env.RALPH_IMPL === "ts" ? "ts" : "bash";
-const RALPH_BASH = process.env.RALPH_BASH ?? "bash";
-export const bashOnly = test.if(IMPL === "bash");
-export const tsOnly = test.if(IMPL === "ts");
+// ---------------------------------------------------------------- the harness
 
 export function loopArgv(dir?: string): string[] {
-  const args = dir === undefined ? [] : [dir];
-  return IMPL === "bash" ? [RALPH_BASH, join(ROOT, "ralph.sh"), ...args] : [process.execPath, join(ROOT, "src/loop/main.ts"), ...args];
+  return [process.execPath, join(ROOT, "src/loop/main.ts"), ...(dir === undefined ? [] : [dir])];
 }
 export function cliPath(): string {
-  return IMPL === "bash" ? join(ROOT, "ralph") : join(ROOT, "bin/ralph");
+  return join(ROOT, "bin/ralph");
 }
 export function hookArgv(): string[] {
-  return IMPL === "bash" ? [join(ROOT, "hooks/steer.sh")] : [process.execPath, join(ROOT, "hooks/steer.ts")];
+  return [process.execPath, join(ROOT, "hooks/steer.ts")];
 }
 /** beforeAll with room for a whole loop run: hooks do not get the default test timeout. */
 export function setup(fn: () => unknown): void {
   beforeAll(fn as () => Promise<void>, 600_000);
 }
 
-export const CONFIG = IMPL === "bash" ? "config.sh" : "config.json";
-export const templateConfig = () => join(ROOT, "template", CONFIG);
+export const TEMPLATE_CONFIG = join(ROOT, "template/config.json");
 
 export type Val = string | number | boolean | string[];
 export type Config = Record<string, Val>;
 
 /** A word single-quoted for sh. */
 export const sq = (s: string) => `'${s.split("'").join(`'\\''`)}'`;
-function bashVal(v: Val): string {
-  if (typeof v === "boolean") return v ? "1" : "0";
-  if (typeof v === "number") return String(v);
-  if (Array.isArray(v)) return `(${v.map(sq).join(" ")})`;
-  return sq(v);
-}
-function bashLines(cfg: Config): string {
-  return Object.entries(cfg)
-    .map(([k, v]) =>
-      // JSON cannot say "the default, and this": the TS config has a key for
-      // it, and in bash it is the old `"$RATE_LIMIT_RE|…"`.
-      k === "RATE_LIMIT_EXTRA_RE" ? `RATE_LIMIT_RE="$RATE_LIMIT_RE"${sq(`|${v}`)}\n` : `${k}=${bashVal(v)}\n`,
-    )
-    .join("");
-}
 
-/** Write a loop's whole config, in the form its harness reads. */
+/** Write a loop's whole config.json. */
 export function writeConfig(dir: string, cfg: Config): void {
-  if (IMPL === "bash") writeFileSync(join(dir, "config.sh"), bashLines(cfg));
-  else writeFileSync(join(dir, "config.json"), `${JSON.stringify(cfg, null, 2)}\n`);
+  writeFileSync(join(dir, "config.json"), `${JSON.stringify(cfg, null, 2)}\n`);
 }
-/** Add or override settings in a loop's config. */
+/** Add or override settings in a loop's config.json. */
 export function patchConfig(dir: string, cfg: Config): void {
-  if (IMPL === "bash") {
-    appendFileSync(join(dir, "config.sh"), bashLines(cfg));
-    return;
-  }
   const file = join(dir, "config.json");
   const now = Bun.JSONC.parse(readFileSync(file, "utf8")) as Config;
   writeFileSync(file, `${JSON.stringify({ ...now, ...cfg }, null, 2)}\n`);
 }
-/** A config file written by hand, for the broken and the odd. */
-export function rawConfig(dir: string, text: { bash: string; ts: string }): void {
-  writeFileSync(join(dir, CONFIG), IMPL === "bash" ? text.bash : text.ts);
-}
 /** What the harness reads back for `key` — the value, not the bytes. */
 export function readConfigValue(file: string, key: string): string | undefined {
-  if (IMPL === "bash") {
-    const r = Bun.spawnSync(["bash", "-c", `${key}=; . "$1" >/dev/null 2>&1; printf '%s' "\${!2}"`, "_", file, key], {
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: tmpdir() },
-    });
-    return r.stdout.toString();
-  }
   try {
     const v = (Bun.JSONC.parse(readFileSync(file, "utf8")) as Config)[key];
     return v === undefined ? undefined : String(v);
@@ -102,19 +61,6 @@ export function readConfigValue(file: string, key: string): string | undefined {
     return undefined;
   }
 }
-
-// The fake clock. The TS harness reads RALPH_TEST_CLOCK and RALPH_TEST_HOUR
-// itself; the bash one reads `date`, so it gets a `date` on PATH that reads the
-// same two files. Written at runtime, into the run's own directory.
-const DATE_SHIM = `#!/bin/sh
-if [ "$1" = "+%s" ] && [ -n "\${RALPH_TEST_CLOCK:-}" ] && [ -f "$RALPH_TEST_CLOCK" ]; then
-  echo $(( $(/bin/date +%s) + $(cat "$RALPH_TEST_CLOCK") ))
-elif [ "$1" = "+%H" ] && [ -n "\${RALPH_TEST_HOUR:-}" ] && [ -f "$RALPH_TEST_HOUR" ]; then
-  cat "$RALPH_TEST_HOUR"
-else
-  exec /bin/date "$@"
-fi
-`;
 
 // ---------------------------------------------------------------- the fixture
 const KEEP = process.env.KEEP_T === "1";
@@ -139,7 +85,6 @@ export interface LoopRun {
  */
 export class Fx {
   readonly T: string;
-  private readonly shims: string;
 
   constructor(label: string) {
     const base = process.env.TMPDIR ?? tmpdir();
@@ -149,10 +94,6 @@ export class Fx {
       join(this.T, ".gitconfig"),
       "[user]\n\tname = ralph test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n",
     );
-    this.shims = join(this.T, ".shims");
-    mkdirSync(this.shims);
-    writeFileSync(join(this.shims, "date"), DATE_SHIM);
-    chmodSync(join(this.shims, "date"), 0o755);
     afterAll(() => {
       if (!KEEP) rmSync(this.T, { recursive: true, force: true });
       else console.log(`kept ${this.T}`);
@@ -176,11 +117,10 @@ export class Fx {
       GIT_COMMITTER_NAME: "ralph test",
       GIT_COMMITTER_EMAIL: "test@example.invalid",
     };
-    for (const k of ["LANG", "LC_ALL", "TZ", "RALPH_BASH"]) {
+    for (const k of ["LANG", "LC_ALL", "TZ"]) {
       const v = process.env[k];
       if (v !== undefined) out[k] = v;
     }
-    if (extra.RALPH_TEST_CLOCK || extra.RALPH_TEST_HOUR) out.PATH = `${this.shims}:${out.PATH}`;
     for (const [k, v] of Object.entries(extra)) if (v !== undefined) out[k] = v;
     return out;
   }

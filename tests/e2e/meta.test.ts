@@ -1,7 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import {
-  CONFIG,
   Fx,
   alive,
   join,
@@ -133,7 +132,7 @@ describe("a check is about this run and nothing else", () => {
     expect(String(loopDup)).toContain("fixture reused");
   });
   test("and the loop that name belongs to is untouched", () => {
-    expect(readConfigValue(join(loop, CONFIG), "MAX_ITER")).toBe("10");
+    expect(readConfigValue(join(loop, "config.json"), "MAX_ITER")).toBe("10");
   });
   test("make_repo refuses one too", () => {
     expect(repoDup).toBeInstanceOf(Error);
@@ -146,6 +145,6 @@ describe("a check is about this run and nothing else", () => {
     expect(read(join(app, "work.txt"))).toContain("work 1");
   });
   test("a name no section has used is still made", () => {
-    expect(existsSync(fx.p("loops/dup-ok", CONFIG))).toBe(true);
+    expect(existsSync(fx.p("loops/dup-ok", "config.json"))).toBe(true);
   });
 });

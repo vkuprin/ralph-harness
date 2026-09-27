@@ -3,6 +3,9 @@
 // the harness default, and a setting the harness does not know, or a value of
 // the wrong type, refuses the start rather than being ignored.
 {
+  // The schema beside the template, for your editor's completion.
+  "$schema": "__SCHEMA_JSON__",
+
   // The checkout the loop works in, as an absolute path. Required.
   "REPO": "__REPO_JSON__",
 

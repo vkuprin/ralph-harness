@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_RATE_LIMIT_RE, defaults, limitPattern, parseConfig } from "../../src/lib/config.ts";
+import { DEFAULT_RATE_LIMIT_RE, KEYS, defaults, limitPattern, parseConfig, schema } from "../../src/lib/config.ts";
 
 const parse = (text: string) => parseConfig(text, "config.json", "/loops/x");
 const ok = (text: string) => {
@@ -73,9 +73,14 @@ describe("config.json", () => {
   });
   test("the template parses once its repo is filled in, and sets only known keys", () => {
     const tpl = readFileSync(join(import.meta.dir, "../../template/config.json"), "utf8");
-    const c = ok(tpl.split('"__REPO_JSON__"').join(JSON.stringify("/code/app")));
+    const c = ok(tpl.split('"__REPO_JSON__"').join(JSON.stringify("/code/app")).split('"__SCHEMA_JSON__"').join('"x"'));
     expect(c.REPO).toBe("/code/app");
     expect(c.WORKTREE).toBe(true);
     expect(c.NOTIFY_CMD).toBe("");
+  });
+  test("the schema in template/ is the one the harness would write, and names every setting", () => {
+    const committed = readFileSync(join(import.meta.dir, "../../template/config.schema.json"), "utf8");
+    expect(committed).toBe(`${JSON.stringify(schema(), null, 2)}\n`);
+    expect(Object.keys((schema() as { properties: object }).properties).filter((k) => k !== "$schema")).toEqual(KEYS);
   });
 });

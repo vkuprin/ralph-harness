@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import {
-  CONFIG,
   Fx,
   cliPath,
   join,
@@ -12,16 +11,17 @@ import {
   setup,
   sleeperGone,
   statuses,
-  templateConfig,
+  TEMPLATE_CONFIG,
   until,
   writeConfig,
+  ROOT,
 } from "../helpers/index.ts";
 
 const fx = new Fx("cli");
 const T = fx.T;
 
-// The settings run.sh appended as `QUIET_SLEEP=0 … MAX_ITER=1` so a scaffolded
-// loop runs one quick iteration.
+// What a scaffolded loop is patched with so it runs one quick iteration: no
+// sleeps, no push, no reviewer.
 const TAME = { QUIET_SLEEP: 0, STEP_SLEEP: 0, ERROR_SLEEP: 0, PUSH: false, REVIEW: false, MAX_ITER: 1 };
 
 /** stdout and stderr together, the way `2>&1` hands them over. */
@@ -33,12 +33,11 @@ const newlines = (text: string) => (text.match(/\n/g) ?? []).length;
 /** The last line, as `tail -1` prints it. */
 const lastLine = (text: string) => text.replace(/\n$/, "").split("\n").pop() ?? "";
 
-/** A template as `ralph new` fills it: the long placeholders before the short one they start with. */
+/** A template as `ralph new` fills it: the quoted JSON placeholder before the short one. */
 function filled(text: string, name: string, repo: string): string {
-  const shq = fx.bash('printf %q "$1"', repo).out;
   return text
-    .split("__REPO_SH__")
-    .join(shq)
+    .split('"__SCHEMA_JSON__"')
+    .join(JSON.stringify(`file://${join(ROOT, "template/config.schema.json")}`))
     .split('"__REPO_JSON__"')
     .join(JSON.stringify(repo))
     .split("__REPO__")
@@ -76,8 +75,8 @@ describe("CLI: new, start, status, steer, results, stop", () => {
     fx.makeRepo(app, remote);
     S = fx.stub("stub-d", ["sleep"]);
     fx.cli(home, ["new", "demo", app]);
-    scaffolded = existsSync(join(loop, CONFIG));
-    repoBack = readConfigValue(join(loop, CONFIG), "REPO");
+    scaffolded = existsSync(join(loop, "config.json"));
+    repoBack = readConfigValue(join(loop, "config.json"), "REPO");
     patchConfig(loop, { QUIET_SLEEP: 0, STEP_SLEEP: 0, ERROR_SLEEP: 0, ITER_TIMEOUT: 600, REVIEW: false, PUSH: false });
     fx.cli(home, ["start", "demo"], { STUB_DIR: S });
     try {
@@ -247,7 +246,7 @@ describe("ralph new writes the path it was given, not sed's reading of it", () =
   const esc = fx.p("back\\slash-scaf");
   const app = fx.p("app-scaf");
   // What the loop receives, rather than what the line looks like.
-  const scafRepo = (name: string) => readConfigValue(join(home, name, CONFIG), "REPO");
+  const scafRepo = (name: string) => readConfigValue(join(home, name, "config.json"), "REPO");
 
   setup(async () => {
     const S = fx.stub("stub-scaf", ["commit"]);
@@ -270,13 +269,13 @@ describe("ralph new writes the path it was given, not sed's reading of it", () =
     fx.cli(home, ["new", "plain", app]);
   });
 
-  test("an & in the repo path reaches config.sh whole", () => {
+  test("an & in the repo path reaches config.json whole", () => {
     expect(scafRepo("amp")).toBe(amp);
   });
   test("and the loop it scaffolded runs and keeps its commit", () => {
     expect(statuses(join(home, "amp"))).toBe("keep");
   });
-  test("a | in the repo path does not leave config.sh empty", () => {
+  test("a | in the repo path does not leave config.json empty", () => {
     expect(scafRepo("pipe")).toBe(pipe);
   });
   test("a backslash in the repo path is not eaten", () => {
@@ -290,17 +289,17 @@ describe("ralph new writes the path it was given, not sed's reading of it", () =
   // would satisfy every check above, so pin that an ordinary loop is scaffolded
   // exactly as the template reads.
   test("an ordinary loop keeps every line of the template", () => {
-    const got = read(join(home, "plain", CONFIG));
+    const got = read(join(home, "plain", "config.json"));
     expect(got).not.toBe("");
-    expect(newlines(got)).toBe(newlines(read(templateConfig())));
+    expect(newlines(got)).toBe(newlines(read(TEMPLATE_CONFIG)));
   });
   test("with no placeholder left behind", () => {
-    expect(read(join(home, "plain", CONFIG))).not.toMatch(/__[A-Z_]*__/);
+    expect(read(join(home, "plain", "config.json"))).not.toMatch(/__[A-Z_]*__/);
     expect(read(join(home, "plain/PROMPT.md"))).not.toMatch(/__[A-Z_]*__/);
   });
   test("and its last line intact", () => {
-    const got = lastLine(read(join(home, "plain", CONFIG)));
-    expect(got).toBe(lastLine(filled(read(templateConfig()), "plain", app)));
+    const got = lastLine(read(join(home, "plain", "config.json")));
+    expect(got).toBe(lastLine(filled(read(TEMPLATE_CONFIG), "plain", app)));
   });
 });
 

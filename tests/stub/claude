@@ -215,7 +215,7 @@ switch (mode) {
     // then woken: the clock jumps by the whole nap while the agent goes on
     // working. FAKE_WORK=999 is the same jump with an agent that then really
     // does hang.
-    const clock = process.env.RALPH_TEST_CLOCK ?? process.env.FAKE_CLOCK;
+    const clock = process.env.RALPH_TEST_CLOCK;
     if (!clock) {
       process.stderr.write("RALPH_TEST_CLOCK not set\n");
       process.exit(2);

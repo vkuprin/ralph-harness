@@ -1,23 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import {
-  bashOnly,
   cliPath,
-  CONFIG,
   count,
   Fx,
-  IMPL,
   join,
   loopArgv,
   patchConfig,
-  rawConfig,
   read,
   readConfigValue,
   ROOT,
   setup,
   sq,
   statuses,
-  templateConfig,
+  TEMPLATE_CONFIG,
   writeConfig,
 } from "../helpers/index.ts";
 
@@ -170,7 +166,7 @@ describe("bad configuration and odd inputs", () => {
 });
 
 describe("a loop that cannot start says why where the reader is sent", () => {
-  // Everything ralph.sh said before its first iteration went to stderr alone,
+  // Everything the loop said before its first iteration went to stderr alone,
   // and `ralph start` points stderr at ralph.out: nothing anywhere told the
   // reader why a loop was gone a second after it started.
   const home = fx.p("home-boot");
@@ -219,25 +215,21 @@ describe("a loop that cannot start says why where the reader is sent", () => {
     writeConfig(B3, { REPO: appBoot });
     fx.sh(loopArgv(B3), { env });
 
-    // Sourcing a config.sh that does not parse abandons the rest of the file:
-    // here that left WORKTREE=0, so a loop written for a gated worktree
-    // committed straight into the user's own checkout.
+    // A config that does not parse was once read up to the error and run on:
+    // that left WORKTREE off, so a loop written for a gated worktree committed
+    // straight into the user's own checkout.
     bootLoop(B4);
-    rawConfig(B4, {
-      bash: `REPO=${sq(appBoot)}\nQUIET_SLEEP=0 STEP_SLEEP=0 MAX_ITER=1\nif [ 1 ; then\nWORKTREE=1\n`,
-      ts: `{ "REPO": ${JSON.stringify(appBoot)},\n  "QUIET_SLEEP": 0, "STEP_SLEEP": 0, "MAX_ITER": 1,\n  if [ 1 ; then\n  "WORKTREE": true\n}\n`,
-    });
+    writeFileSync(
+      join(B4, "config.json"),
+      `{ "REPO": ${JSON.stringify(appBoot)},\n  "QUIET_SLEEP": 0, "STEP_SLEEP": 0, "MAX_ITER": 1,\n  if [ 1 ; then\n  "WORKTREE": true\n}\n`,
+    );
     writeFileSync(join(S, "modes"), "commit\n");
     bootHead = fx.git(appBoot, "rev-parse", "HEAD");
     boot4Code = fx.sh(loopArgv(B4), { env: { ...env, STUB_DIR: S } }).code;
 
-    // The guard: a config.sh whose last command merely returns non-zero is not
-    // a broken one, so only the parse is checked.
+    // The guard: a healthy config starts, and says nothing about itself.
     bootLoop(B5);
-    rawConfig(B5, {
-      bash: `REPO=${sq(appBoot)}\nQUIET_SLEEP=0 STEP_SLEEP=0 MAX_ITER=1 WORKTREE=1\n[ -d /no/such/directory ] && ADD_DIRS=(/no/such/directory)\n`,
-      ts: `${JSON.stringify({ REPO: appBoot, QUIET_SLEEP: 0, STEP_SLEEP: 0, MAX_ITER: 1, WORKTREE: true }, null, 2)}\n`,
-    });
+    writeConfig(B5, { REPO: appBoot, QUIET_SLEEP: 0, STEP_SLEEP: 0, MAX_ITER: 1, WORKTREE: true });
     writeFileSync(join(S, "modes"), "nothing\n");
     await fx.runLoop(B5, S, { env });
   });
@@ -263,16 +255,14 @@ describe("a loop that cannot start says why where the reader is sent", () => {
   test("a loop missing PROGRESS.md says so in the log", () => {
     expect(read(join(B3, "ralph.log"))).toContain("missing PROGRESS.md");
   });
-  test("a config.sh that does not parse stops the loop", () => {
+  test("a config.json that does not parse stops the loop", () => {
     expect(boot4Code).toBe(2);
   });
   test("the log names the file", () => {
-    expect(read(join(B4, "ralph.log"))).toContain(CONFIG);
+    expect(read(join(B4, "ralph.log"))).toContain("config.json");
   });
-  test("bash's own reason is in the log too", () => {
-    const log = read(join(B4, "ralph.log"));
-    if (IMPL === "bash") expect(log).toContain("syntax error");
-    else expect(log).toMatch(/does not parse: \S/);
+  test("the parser's own reason is in the log too", () => {
+    expect(read(join(B4, "ralph.log"))).toMatch(/does not parse: \S/);
   });
   test("no iteration ran with half the settings applied", () => {
     expect(read(join(B4, "ralph.log"))).not.toContain("=== iteration");
@@ -280,21 +270,22 @@ describe("a loop that cannot start says why where the reader is sent", () => {
   test("the repository it would have committed into is untouched", () => {
     expect(fx.git(appBoot, "rev-parse", "HEAD")).toBe(bootHead);
   });
-  bashOnly("a config.sh ending in a false test still starts", () => {
+  test("a healthy config starts", () => {
     expect(read(join(B5, "ralph.log"))).toContain("=== iteration 1");
   });
-  test("a healthy start says nothing about config.sh", () => {
-    expect(read(join(B5, "ralph.log"))).not.toContain(CONFIG);
+  test("a healthy start says nothing about config.json", () => {
+    expect(read(join(B5, "ralph.log"))).not.toContain("config.json");
   });
 });
 
-describe("config.sh is sourced, so ralph new must write a value bash reads back", () => {
-  // `ralph new` writes the repo path into the config, and the harness then reads
-  // it back — in bash by sourcing it, where a $ expands, a backtick runs and a "
-  // ends the string. So a path a directory may legally hold arrived at the loop
-  // as something else, after `ralph new` had said "created" and exited 0.
+describe("ralph new writes a repo path the loop reads back exactly", () => {
+  // `ralph new` writes the repo path into the config, and the harness reads it
+  // back. When that config was bash and was sourced, a $ expanded, a backtick
+  // ran and a " ended the string: a path a directory may legally hold arrived
+  // at the loop as something else, after `ralph new` had said "created". JSON
+  // has none of that, and these keep it so.
   const home = fx.p("home-src");
-  const cfg = (name: string) => join(home, name, CONFIG);
+  const cfg = (name: string) => join(home, name, "config.json");
   /** REPO as the harness actually receives it. */
   const repoOf = (name: string) => readConfigValue(cfg(name), "REPO");
 
@@ -348,7 +339,7 @@ describe("config.sh is sourced, so ralph new must write a value bash reads back"
     fx.cli(home, ["new", "plainsrc", appSrc]);
   });
 
-  test("a $ in the repo path is not expanded when config.sh is sourced", () => {
+  test("a $ in the repo path is not expanded", () => {
     expect(repoOf("dollar")).toBe(srcDollar);
   });
   test("a backtick in the repo path stays text and is not run", () => {
@@ -369,15 +360,15 @@ describe("config.sh is sourced, so ralph new must write a value bash reads back"
   test("and the loop scaffolded on such a path runs and keeps its commit", () => {
     expect(statuses(join(home, "dollar"))).toBe("keep");
   });
-  test("an ordinary path still sources back exactly", () => {
+  test("an ordinary path still reads back exactly", () => {
     expect(repoOf("plainsrc")).toBe(appSrc);
   });
-  test("an ordinary path is still written bare, with no quoting to read past", () => {
-    const want = IMPL === "bash" ? `REPO=${appSrc}` : `  "REPO": ${JSON.stringify(appSrc)},`;
+  test("an ordinary path is written as a plain JSON string", () => {
+    const want = `  "REPO": ${JSON.stringify(appSrc)},`;
     expect(read(cfg("plainsrc")).split("\n")).toContain(want);
   });
   test("and the file still holds every line of the template", () => {
-    expect(newlines(read(cfg("plainsrc")))).toBe(newlines(readFileSync(templateConfig(), "utf8")));
+    expect(newlines(read(cfg("plainsrc")))).toBe(newlines(readFileSync(TEMPLATE_CONFIG, "utf8")));
   });
   test("with no placeholder of any name left behind", () => {
     expect(read(cfg("plainsrc"))).not.toMatch(/__[A-Z_]*__/);

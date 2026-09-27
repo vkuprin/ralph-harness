@@ -14,6 +14,7 @@ import {
   rmSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { stampMinutes } from "../lib/clock.ts";
 import { readResults } from "../lib/results.ts";
 import { hint } from "../lib/shq.ts";
@@ -303,6 +304,7 @@ function fill(src: string, dst: string, name: string, repo: string): void {
   let text = read(src);
   for (const [ph, val] of [
     ['"__REPO_JSON__"', JSON.stringify(repo)],
+    ['"__SCHEMA_JSON__"', JSON.stringify(pathToFileURL(join(TEMPLATE, "config.schema.json")).href)],
     ["__REPO__", repo],
     ["__NAME__", name],
   ] as const) {

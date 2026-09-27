@@ -1,4 +1,7 @@
 import { type Config, KEYS, defaults, parseConfig } from "../lib/config.ts";
+import { pathToFileURL } from "node:url";
+import { join } from "node:path";
+import { TEMPLATE } from "../paths.ts";
 
 // `ralph migrate`: a loop's config.sh, from the bash harness, as config.json.
 //
@@ -190,7 +193,7 @@ export function migrate(text: string, name: string): Migrated {
     if (e instanceof Refused) return { ok: false, error: e.message };
     throw e;
   }
-  const body = JSON.stringify(settings, null, 2);
+  const body = JSON.stringify({ $schema: pathToFileURL(join(TEMPLATE, "config.schema.json")).href, ...settings }, null, 2);
   const json =
     `// Settings for the ${name} loop, converted by "ralph migrate" from config.sh.old.\n` +
     "// Only what that file set is here; every other setting takes the harness default,\n" +

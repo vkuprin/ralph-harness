@@ -123,7 +123,8 @@ HEALTH_CMD="echo \\"quoted\\" and a \\\\ backslash and a \\$ sign"
     expect(m.ok).toBe(true);
     if (!m.ok) return;
     expect(m.json).toContain("converted by \"ralph migrate\" from config.sh.old");
-    expect(Bun.JSONC.parse(m.json)).toEqual({ REPO: "/r", MAX_ITER: 7 });
+    expect(Bun.JSONC.parse(m.json)).toMatchObject({ REPO: "/r", MAX_ITER: 7 });
+    expect((Bun.JSONC.parse(m.json) as { $schema: string }).$schema).toMatch(/^file:\/\/.*template\/config\.schema\.json$/);
   });
 });
 

@@ -14,7 +14,7 @@ import {
   sleeperGone,
   sq,
   statuses,
-  templateConfig,
+  TEMPLATE_CONFIG,
   writeConfig,
 } from "../helpers/index.ts";
 
@@ -238,8 +238,8 @@ describe("NOTIFY_CMD: the loop tells the human instead of failing quietly", () =
   // The template must not ship a notifier that runs: a fresh loop is silent
   // until its human picks one, and both examples are there to be uncommented.
   test("the template leaves NOTIFY_CMD empty, with its examples commented out", () => {
-    expect(readConfigValue(templateConfig(), "NOTIFY_CMD")).toBe("");
-    const tpl = read(templateConfig());
+    expect(readConfigValue(TEMPLATE_CONFIG, "NOTIFY_CMD")).toBe("");
+    const tpl = read(TEMPLATE_CONFIG);
     expect(tpl).toContain("osascript");
     expect(tpl).toContain("api.telegram.org");
   });

@@ -1,0 +1,205 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ralph loop settings (config.json)",
+  "type": "object",
+  "required": [
+    "REPO"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "REPO": {
+      "type": "string"
+    },
+    "MODEL": {
+      "type": "string"
+    },
+    "MAX_ITER": {
+      "type": "integer"
+    },
+    "QUIET_STOP": {
+      "type": "integer"
+    },
+    "QUIET_SLEEP": {
+      "type": "integer"
+    },
+    "STEP_SLEEP": {
+      "type": "integer"
+    },
+    "ADD_DIRS": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "CLOSING": {
+      "type": "string"
+    },
+    "WORKTREE": {
+      "type": [
+        "boolean",
+        "integer"
+      ],
+      "enum": [
+        true,
+        false,
+        0,
+        1
+      ]
+    },
+    "WORKTREE_DIR": {
+      "type": "string"
+    },
+    "BRANCH": {
+      "type": "string"
+    },
+    "PUSH": {
+      "enum": [
+        true,
+        false,
+        "pr",
+        0,
+        1
+      ]
+    },
+    "SETUP_CMD": {
+      "type": "string"
+    },
+    "ITER_TIMEOUT": {
+      "type": "integer"
+    },
+    "VERIFY_CMD": {
+      "type": "string"
+    },
+    "VERIFY_TIMEOUT": {
+      "type": "integer"
+    },
+    "FROZEN": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "REVIEW": {
+      "type": [
+        "boolean",
+        "integer"
+      ],
+      "enum": [
+        true,
+        false,
+        0,
+        1
+      ]
+    },
+    "REVIEW_LIMIT_TRIES": {
+      "type": "integer"
+    },
+    "DONE_CMD": {
+      "type": "string"
+    },
+    "ACTIVE_HOURS": {
+      "type": "string"
+    },
+    "ACTIVE_POLL": {
+      "type": "integer"
+    },
+    "DENY": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "REVIEW_MODEL": {
+      "type": "string"
+    },
+    "HEALTH_CMD": {
+      "type": "string"
+    },
+    "HEALTH_TIMEOUT": {
+      "type": "integer"
+    },
+    "CHURN_AT": {
+      "type": "integer"
+    },
+    "CHURN_WINDOW": {
+      "type": "integer"
+    },
+    "CHURN_IGNORE": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "RATE_LIMIT_SLEEP": {
+      "type": "integer"
+    },
+    "LIMIT_RESET": {
+      "type": [
+        "boolean",
+        "integer"
+      ],
+      "enum": [
+        true,
+        false,
+        0,
+        1
+      ]
+    },
+    "ERROR_SLEEP": {
+      "type": "integer"
+    },
+    "ERROR_STOP": {
+      "type": "integer"
+    },
+    "PROGRESS_KEEP": {
+      "type": "integer"
+    },
+    "PROGRESS_MAX_BYTES": {
+      "type": "integer"
+    },
+    "ESCALATE_AFTER": {
+      "type": "integer"
+    },
+    "NOTIFY_CMD": {
+      "type": "string"
+    },
+    "NOTIFY_TIMEOUT": {
+      "type": "integer"
+    },
+    "LIVE_STEER": {
+      "type": [
+        "boolean",
+        "integer"
+      ],
+      "enum": [
+        true,
+        false,
+        0,
+        1
+      ]
+    },
+    "LOG_MAX_BYTES": {
+      "type": "integer"
+    },
+    "LOG_KEEP": {
+      "type": "integer"
+    },
+    "REF_KEEP": {
+      "type": "integer"
+    },
+    "POLL_GAP_MAX": {
+      "type": "integer"
+    },
+    "RATE_LIMIT_RE": {
+      "type": "string",
+      "format": "regex"
+    },
+    "RATE_LIMIT_EXTRA_RE": {
+      "type": "string",
+      "format": "regex"
+    }
+  }
+}

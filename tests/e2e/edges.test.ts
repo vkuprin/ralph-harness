@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import {
-  IMPL,
   Fx,
   count,
   events,
@@ -441,7 +440,7 @@ describe("CLI edges", () => {
     // loop's, and which ignores the signal. `ralph stop` has to reach for KILL.
     const stubborn = join(home, "stubborn");
     fx.makeLoop(stubborn, app, { MAX_ITER: 1 });
-    const mark = IMPL === "bash" ? join(fx.T, "ralph.sh") : join(fx.T, "src/loop/main.ts");
+    const mark = join(fx.T, "src/loop/main.ts");
     const p = Bun.spawn(["bash", "-c", "trap '' TERM; while :; do sleep 0.2; done", mark, stubborn], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     await waitProc(p.pid, stubborn);
     writeFileSync(join(stubborn, "ralph.pid"), `${p.pid}\n`);

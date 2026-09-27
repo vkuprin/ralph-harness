@@ -10,6 +10,7 @@ import { basename, join, resolve } from "node:path";
 import { loadConfig } from "../lib/config.ts";
 import { Log } from "../lib/log.ts";
 import { current, freeze, killGroup, plainChildren, run } from "../lib/proc.ts";
+import { hint } from "../lib/shq.ts";
 import { LOOP_MARK } from "../paths.ts";
 import { Loop, Stop, missingFile } from "./loop.ts";
 
@@ -38,7 +39,7 @@ const name = basename(dir);
 // Settings from before this harness are in config.sh, which is bash and which
 // nothing here will source. Say how to convert them rather than "missing".
 if (!existsSync(join(dir, "config.json")) && existsSync(join(dir, "config.sh"))) {
-  log.line(`ralph: ${dir} keeps its settings in config.sh, which this harness does not read — convert them: ralph migrate ${name}`);
+  log.line(`ralph: ${dir} keeps its settings in config.sh, which this harness does not read — convert them: ${hint("ralph", "migrate", name)}`);
   process.exit(2);
 }
 
