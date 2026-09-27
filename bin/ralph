@@ -1,0 +1,3 @@
+#!/usr/bin/env bun
+// The ralph CLI. Symlink this file onto PATH: `ln -s "$PWD/bin/ralph" ~/.local/bin/ralph`.
+import "../src/cli/main.ts";
