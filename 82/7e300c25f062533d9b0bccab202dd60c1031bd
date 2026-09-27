@@ -1,0 +1,77 @@
+tests/helpers/preload.ts
+  s_812b14673bee04::t_779da98aa1be6d 2-28,32-35
+  s_812b14673bee04::t_750949ec930952 1,29-31
+.gitignore
+  s_812b14673bee04::t_c82866a3dc56ba 3
+tests/e2e/pr.test.ts
+  s_812b14673bee04::t_7954d0df547e19 1-153
+tests/e2e/gates.test.ts
+  s_812b14673bee04::t_86d000e7dce0d5 2,4-17,19-131,133-181,183-215
+  s_812b14673bee04::t_02c71963847dc9 1,3,18,132,182
+tests/e2e/limits.test.ts
+  s_812b14673bee04::t_5518c733ee8eee 1-351
+tests/e2e/logs.test.ts
+  s_812b14673bee04::t_18f47fb0d401e8 1-259
+tests/e2e/progress.test.ts
+  s_812b14673bee04::t_cd7181e3d3237a 1-274
+tests/helpers/index.ts
+  s_812b14673bee04::t_02c71963847dc9 1,42-46
+  s_812b14673bee04::t_2584114ae41db1 2-41,47-91,95-384
+  s_812b14673bee04::t_750949ec930952 92-94
+src/lib/proc.ts
+  s_812b14673bee04::t_d072403058c16e 1-38,41-157,159-184,186-257
+  s_812b14673bee04::t_a6489a65e75ee4 39-40,158,185
+tests/e2e/meta.test.ts
+  s_812b14673bee04::t_841bd269413e53 1-151
+package.json
+  s_812b14673bee04::t_c82866a3dc56ba 1-12,15-20
+  s_812b14673bee04::t_02c71963847dc9 13-14
+tests/e2e/steer.test.ts
+  s_812b14673bee04::t_4429c212f0ca91 1-111
+tests/unit/proc.test.ts
+  s_812b14673bee04::t_779da98aa1be6d 1-92
+tests/e2e/suspend.test.ts
+  s_812b14673bee04::t_ef526c56086670 1-88
+tests/e2e/identity.test.ts
+  s_812b14673bee04::t_ce33ce39686e25 1-83
+tests/stub/gh
+  s_812b14673bee04::t_c2669418b0a990 1-11,13-21,23-42
+tsconfig.json
+  s_812b14673bee04::t_c82866a3dc56ba 1-18
+tests/e2e/notify.test.ts
+  s_812b14673bee04::t_a05db60d0511a8 1-127,129-275
+  s_812b14673bee04::t_2aeb54515a2a2f 128
+tests/e2e/config.test.ts
+  s_812b14673bee04::t_d419a0455457a7 1-389
+tests/stub/claude
+  s_812b14673bee04::t_6929805781ad63 1-10,12-20,22-31,33-37,40-61,64-87,89-99,101-110,113-134,137-143,146-217,219-389
+  s_812b14673bee04::t_24eaf3b32842e1 218
+tests/e2e/cli.test.ts
+  s_812b14673bee04::t_f65778944f38c7 409-410
+  s_812b14673bee04::t_c8337041fda60c 1-41,43-408,411-489
+  s_812b14673bee04::t_44fa913f315f66 42
+tests/e2e/features.test.ts
+  s_812b14673bee04::t_6b4c6da5701609 1-437
+bun.lock
+  s_812b14673bee04::t_6e2453027580fa 1-64
+bunfig.toml
+  s_812b14673bee04::t_732dde99209213 1-5
+src/lib/clock.ts
+  s_812b14673bee04::t_0a81fed85a6488 1-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "827e300c25f062533d9b0bccab202dd60c1031bd",
+  "prompts": {},
+  "sessions": {
+    "s_812b14673bee04": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e25e59e4-bda7-4d0e-825f-8588a900c31d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
