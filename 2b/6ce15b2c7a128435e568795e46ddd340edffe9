@@ -1,0 +1,63 @@
+tests/e2e/config.test.ts
+  s_812b14673bee04::t_b0a5b48220abe2 16,169,218-220,222-225,230,232,258,262,264-265,273,276-277,281-286,288,342,363,366-367,371
+tests/unit/migrate.test.ts
+  s_812b14673bee04::t_84fad9a91359a1 126-127
+README.md
+  s_812b14673bee04::t_e63d9e8a705890 8-10,14,16-17,20,24,116-117,132,139,149,172,180-184,190,225,230,250-261,265,273,318-339,343-361,365-366,371-372,374-377,379-380,382-383,387-389,392-394,399,406-409,422,426-428,444-446,466-470,473-484,489,501,511
+tests/e2e/limits.test.ts
+  s_812b14673bee04::t_b0a5b48220abe2 68
+tests/helpers/index.ts
+  s_812b14673bee04::t_9c973b32d303c8 1,21,24,27,30,37,45,47,49,120
+tests/e2e/edges.test.ts
+  s_812b14673bee04::t_b0a5b48220abe2 443
+tests/e2e/notify.test.ts
+  s_812b14673bee04::t_b0a5b48220abe2 17,241-242
+src/cli/migrate.ts
+  s_812b14673bee04::t_946dc58585a1b0 2-4,196
+src/lib/config.ts
+  s_812b14673bee04::t_946dc58585a1b0 259-285
+tests/unit/config.test.ts
+  s_812b14673bee04::t_84fad9a91359a1 4,76,81-84
+  s_812b14673bee04::t_2dda0710f233ab 85
+AGENTS.md
+  s_812b14673bee04::t_aff550e027e13d 3-5,9-17,19-21,25-85,90,92-93,100-101,108-122,125-134,136,138,142-146,148-149,158-164,166-167,171,174,179-184
+tests/e2e/cli.test.ts
+  s_812b14673bee04::t_b0a5b48220abe2 14,36,78-79,249,272,278,292,294,297,301-302
+  s_812b14673bee04::t_84fad9a91359a1 17
+  s_812b14673bee04::t_27cc7a7db30539 23-24
+  s_812b14673bee04::t_946dc58585a1b0 39-40
+tests/stub/claude
+  s_812b14673bee04::t_76ef95abc60556 218
+tests/e2e/meta.test.ts
+  s_812b14673bee04::t_b0a5b48220abe2 135,148
+tests/e2e/typescript.test.ts
+  s_812b14673bee04::t_b0a5b48220abe2 1,3,5-6,39,43,47,51,55,78,82,86,90,149,155,169,174,177,182,204,210,215
+  s_812b14673bee04::t_a84a09013a2da8 80
+  s_812b14673bee04::t_84fad9a91359a1 128-129
+src/cli/main.ts
+  s_812b14673bee04::t_946dc58585a1b0 17,307
+src/loop/main.ts
+  s_812b14673bee04::t_a84a09013a2da8 13,42
+.github/workflows/test.yml
+  s_812b14673bee04::t_27cc7a7db30539 7,10-11,13,15-25,27-29,31,34-42
+template/config.json
+  s_812b14673bee04::t_946dc58585a1b0 6-8
+template/config.schema.json
+  s_812b14673bee04::t_946dc58585a1b0 1-205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "2b6ce15b2c7a128435e568795e46ddd340edffe9",
+  "prompts": {},
+  "sessions": {
+    "s_812b14673bee04": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e25e59e4-bda7-4d0e-825f-8588a900c31d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
