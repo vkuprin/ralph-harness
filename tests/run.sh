@@ -2131,6 +2131,250 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+section "LIMIT_RESET: a limit is waited out until the time it names"
+
+# claude says when a limit lifts — "resets 9:10am (Europe/Paris)" — and the loop
+# used to ignore it and ask again every RATE_LIMIT_SLEEP. With LIMIT_RESET=1 it
+# waits until that time. The wait is on the clock, so it is tested with the
+# fake `date` from "time asleep": the loop is run in the background, and the
+# clock is moved past the reset once the loop has said it is waiting.
+
+# reset_text <stub-dir> <seconds from now>: a limit message whose reset is that
+# far off, written in UTC the way the CLI writes a named zone.
+reset_text() {
+  local at
+  at="$(perl -MPOSIX -e 'print lc strftime("%I:%M%p", gmtime($ARGV[0]))' $(( $(/bin/date +%s) + $2 )))"
+  printf "You've hit your session limit · resets %s (UTC)\n" "$at" > "$1/limit-text"
+}
+# bg_loop <loop-dir> <stub-dir> <clock-file>: run_loop in the background with
+# the fake clock on PATH at no offset. BG is the background job.
+bg_loop() {
+  echo 0 > "$3"
+  # shellcheck disable=SC2030,SC2031  # the subshell is the point: only this run sees it
+  ( export PATH="$F:$PATH" FAKE_CLOCK="$3"; run_loop "$1" "$2" ) &
+  BG=$!
+}
+# until_log <loop-dir> <text> <seconds>: the loop has logged <text>.
+until_log() {
+  local i=0
+  while [ "$i" -lt $(( $3 * 10 )) ]; do
+    grep -qF -- "$2" "$1/ralph.log" 2>/dev/null && return 0
+    sleep 0.1; i=$((i + 1))
+  done
+  return 1
+}
+# end_loop <loop-dir> <seconds>: BG ended by itself within <seconds>. If not, it
+# is stopped through the PID in its own lock — ralph.sh's, long since exec'd,
+# never the job's, which is the hazard the trap at the top describes — and the
+# check fails instead of hanging the suite for the hours it would have waited.
+end_loop() {
+  local i=0
+  while kill -0 "$BG" 2>/dev/null && [ "$i" -lt $(( $2 * 10 )) ]; do sleep 0.1; i=$((i + 1)); done
+  if kill -0 "$BG" 2>/dev/null; then
+    kill "$(cat "$1/ralph.lock" 2>/dev/null)" 2>/dev/null
+    wait "$BG" 2>/dev/null
+    return 1
+  fi
+  wait "$BG" 2>/dev/null
+  return 0
+}
+
+make_repo "$T/app-lr" "$T/remote-lr.git"
+S="$T/stub-lr"; mkdir -p "$S"
+printf '%s\n' say-limit commit > "$S/modes"
+reset_text "$S" 7200
+mk_notifier "$T/notify-lr.log" "$T/notify-lr.sh"
+make_loop "$T/loops/lr" "$T/app-lr" 'WORKTREE=1 MAX_ITER=1 LIMIT_RESET=1 ACTIVE_POLL=1 ITER_TIMEOUT=600' \
+  "NOTIFY_CMD=\"$T/notify-lr.sh\""
+bg_loop "$T/loops/lr" "$S" "$T/clock-lr"
+check "the loop waits for the time the message names" until_log "$T/loops/lr" "waiting until then" 30
+sleep 2
+check "and does not ask again before it" test "$(cat "$S/agent_calls")" = 1
+echo 10800 > "$T/clock-lr"
+check "once the clock passes it, the same iteration runs again" end_loop "$T/loops/lr" 60
+check "and ships" test "$(statuses "$T/loops/lr")" = "ratelimit keep"
+check "the limit notification says when the loop goes on" \
+  bash -c 'grep "^limit" "$1" | grep -q "waiting until"' _ "$T/notify-lr.log"
+
+# A reset time that has just gone by is a late reset, not tomorrow's, and a
+# message with no time in it waits RATE_LIMIT_SLEEP as it always did. Both
+# under the watchdog: the defect here is a wait of a day.
+make_repo "$T/app-lr2" "$T/remote-lr2.git"
+S="$T/stub-lr2"; mkdir -p "$S"
+printf '%s\n' say-limit credit commit > "$S/modes"
+reset_text "$S" -600
+make_loop "$T/loops/lr2" "$T/app-lr2" 'WORKTREE=1 MAX_ITER=1 LIMIT_RESET=1 ACTIVE_POLL=1'
+bg_loop "$T/loops/lr2" "$S" "$T/clock-lr2"
+check "a reset ten minutes ago does not wait until tomorrow" end_loop "$T/loops/lr2" 30
+check "it and a credit message both fall back to RATE_LIMIT_SLEEP" \
+  test "$(grep -c 'trying it again in 0s' "$T/loops/lr2/ralph.log")" = 2
+check "and neither is read as a reset time" not grep -q 'waiting until' "$T/loops/lr2/ralph.log"
+check "the iteration still ships" test "$(statuses "$T/loops/lr2")" = "ratelimit ratelimit keep"
+
+# The reviewer holds a commit no gate has judged while it waits, so its wait
+# keeps a ceiling: REVIEW_LIMIT_TRIES * RATE_LIMIT_SLEEP seconds, two hours
+# here. A reset three hours out is past it, and the review is given up at once
+# rather than after the retries.
+make_repo "$T/app-lr3" "$T/remote-lr3.git"
+S="$T/stub-lr3"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+printf '%s\n' LIMIT > "$S/verdicts"
+reset_text "$S" 10800
+make_loop "$T/loops/lr3" "$T/app-lr3" 'WORKTREE=1 REVIEW=1 MAX_ITER=1 LIMIT_RESET=1 ACTIVE_POLL=1' \
+  'RATE_LIMIT_SLEEP=600 REVIEW_LIMIT_TRIES=12' 'VERIFY_CMD="./measure.sh"'
+bg_loop "$T/loops/lr3" "$S" "$T/clock-lr3"
+check "a reviewer limit past the ceiling is given up at once" end_loop "$T/loops/lr3" 30
+check "and the commit falls back to VERIFY_CMD" test "$(statuses "$T/loops/lr3")" = "keep:unreviewed"
+check "with the reset time in the reason" grep -q 'past the REVIEW_LIMIT_TRIES ceiling' "$T/loops/lr3/results.tsv"
+check "the reviewer was asked once" test "$(cat "$S/review_calls")" = 1
+
+# Inside the ceiling — REVIEW_LIMIT_TRIES=0 has none — the reset is waited for.
+make_repo "$T/app-lr4" "$T/remote-lr4.git"
+S="$T/stub-lr4"; mkdir -p "$S"
+printf '%s\n' commit > "$S/modes"
+printf '%s\n' LIMIT ACCEPT > "$S/verdicts"
+reset_text "$S" 7200
+make_loop "$T/loops/lr4" "$T/app-lr4" 'WORKTREE=1 REVIEW=1 MAX_ITER=1 LIMIT_RESET=1 ACTIVE_POLL=1' \
+  'REVIEW_LIMIT_TRIES=0 ITER_TIMEOUT=600'
+bg_loop "$T/loops/lr4" "$S" "$T/clock-lr4"
+check "a reviewer limit inside the ceiling is waited for" \
+  until_log "$T/loops/lr4" "reviewer hit a limit that resets at" 30
+echo 10800 > "$T/clock-lr4"
+check "and the reviewer is asked again after it" end_loop "$T/loops/lr4" 60
+check "whose answer decides" test "$(statuses "$T/loops/lr4")" = "keep"
+
+# ---------------------------------------------------------------------------
+section "HEALTH_CMD: a broken system leads the prompt until it is fixed"
+
+# A regression tests cannot see shows up only in the running system. One took
+# thirty hours and four iterations to be noticed, while the loop worked down
+# its list. The stub's `sicken` commit breaks "production" (a file HEALTH_CMD
+# reads), and `heal` fixes it. DONE_CMD here says "done" whenever production is
+# broken, so the loop only reaches its fourth iteration if DONE_CMD is not asked
+# while HEALTH_CMD fails.
+make_repo "$T/app-hl" "$T/remote-hl.git"
+S="$T/stub-hl"; mkdir -p "$S"
+printf '%s\n' sicken nothing heal nothing > "$S/modes"
+mk_notifier "$T/notify-hl.log" "$T/notify-hl.sh"
+make_loop "$T/loops/hl" "$T/app-hl" 'WORKTREE=1 MAX_ITER=4' \
+  'HEALTH_CMD='\''if [ -f "$STUB_DIR/sick" ]; then echo "watch 42 has been silent for 30h"; exit 1; fi'\''' \
+  'DONE_CMD='\''test -f "$STUB_DIR/sick"'\''' "NOTIFY_CMD=\"$T/notify-hl.sh\""
+run_loop "$T/loops/hl" "$S"
+H="$T/loops/hl"
+check "all four iterations ran" test "$(statuses "$H")" = "keep quiet keep quiet"
+check "DONE_CMD is not asked while the check fails" grep -q 'DONE_CMD not asked' "$H/ralph.log"
+check "a healthy system adds nothing to the prompt" not grep -q 'health check is failing' "$S/prompt.agent.1"
+check "a failing one leads the prompt" grep -q 'health check is failing' "$S/prompt.agent.2"
+check "with the check's own output" grep -q 'watch 42 has been silent' "$S/prompt.agent.2"
+check "and the commits since it last passed, as suspects" grep -q 'stub: sicken' "$S/prompt.agent.2"
+check "ahead of the loop's memory" bash -c \
+  'test "$(grep -n "health check is failing" "$1" | cut -d: -f1)" -lt "$(grep -n "^# PROGRESS.md" "$1" | cut -d: -f1)"' _ "$S/prompt.agent.2"
+check "for as long as it fails" grep -q 'health check is failing' "$S/prompt.agent.3"
+check "and not once it passes" not grep -q 'health check is failing' "$S/prompt.agent.4"
+check "a human hears it break once and recover once" test "$(events "$T/notify-hl.log")" = "health health-clear stopped "
+
+# ---------------------------------------------------------------------------
+section "churn: the files the loop keeps changing are named"
+
+# Twelve iterations in a row once went into one parser, each fixing the gap the
+# last one left. Which files keep changing is counted from git, over the keep
+# rows, and put in front of the agent, the reviewer and the human. Every stub
+# commit appends to work.txt, so it is the file that churns.
+make_repo "$T/app-ch" "$T/remote-ch.git"
+S="$T/stub-ch"; mkdir -p "$S"
+printf '%s\n' commit commit commit commit commit > "$S/modes"
+mk_notifier "$T/notify-ch.log" "$T/notify-ch.sh"
+make_loop "$T/loops/ch" "$T/app-ch" 'WORKTREE=1 REVIEW=1 MAX_ITER=5 CHURN_AT=3 CHURN_WINDOW=8' \
+  "NOTIFY_CMD=\"$T/notify-ch.sh\""
+run_loop "$T/loops/ch" "$S"
+check "every iteration shipped" test "$(statuses "$T/loops/ch")" = "keep keep keep keep keep"
+check "two changes to one file are not churn yet" not grep -q 'same files keep changing' "$S/prompt.agent.3"
+check "the third is, and the agent is told" grep -q 'same files keep changing' "$S/prompt.agent.4"
+check "with the file and its count, from git" grep -q 'work.txt, changed in 3 of them' "$S/prompt.agent.4"
+check "the reviewer is not told before then" not grep -q 'Files this loop keeps changing' "$S/prompt.review.3"
+check "and is told when the commit touches the file again" \
+  bash -c 'grep -q "Files this loop keeps changing" "$1" && grep -q "work.txt, changed in 3" "$1"' _ "$S/prompt.review.4"
+check "a human hears it once, not every iteration it stays" \
+  test "$(grep -c '^churn' "$T/notify-ch.log")" = 1
+
+make_repo "$T/app-ch2" "$T/remote-ch2.git"
+S="$T/stub-ch2"; mkdir -p "$S"
+printf '%s\n' commit commit commit > "$S/modes"
+make_loop "$T/loops/ch2" "$T/app-ch2" 'WORKTREE=1 MAX_ITER=3 CHURN_AT=2' 'CHURN_IGNORE=("work.txt")'
+run_loop "$T/loops/ch2" "$S"
+check "CHURN_IGNORE leaves a file out of the count" not grep -q 'same files keep changing' "$S/prompt.agent.3"
+check "and with CHURN_AT unset nothing is counted at all" not grep -q 'same files keep changing' "$T/stub-hl/prompt.agent.4"
+
+# ---------------------------------------------------------------------------
+section "PUSH=pr: the harness pushes a branch and a human merges the pull request"
+
+# An unattended loop whose credentials can push main is a loop that deploys to
+# production. PUSH=pr pushes ralph/<name> and keeps one pull request open, and
+# nothing pushes main. The gh on PATH is tests/stub/gh, for the whole suite.
+make_repo "$T/app-pr" "$T/remote-pr.git"
+S="$T/stub-pr"; mkdir -p "$S"
+printf '%s\n' commit push-attempt human-main conflict nothing > "$S/modes"
+mk_notifier "$T/notify-pr.log" "$T/notify-pr.sh"
+make_loop "$T/loops/pr" "$T/app-pr" 'WORKTREE=1 PUSH=pr MAX_ITER=5' 'VERIFY_CMD="./measure.sh"' \
+  "NOTIFY_CMD=\"$T/notify-pr.sh\""
+run_loop "$T/loops/pr" "$S" "$T/remote-pr.git"
+R="$T/remote-pr.git"
+check "every commit was kept" test "$(statuses "$T/loops/pr")" = "keep keep keep keep quiet"
+check "the agent is told a human merges its pull request" grep -q 'a human merges its pull request' "$S/prompt.agent.1"
+check "the branch is on origin" git -C "$R" rev-parse -q --verify refs/heads/ralph/pr
+check "and main never got a commit of the loop's" \
+  bash -c '! git -C "$1" log main --format=%s | grep -q "^stub:"' _ "$R"
+check "the agent's own push failed" not test "$(cat "$S/push-attempt.rc")" = 0
+check "one pull request, however many keeps" test "$(cat "$S/gh-created")" = 1
+check "and the human hears about it with its URL" \
+  bash -c 'grep "^pr	" "$1" | grep -q "example.invalid/pull/1"' _ "$T/notify-pr.log"
+check "a human's push to main is rebased under the branch" \
+  bash -c 'git -C "$1" log ralph/pr --format=%s | grep -q "human: add human.txt"' _ "$R"
+check "a conflicting one drops nothing: the commit is on the branch" \
+  bash -c 'git -C "$1" log ralph/pr --format=%s | grep -q "stub: conflicting"' _ "$R"
+check "and no drop row is written" not grep -q 'drop:' "$T/loops/pr/results.tsv"
+check "the human hears about the conflict once, not every sync" \
+  test "$(grep -c '^pr-blocked' "$T/notify-pr.log")" = 1
+check "ralph review says where the work goes" \
+  bash -c 'RALPH_HOME="$1/loops" "$2" review pr | grep -q "pull request into main"' _ "$T" "$ROOT/ralph"
+
+# A squash merge puts the loop's changes on main as one new commit and GitHub
+# deletes the branch; a plain rebase would replay every merged commit onto work
+# that already holds them, and conflict. Then a human pushes onto the branch,
+# and the loop must not overwrite it.
+make_repo "$T/app-pr2" "$T/remote-pr2.git"
+S="$T/stub-pr2"; mkdir -p "$S"
+printf '%s\n' commit commit squash foreign > "$S/modes"
+mk_notifier "$T/notify-pr2.log" "$T/notify-pr2.sh"
+make_loop "$T/loops/pr2" "$T/app-pr2" 'WORKTREE=1 PUSH=pr MAX_ITER=4' 'VERIFY_CMD="./measure.sh"' \
+  "NOTIFY_CMD=\"$T/notify-pr2.sh\""
+run_loop "$T/loops/pr2" "$S" "$T/remote-pr2.git"
+R="$T/remote-pr2.git"
+check "every commit was kept" test "$(statuses "$T/loops/pr2")" = "keep keep keep keep"
+check "after a squash merge only the later commit is replayed" \
+  bash -c 'l="$(git -C "$1" log ralph/pr2 --format=%s)"; printf "%s\n" "$l" | grep -q "human: squash-merge" &&
+           printf "%s\n" "$l" | grep -q "agent call 3" && ! printf "%s\n" "$l" | grep -q "agent call 1"' _ "$R"
+check "onto a branch GitHub deleted, and a new pull request is opened" test "$(cat "$S/gh-created")" = 2
+check "a commit someone else pushed to the branch is not overwritten" \
+  test "$(git -C "$R" rev-parse ralph/pr2)" = "$(cat "$S/foreign.sha")"
+check "the loop's own commit stays local" \
+  bash -c 'git -C "$1" log --format=%s | grep -q "agent call 4"' _ "$T/app-pr2-ralph-pr2"
+check "the human hears about the foreign push, and about nothing else blocking" \
+  bash -c 'test "$(grep -c "^pr-blocked" "$1")" = 1 && grep "^pr-blocked" "$1" | grep -q "did not push"' _ "$T/notify-pr2.log"
+
+# gh missing or logged out: the branch is still pushed.
+make_repo "$T/app-pr3" "$T/remote-pr3.git"
+S="$T/stub-pr3"; mkdir -p "$S"
+touch "$S/gh-auth-fail"
+printf '%s\n' commit > "$S/modes"
+make_loop "$T/loops/pr3" "$T/app-pr3" 'WORKTREE=1 PUSH=pr MAX_ITER=1'
+run_loop "$T/loops/pr3" "$S" "$T/remote-pr3.git"
+check "without a logged-in gh the log says to open it by hand" \
+  grep -q 'open its pull request by hand' "$T/loops/pr3/ralph.log"
+check "the branch is pushed anyway" git -C "$T/remote-pr3.git" rev-parse -q --verify refs/heads/ralph/pr3
+check "and no pull request is attempted" not grep -q 'pr create' "$S/gh.calls"
+
+# ---------------------------------------------------------------------------
 echo
 if [ "$fails" -eq 0 ]; then
   printf '\033[32mall tests passed\033[0m\n'

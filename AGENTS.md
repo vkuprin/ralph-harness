@@ -13,7 +13,7 @@ short on purpose.
 
 ## Before you commit
 
-    shellcheck ralph ralph.sh hooks/steer.sh tests/run.sh tests/stub/claude
+    shellcheck ralph ralph.sh hooks/steer.sh tests/run.sh tests/stub/claude tests/stub/gh
     tests/run.sh
     RALPH_BASH=/bin/bash tests/run.sh    # macOS: the loop must run on bash 3.2
 
@@ -182,4 +182,17 @@ process above the trap, as the two strangers are, or wait until `ps` can see it
   about without its author knowing any of this. The refusals above the
   `config.sh` source cannot notify at all: the setting is in the file they
   could not read.
+- With `PUSH=pr`, sync never discards a kept commit. `sync_once` may drop one
+  iteration's unpushed work on a conflict or a failed re-verify; `sync_pr` holds
+  everything since the last merge, so it leaves the branch on its old base and
+  tells the human (`pr-blocked`) instead. Its push is leased on the exact commit
+  the harness last pushed, or on none, so a commit a human pushed to
+  `ralph/<name>` is never overwritten. Reusing `sync_once`'s drop path here
+  looks like less code and is the bug.
+- A reset time read from a limit message never lengthens the reviewer's wait.
+  With `LIMIT_RESET=1` the ceiling is `REVIEW_LIMIT_TRIES × RATE_LIMIT_SLEEP`
+  seconds, the same bound the retries always added up to; a reset past it gives
+  up at once. A reset time just gone by is a late reset and falls back to
+  `RATE_LIMIT_SLEEP`; rolling it forward to tomorrow waits a day for a limit
+  that lifts in minutes.
 - Defaults keep a loop written for an older version behaving the same.

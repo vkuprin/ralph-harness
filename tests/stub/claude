@@ -57,7 +57,10 @@ case " $* " in
     printf '%s\n' "$@" > "$d/argv.review.$n"
     cat > "$d/prompt.review.$n"
     v="$(pop verdicts ACCEPT)"
-    if [ "$v" = LIMIT ]; then echo "You've hit your limit · resets 3am"; exit 1; fi
+    if [ "$v" = LIMIT ]; then
+      if [ -f "$d/limit-text" ]; then cat "$d/limit-text"; else echo "You've hit your limit · resets 3am"; fi
+      exit 1
+    fi
     echo "Read the diff."
     echo "VERDICT: $v"
     exit 0
@@ -75,6 +78,16 @@ commit() {
   echo "$1 $n" >> work.txt
   git add -A
   git commit -qm "stub: $1 (agent call $n)"
+}
+
+# human <command...>: run it in a fresh clone of the remote, as a human
+# somewhere else would, without the push block the harness gave the agent.
+human() {
+  (
+    unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+    [ -d "$d/human-clone" ] || git clone -q "$STUB_REMOTE" "$d/human-clone" || exit 1
+    cd "$d/human-clone" && git fetch -q origin && git checkout -q -B main origin/main && "$@"
+  ) >/dev/null 2>&1
 }
 
 # nap <seconds>: sleep as a child and record its PID, so a test can ask whether
@@ -97,6 +110,11 @@ case "$mode" in
                 touch BAD; commit cheat; printf '#!/bin/sh\nexit 0\n' > measure.sh ;;
   sleep)        nap 999 ;;
   limit)        echo "You've hit your limit · resets 3am (Europe/Berlin)"; exit 1 ;;
+  say-limit)    # a limit whose text the test wrote, reset time and all
+                cat "$d/limit-text"; exit 1 ;;
+  sicken)       # a commit that breaks production: HEALTH_CMD reads $d/sick
+                touch "$d/sick"; commit sicken ;;
+  heal)         rm -f "$d/sick"; commit heal ;;
   fail)         echo "boom: something broke"; exit 1 ;;
   credit)       echo "Credit balance is too low"; exit 1 ;;
   weekly)       echo "Weekly limit reached · resets Mon 9am"; exit 1 ;;
@@ -187,6 +205,26 @@ case "$mode" in
                   && git remote add origin "$d/other.git" \
                   && git push -q origin main ) >/dev/null 2>&1
                 echo "$?" > "$d/push-other.rc" ;;
+  human-main)   # a human pushes an unrelated file to main meanwhile
+                human sh -c 'echo human > human.txt && git add human.txt && git commit -qm "human: add human.txt" && git push -q origin HEAD:main'
+                commit work ;;
+  squash)       # a human squash-merges the loop's branch into main, and the
+                # host deletes the branch, the way GitHub does after a merge;
+                # gh then reports the merged head
+                b="$(git rev-parse --abbrev-ref HEAD)"
+                # shellcheck disable=SC2016  # $0 and $1 belong to the inner sh
+                human sh -c 'git fetch -q origin "$1" && git rev-parse FETCH_HEAD > "$0/gh-merged" \
+                  && git merge -q --squash FETCH_HEAD >/dev/null && git commit -qm "human: squash-merge $1" \
+                  && git push -q origin HEAD:main && git push -q origin --delete "$1"' "$d" "$b"
+                rm -f "$d/gh-open"
+                commit work ;;
+  foreign)      # a human pushes a commit of their own onto the loop's branch
+                b="$(git rev-parse --abbrev-ref HEAD)"
+                # shellcheck disable=SC2016  # $0 and $1 belong to the inner sh
+                human sh -c 'git fetch -q origin "$1" && git checkout -q -B mine FETCH_HEAD \
+                  && echo human > on-branch.txt && git add on-branch.txt && git commit -qm "human: on $1" \
+                  && git push -q origin "HEAD:refs/heads/$1" && git rev-parse HEAD > "$0/foreign.sha"' "$d" "$b"
+                commit work ;;
   conflict)     # a human pushes to main meanwhile, rewriting the same file
                 (
                   unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0

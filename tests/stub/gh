@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Stand-in for the GitHub CLI, driven by files in $STUB_DIR, so PUSH=pr is
+# tested without the network. It is on PATH for the whole suite, which also
+# means nothing in the suite can ever reach the real gh. Every call is logged
+# to $STUB_DIR/gh.calls, one line each.
+#
+#   gh-auth-fail  present: `gh auth status` fails, as a gh nobody logged in does
+#   gh-open       the URL of the open pull request; `pr create` writes it
+#   gh-merged     the head sha of the last merged pull request
+
+set -u
+d="${STUB_DIR:?STUB_DIR not set}"
+printf '%s\n' "$*" >> "$d/gh.calls"
+
+case " $* " in
+  " auth status ")
+    [ -f "$d/gh-auth-fail" ] && { echo "You are not logged into any GitHub hosts." >&2; exit 1; }
+    echo "Logged in to github.com as stub"
+    ;;
+  *" pr list "*"--state open"*)   cat "$d/gh-open" 2>/dev/null || true ;;
+  *" pr list "*"--state merged"*) cat "$d/gh-merged" 2>/dev/null || true ;;
+  " pr create "*)
+    n=$(( $(cat "$d/gh-created" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$d/gh-created"
+    echo "https://example.invalid/pull/$n" | tee "$d/gh-open"
+    ;;
+  *) echo "gh stub: unhandled: $*" >&2; exit 2 ;;
+esac

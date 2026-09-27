@@ -136,7 +136,25 @@ DENY=()
 # The reviewer's model. Empty means MODEL. A cheaper one saves the plan limit
 # the loop shares with its human.
 REVIEW_MODEL=""
+# A check of the running system, owned by the human: run in the work directory
+# before every iteration. While it fails, its output leads the prompt and the
+# agent is told to fix that first. VERIFY_CMD judges a commit before it ships;
+# this is what notices, afterwards, that something shipped broke production.
+HEALTH_CMD=""
+HEALTH_TIMEOUT=300
+# Files that CHURN_AT or more of the last CHURN_WINDOW kept iterations changed
+# are named to the agent, the reviewer and the human. Fix after fix in one place
+# is how a loop spends a dozen iterations each closing the gap the last one
+# left. 0 is off. CHURN_IGNORE holds pathspecs that change with every commit
+# by design, such as a changelog.
+CHURN_AT=0
+CHURN_WINDOW=8
+CHURN_IGNORE=()
 RATE_LIMIT_SLEEP=1800
+# 1: when a limit's message says when it resets ("resets 3am (Europe/Berlin)"),
+# wait until then rather than asking again every RATE_LIMIT_SLEEP. A message
+# that names no time readable here still waits RATE_LIMIT_SLEEP.
+LIMIT_RESET=0
 ERROR_SLEEP=300
 ERROR_STOP=0
 PROGRESS_KEEP=8
@@ -374,7 +392,8 @@ nap() {
 # environment and never in its text, so a message holding a quote, a newline or
 # a $(...) cannot become part of the command that runs — the hazard AGENTS.md
 # records for sed, awk and config.sh, one tool further out. RALPH_EVENT is one
-# of: stopped, refused, stuck, limit, limit-clear, decision.
+# of: stopped, refused, stuck, limit, limit-clear, decision, health,
+# health-clear, churn, pr, pr-blocked.
 #
 # A notifier is not a gate. It is bounded by NOTIFY_TIMEOUT and its exit status
 # is dropped, because an unreachable host must not be able to hold up, or stop,
@@ -615,10 +634,198 @@ wait_for_active_hours() {
   log "inside ACTIVE_HOURS=$ACTIVE_HOURS — going on"
 }
 
+# reset_at <message>: the moment the limit in <message> resets, from the text
+# claude prints — "hit your session limit · resets 9:10am (Europe/Paris)",
+# "resets Mon 9am", "resets Oct 3, 2am" — plus a two-minute margin, since the
+# CLI rounds the time. Sets RESET_EPOCH and RESET_AT (local, for people), both
+# empty when the text names no time this can read. The message is claude's
+# output, so it reaches perl through the environment and never the code. "Now"
+# is `date +%s`, like every other clock reading here, and not perl's own time().
+#
+# A reset time that has just passed, with the limit still on, is a late reset
+# and not tomorrow's: read at 3:05, "resets 3am" rolled forward would wait a
+# whole day for a limit that lifts in minutes. Anything within the hour before
+# now is therefore unknown, and so is anything more than eight days out.
+RESET_EPOCH=""
+RESET_AT=""
+reset_at() {
+  RESET_EPOCH=""
+  RESET_AT=""
+  [ -n "$PERL" ] || return 0
+  local now out
+  now=$(date +%s)
+  # shellcheck disable=SC2016  # perl's variables, not the shell's
+  out="$(RALPH_LIMIT_MSG="$1" "$PERL" -MPOSIX -e '
+    my $now = $ARGV[0];
+    my @r = (($ENV{RALPH_LIMIT_MSG} // "") =~ /\bresets\s+([^\n]{0,60})/gi) or exit 0;
+    $r[-1] =~ /^(?:(sun|mon|tue|wed|thu|fri|sat)[a-z]*,?\s+)?(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d\d))?\s*([ap]m)\b(?:\s*\(([A-Za-z0-9_+\/-]+)\))?/i or exit 0;
+    my ($wd, $mon, $mday, $h, $min, $ap, $zone) = (lc($1 // ""), lc($2 // ""), $3, $4, $5 // 0, lc $6, $7);
+    exit 0 if $h < 1 || $h > 12 || $min > 59;
+    $h = $h % 12 + ($ap eq "pm" ? 12 : 0);
+    my $tz = $ENV{TZ};
+    if (defined $zone && $zone !~ /\.\./ && -f "/usr/share/zoneinfo/$zone") { $ENV{TZ} = $zone; tzset() }
+    my @n = localtime($now);
+    my @c;
+    if ($mon ne "") {
+      my %m; @m{qw(jan feb mar apr may jun jul aug sep oct nov dec)} = 0 .. 11;
+      @c = map { mktime(0, $min, $h, $mday, $m{$mon}, $n[5] + $_, 0, 0, -1) } -1 .. 1;
+    } else {
+      my $d = 0;
+      if ($wd ne "") {
+        my %w; @w{qw(sun mon tue wed thu fri sat)} = 0 .. 6;
+        $d = ($w{$wd} - $n[6]) % 7;
+      }
+      my $step = $wd ne "" ? 7 : 1;
+      @c = map { mktime(0, $min, $h, $n[3] + $d + $_ * $step, $n[4], $n[5], 0, 0, -1) } -1 .. 1;
+    }
+    @c = grep { defined } @c;
+    exit 0 if grep { $_ <= $now && $_ > $now - 3600 } @c;
+    my ($t) = sort { $a <=> $b } grep { $_ > $now } @c;
+    exit 0 if !defined $t || $t - $now > 8 * 86400;
+    $t += 120;
+    if (defined $tz) { $ENV{TZ} = $tz } else { delete $ENV{TZ} }
+    tzset();
+    print $t, "\t", strftime("%Y-%m-%d %H:%M", localtime $t);
+  ' "$now" 2>/dev/null)" || out=""
+  case "$out" in [0-9]*"$(printf '\t')"*) ;; *) return 0 ;; esac
+  RESET_EPOCH="${out%%$'\t'*}"
+  RESET_AT="${out#*$'\t'}"
+  case "$RESET_EPOCH" in *[!0-9]*) RESET_EPOCH=""; RESET_AT="" ;; esac
+}
+
+# wait_until <epoch>: nap until the clock reads <epoch>, at most ACTIVE_POLL
+# seconds at a time, so a machine that slept through part of the wait wakes to
+# the right answer and the TERM trap still ends it at once.
+wait_until() {
+  local left
+  while :; do
+    left=$(( $1 - $(date +%s) ))
+    [ "$left" -gt 0 ] || return 0
+    [ "$left" -gt "$ACTIVE_POLL" ] && left=$ACTIVE_POLL
+    nap "$left"
+  done
+}
+
+# health: run HEALTH_CMD, before every iteration. Returns 1 while it fails.
+# A regression that tests cannot see — a watch that stopped notifying, a job
+# that stopped running — shows up only in the running system, and a loop left
+# to itself carries on with its list while production is broken: one was
+# caught thirty hours and four iterations after the commit that caused it. So
+# while this fails, it leads the prompt (build_prompt), DONE_CMD is not asked,
+# and a human hears about it once on the way down and once on the way up.
+#
+# HEAD is remembered whenever it passes, in a file so a restart keeps it: the
+# commits since then are the first suspects, and the prompt names them.
+HEALTH_STATE=""
+HEALTH_WHY=""
+HEALTH_SINCE=""
+HEALTH_OK="$DIR/.health-ok"
+health() {
+  [ -n "$HEALTH_CMD" ] || return 0
+  local secs="$HEALTH_TIMEOUT"
+  [ "$secs" -ge 1 ] 2>/dev/null || secs=300
+  : > "$DIR/health.out"
+  run_bounded "$secs" /dev/null "$DIR/health.out" \
+    env "RALPH_DIR=$DIR" "RALPH_LOOP=$NAME" bash -c "$HEALTH_CMD"
+  cat "$DIR/health.out" >> "$LOG"
+  if [ "$TIMED_OUT" = 0 ] && [ "$RC" -eq 0 ]; then
+    git rev-parse HEAD > "$HEALTH_OK" 2>/dev/null
+    if [ "$HEALTH_STATE" = fail ]; then
+      log "health: HEALTH_CMD passes again"
+      notify health-clear "HEALTH_CMD passes again; it had failed since $HEALTH_SINCE"
+    fi
+    HEALTH_STATE=ok
+    HEALTH_SINCE=""
+    return 0
+  fi
+  if [ "$TIMED_OUT" = 1 ]; then HEALTH_WHY="timed out after ${secs}s"; else HEALTH_WHY="exited $RC"; fi
+  if [ "$HEALTH_STATE" != fail ]; then
+    HEALTH_SINCE="$(date '+%Y-%m-%d %H:%M')"
+    log "health: HEALTH_CMD $HEALTH_WHY — every prompt leads with it until it passes"
+    notify health "HEALTH_CMD $HEALTH_WHY: $(grep -v '^[[:space:]]*$' "$DIR/health.out" | tail -n 1 | cut -c1-300)"
+  fi
+  HEALTH_STATE=fail
+  return 1
+}
+
+# The prompt section for a failing HEALTH_CMD. Called inside build_prompt's
+# redirect, so it prints and never logs.
+health_section() {
+  [ "$HEALTH_STATE" = fail ] || return 0
+  local ok suspects=""
+  printf '\n---\n\n# Harness: the health check is failing — this comes first\n\n'
+  printf "HEALTH_CMD, the human's own check of the running system, %s, and has failed since %s.\n" \
+    "$HEALTH_WHY" "$HEALTH_SINCE"
+  ok="$(cat "$HEALTH_OK" 2>/dev/null)"
+  if [ -n "$ok" ] && git cat-file -e "$ok^{commit}" 2>/dev/null; then
+    suspects="$(git log --format='%h %s' "$ok..HEAD" 2>/dev/null | cut -c1-200 | head -n 10)"
+    if [ -n "$suspects" ]; then
+      printf '\nCommits since it last passed, the first suspects:\n\n%s\n' "$suspects"
+    else
+      printf '\nNo commit has landed since it last passed, so the cause is outside this branch.\n'
+    fi
+  fi
+  # shellcheck disable=SC2016  # the backticks are markdown, not a command
+  printf '\nIts last lines:\n\n```\n%s\n```\n' "$(tail -n 40 "$DIR/health.out" | tail -c 4000)"
+  printf '\nFind and fix the cause before any other work. If commits of this loop caused it, fix or revert them. If the cause is outside the code (an outage, a credential, a third party), write it under "Needs a decision" in PROGRESS.md and change nothing.\n'
+}
+
+# churn_scan: the files that at least CHURN_AT of the last CHURN_WINDOW kept
+# iterations changed, from git and the keep rows — the same ground truth
+# shipped_recently reads, not what the agents wrote about themselves. Sets
+# CHURN_TEXT to "<count>\t<path>" lines, most changed first, and CHURN_KEPT to
+# how many kept iterations were counted. A human hears about a file the first
+# time it turns up, not every iteration it stays: .churn-seen is the set as of
+# the last scan, so one that cools down and comes back is news again.
+CHURN_TEXT=""
+CHURN_KEPT=0
+CHURN_SEEN="$DIR/.churn-seen"
+churn_scan() {
+  CHURN_TEXT=""
+  CHURN_KEPT=0
+  [ "$CHURN_AT" -gt 0 ] 2>/dev/null || return 0
+  [ -f "$RESULTS" ] || return 0
+  local win="$CHURN_WINDOW" p files added
+  local ex=()
+  [ "$win" -ge 1 ] 2>/dev/null || win=8
+  for p in ${CHURN_IGNORE[@]+"${CHURN_IGNORE[@]}"}; do ex+=(":(exclude)$p"); done
+  tail -n +2 "$RESULTS" \
+    | awk -F'\t' -v w="$win" '$5 ~ /^keep/ {r[n++] = $3 " " $4}
+        END {for (i = (n > w ? n - w : 0); i < n; i++) print r[i]}' > "$DIR/.churn-rows"
+  CHURN_KEPT=$(wc -l < "$DIR/.churn-rows" | tr -d ' ')
+  CHURN_TEXT="$(while read -r b a; do
+        git diff --name-only "$b" "$a" -- . ${ex[@]+"${ex[@]}"} 2>/dev/null | sort -u
+      done < "$DIR/.churn-rows" \
+    | sort | uniq -c \
+    | awk -v at="$CHURN_AT" '{c = $1; sub(/^ *[0-9]+ /, "")} c >= at {printf "%s\t%s\n", c, $0}' \
+    | sort -t "$(printf '\t')" -k1,1 -rn | head -n 10)"
+  rm -f "$DIR/.churn-rows"
+  files="$(printf '%s\n' "$CHURN_TEXT" | cut -f2- | grep -v '^$')"
+  if [ -f "$CHURN_SEEN" ] && [ -s "$CHURN_SEEN" ]; then
+    added="$(printf '%s\n' "$files" | grep -v '^$' | grep -Fxv -f "$CHURN_SEEN")"
+  else
+    added="$files"
+  fi
+  if [ -n "$files" ]; then printf '%s\n' "$files"; fi > "$CHURN_SEEN"
+  [ -n "$added" ] || return 0
+  added="$(printf '%s' "$added" | tr '\n' ',' | sed 's/,/, /g')"
+  log "churn: $added changed in at least $CHURN_AT of the last $CHURN_KEPT kept iterations"
+  notify churn "$added changed in at least $CHURN_AT of the last $CHURN_KEPT kept iterations of this loop"
+}
+
+churn_section() {
+  [ -n "$CHURN_TEXT" ] || return 0
+  printf '\n---\n\n# Harness: the same files keep changing\n\n'
+  printf 'Counted from git over the last %s kept iterations of this loop:\n\n' "$CHURN_KEPT"
+  printf '%s\n' "$CHURN_TEXT" | awk -F'\t' '{printf "- %s, changed in %s of them\n", $2, $1}'
+  printf '\nFix after fix in one place usually means each fix closes the gap the last one left. Before you touch these again, name the class of defect and close it in one commit, with a test that covers the whole class; or write under "Needs a decision" in PROGRESS.md why it keeps breaking, and take work elsewhere.\n'
+}
+
 build_prompt() {
   INJECT_NOTE=""
   {
     cat "$DIR/PROMPT.md"
+    health_section
     printf '\n---\n\n# PROGRESS.md (your memory of previous iterations — read this before doing anything)\n\n'
     inject_progress
     if [ -s "$DIR/PROGRESS-archive.md" ]; then
@@ -632,12 +839,15 @@ build_prompt() {
       tail -n +2 "$RESULTS" | tail -n 10 | cut -f1-7
     fi
     shipped_recently
+    churn_section
 
     if [ "$WORKTREE" = 1 ]; then
       printf '\n---\n\n# Where you work\n\n'
       printf 'Your working copy is %s, on branch ralph/%s. Never touch %s.\n' "$WORK" "$NAME" "$REPO"
       if [ "$PUSH" = 1 ]; then
         printf 'Commit your work, but do not push: the harness checks each commit and pushes the ones it keeps. A rejected commit is reset, and the verdict shows up above next time.\n'
+      elif [ "$PUSH" = pr ]; then
+        printf 'Commit your work, but do not push: the harness checks each commit, pushes the ones it keeps to ralph/%s, and a human merges its pull request into %s. A rejected commit is reset, and the verdict shows up above next time.\n' "$NAME" "$BRANCH"
       else
         printf 'Commit your work, but do not push. A human merges ralph/%s.\n' "$NAME"
       fi
@@ -661,6 +871,13 @@ build_prompt() {
 # ------------------------------------------------------------ git helpers
 # Everything below that can discard commits runs only in the harness-owned
 # worktree, never in your own checkout.
+
+# The harness pushes kept commits itself: straight to origin/$BRANCH (PUSH=1),
+# or to ralph/<name> for a pull request a human merges (PUSH=pr). Both need the
+# worktree, and in both the agent's own push to this repository is blocked.
+harness_pushes() {
+  [ "$WORKTREE" = 1 ] && { [ "$PUSH" = 1 ] || [ "$PUSH" = pr ]; }
+}
 
 clean_tree() {
   local gitdir
@@ -773,6 +990,9 @@ REVIEW_STATUS=""
 # Set only when the review was abandoned at the REVIEW_LIMIT_TRIES ceiling, so
 # the recorded reason says a limit rather than blaming the reviewer's exit code.
 REVIEW_LIMIT_TRIED=0
+# The reset time, when the review was given up because the limit lifts only
+# past the ceiling.
+REVIEW_LIMIT_PAST=""
 review() {
   local before="$1" job steering
   REVIEW_LIMIT_TRIED=0
@@ -810,6 +1030,32 @@ contradicts it, or one that claims the job is done while this is not met. A step
 that is merely not the finished result yet is not a reason to reject.
 "
   fi
+  # The files of this diff that the loop keeps changing (churn_scan). The
+  # reviewer is the gate that can say no to one more patch in the same place.
+  local hot churn_block=""
+  if [ -n "$CHURN_TEXT" ]; then
+    git diff --name-only "$before" HEAD > "$DIR/.review-files" 2>/dev/null
+    hot="$(printf '%s\n' "$CHURN_TEXT" \
+      | awk -F'\t' -v k="$CHURN_KEPT" 'NR == FNR {f[$0] = 1; next}
+          ($2 in f) {printf "- %s, changed in %s of the last %s kept iterations\n", $2, $1, k}' \
+          "$DIR/.review-files" -)"
+    rm -f "$DIR/.review-files"
+    if [ -n "$hot" ]; then
+      churn_block="
+## Files this loop keeps changing
+
+This commit changes files that earlier kept commits of this loop changed again
+and again (counted from git):
+
+$hot
+
+Hold it to a higher bar. Reject one more fix for one more instance of a gap an
+earlier commit in the same place left open, unless the commit says why the
+earlier fixes missed it and closes the whole class, with a test for the class.
+Accept a commit that does close the class.
+"
+    fi
+  fi
   # Steering handed to the agent mid-iteration by hooks/steer.sh.
   if [ -s "$DIR/STEER.md.delivered" ]; then
     steering="${steering:+$steering
@@ -826,7 +1072,7 @@ $job
 ## Steering from the human (outranks the job)
 
 ${steering:-(none)}
-$done_block
+$done_block$churn_block
 ## What to review
 
 The commits are in $DIR/review.diff: a stat, then the full diff, capped at 200 KB.
@@ -845,7 +1091,8 @@ or
 
 VERDICT: REJECT: <one sentence saying why>
 EOF
-  local verdict tries=0
+  local verdict tries=0 waited=0 secs
+  REVIEW_LIMIT_PAST=""
   local rargs=(-p --restricted --tools "Read,Grep,Glob" --strict-mcp-config
     --permission-prompts none --add-dir "$DIR" --model "${REVIEW_MODEL:-$MODEL}")
   while :; do
@@ -878,6 +1125,28 @@ EOF
     if [ -z "$verdict" ] && [ "$RC" -ne 0 ] && [ "$TIMED_OUT" = 0 ] \
       && tail -n 20 "$DIR/review.out" | grep -Eqi "$RATE_LIMIT_RE"; then
       tries=$((tries + 1))
+      # A reset time the message names replaces the retries, not the ceiling:
+      # the ceiling is REVIEW_LIMIT_TRIES * RATE_LIMIT_SLEEP seconds, the six
+      # hours the retries always added up to, so a session limit is still
+      # waited out and a weekly one is given up on — now at once, rather than
+      # after six hours of asking.
+      RESET_EPOCH=""
+      [ "$LIMIT_RESET" = 1 ] \
+        && reset_at "$(tail -n 20 "$DIR/review.out" | grep -Ei "$RATE_LIMIT_RE" | tail -n 1)"
+      if [ -n "$RESET_EPOCH" ]; then
+        secs=$(( RESET_EPOCH - $(date +%s) ))
+        [ "$secs" -gt 0 ] || secs=0
+        if [ "$REVIEW_LIMIT_TRIES" -gt 0 ] 2>/dev/null \
+          && [ $((waited + secs)) -gt $((REVIEW_LIMIT_TRIES * RATE_LIMIT_SLEEP)) ]; then
+          REVIEW_LIMIT_TRIED=$tries
+          REVIEW_LIMIT_PAST="$RESET_AT"
+          break
+        fi
+        log "reviewer hit a limit that resets at $RESET_AT — waiting until then (try $tries)"
+        wait_until "$RESET_EPOCH"
+        waited=$((waited + secs))
+        continue
+      fi
       if [ "$REVIEW_LIMIT_TRIES" -gt 0 ] 2>/dev/null \
         && [ "$tries" -ge "$REVIEW_LIMIT_TRIES" ]; then
         REVIEW_LIMIT_TRIED=$tries
@@ -885,6 +1154,7 @@ EOF
       fi
       log "reviewer hit a limit — asking again in ${RATE_LIMIT_SLEEP}s (try $tries of ${REVIEW_LIMIT_TRIES})"
       nap "$RATE_LIMIT_SLEEP"
+      waited=$((waited + RATE_LIMIT_SLEEP))
       continue
     fi
     break
@@ -899,7 +1169,9 @@ EOF
       ;;
     *)
       REVIEW_STATUS=unavailable
-      if [ "$REVIEW_LIMIT_TRIED" -gt 0 ]; then
+      if [ -n "$REVIEW_LIMIT_PAST" ]; then
+        GATE_REASON="reviewer's limit resets at $REVIEW_LIMIT_PAST, past the REVIEW_LIMIT_TRIES ceiling"
+      elif [ "$REVIEW_LIMIT_TRIED" -gt 0 ]; then
         GATE_REASON="reviewer hit a limit; gave up at try $REVIEW_LIMIT_TRIED of $REVIEW_LIMIT_TRIES"
       else
         GATE_REASON="reviewer gave no verdict (exit $RC, timed out $TIMED_OUT)"
@@ -936,7 +1208,7 @@ drop_unjudged() {
 # is retried, and work done while a human pushed to the same branch is rebased
 # and verified again before it goes out.
 sync() {
-  sync_once
+  if [ "$PUSH" = pr ]; then sync_pr; else sync_once; fi
   mark_gated
 }
 
@@ -978,6 +1250,175 @@ sync_once() {
   fi
 }
 
+# ------------------------------------------------------------- PUSH=pr
+# The harness pushes ralph/<name> to origin and keeps one pull request open into
+# $BRANCH; a human merges it. Nothing here pushes $BRANCH, so the credentials
+# the loop runs with need only reach ralph/* — a deploy key that cannot push
+# main, behind branch protection, is the point of the mode.
+#
+# Unlike sync_once, this never throws a kept commit away. There the unpushed
+# work is one iteration's at most; here it is everything since the last merge,
+# and the human reading the pull request is the last gate anyway. A rebase that
+# conflicts, or passes and then fails VERIFY_CMD, leaves the branch on its old
+# base and tells the human once; the pull request shows the conflict.
+
+GH_OK=0
+PR_PUSHED="$DIR/.pr-pushed"
+PR_BLOCKED="$DIR/.pr-blocked"
+
+# pr_blocked <key> <message>: said once per key — the upstream or remote sha it
+# is about — because until a human acts the same block is news again before
+# every iteration.
+pr_blocked() {
+  [ "$(cat "$PR_BLOCKED" 2>/dev/null)" = "$1" ] && return 0
+  printf '%s\n' "$1" > "$PR_BLOCKED"
+  log "sync: $2"
+  notify pr-blocked "$2"
+}
+
+# gh_run <file> <seconds> <gh args...>: gh, bounded, with its output in <file>.
+# 0 when it answered. Never inside $(...), like every run_bounded.
+gh_run() {
+  local out="$1" secs="$2"
+  shift 2
+  : > "$out"
+  run_bounded "$secs" /dev/null "$out" gh "$@"
+  [ "$RC" -eq 0 ] && [ "$TIMED_OUT" = 0 ]
+}
+
+# The head commit of the newest merged pull request from ralph/<name>, or
+# nothing. A squash or rebase merge puts the changes on $BRANCH as new commits,
+# so a plain rebase replays every one of them onto work that already holds
+# them; knowing where the merged head was lets the rebase replay only what came
+# after it.
+PR_MERGED=""
+pr_merged_head() {
+  PR_MERGED=""
+  [ "$GH_OK" = 1 ] || return 0
+  gh_run "$DIR/.gh.out" 60 pr list --head "ralph/$NAME" --base "$BRANCH" --state merged \
+    --limit 1 --json headRefOid --jq '.[0].headRefOid // empty' || return 0
+  PR_MERGED="$(tr -d '[:space:]' < "$DIR/.gh.out")"
+  case "$PR_MERGED" in *[!0-9a-f]*) PR_MERGED="" ;; esac
+}
+
+sync_pr() {
+  local upstream="origin/$BRANCH" head rc
+  clean_tree
+  if ! git fetch -q origin "$BRANCH" >> "$LOG" 2>&1; then
+    log "sync: fetch failed, not pushing this time"
+    return 0
+  fi
+  # Nothing of the loop's own that $BRANCH lacks: merged, or no work yet.
+  if [ -z "$(git rev-list "$upstream..HEAD")" ]; then
+    git reset -q --hard "$upstream"
+    return 0
+  fi
+  if ! git merge-base --is-ancestor "$upstream" HEAD; then
+    head="$(git rev-parse HEAD)"
+    pr_merged_head
+    if [ -n "$PR_MERGED" ] && [ "$PR_MERGED" = "$head" ]; then
+      git reset -q --hard "$upstream"
+      log "sync: the pull request for ralph/$NAME was merged at $head; following $upstream"
+      return 0
+    fi
+    if [ -n "$PR_MERGED" ] && git merge-base --is-ancestor "$PR_MERGED" HEAD 2>/dev/null; then
+      git rebase -q --onto "$upstream" "$PR_MERGED" >> "$LOG" 2>&1
+      rc=$?
+    else
+      git rebase -q "$upstream" >> "$LOG" 2>&1
+      rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+      git rebase --abort >/dev/null 2>&1
+      git reset -q --hard "$head"
+      pr_blocked "conflict $(git rev-parse "$upstream")" \
+        "ralph/$NAME does not rebase onto $upstream without conflicts; kept on its old base, nothing dropped — resolve it in the pull request"
+    elif [ -z "$(git rev-list "$upstream..HEAD")" ]; then
+      log "sync: every commit on ralph/$NAME is already on $upstream; following it"
+      return 0
+    elif ! verify; then
+      git reset -q --hard "$head"
+      pr_blocked "verify $(git rev-parse "$upstream")" \
+        "rebased onto $upstream, ralph/$NAME fails VERIFY_CMD ($GATE_REASON); kept on its old base, nothing dropped"
+    fi
+  fi
+  pr_push
+}
+
+# Push ralph/<name>, overwriting only what this harness pushed there itself. The
+# lease names the exact commit expected on origin (none, when the branch is not
+# there — GitHub deletes it after a merge), so a commit someone else pushed to
+# the branch is never overwritten; the loop then keeps its work local and says
+# so once.
+pr_push() {
+  local ref="refs/heads/ralph/$NAME" head remote
+  head="$(git rev-parse HEAD)"
+  : > "$DIR/.ls-remote"
+  run_bounded 60 /dev/null "$DIR/.ls-remote" git ls-remote origin "$ref"
+  if [ "$RC" -ne 0 ] || [ "$TIMED_OUT" = 1 ]; then
+    log "sync: cannot read ralph/$NAME on origin (exit $RC); not pushing this time"
+    return 0
+  fi
+  # ENVIRON, not -v: the ref holds the loop name, and awk rereads a -v value
+  # as escape sequences.
+  remote="$(RALPH_REF="$ref" awk '$2 == ENVIRON["RALPH_REF"] {print $1}' "$DIR/.ls-remote")"
+  case "$remote" in *[!0-9a-f]*) log "sync: cannot read ralph/$NAME on origin; not pushing this time"; return 0 ;; esac
+  if [ "$remote" = "$head" ]; then
+    pr_ensure
+    return 0
+  fi
+  if [ -n "$remote" ] && [ "$remote" != "$(cat "$PR_PUSHED" 2>/dev/null)" ]; then
+    git fetch -q origin "+$ref:refs/remotes/origin/ralph/$NAME" >> "$LOG" 2>&1
+    if ! git merge-base --is-ancestor "$remote" HEAD 2>/dev/null; then
+      pr_blocked "foreign $remote" \
+        "ralph/$NAME on origin holds commits this loop did not push ($remote); not overwriting them, the loop keeps its work local until a human deletes or resets that branch"
+      return 0
+    fi
+  fi
+  run_bounded 300 /dev/null "$LOG" git push -q "--force-with-lease=$ref:$remote" origin "HEAD:$ref"
+  if [ "$RC" -eq 0 ]; then
+    printf '%s\n' "$head" > "$PR_PUSHED"
+    log "pushed $head to origin ralph/$NAME"
+    pr_ensure
+  else
+    log "sync: push of ralph/$NAME failed (exit $RC); the commits stay local and the next sync retries"
+  fi
+}
+
+# One open pull request from ralph/<name> into $BRANCH, opened when there is
+# none. Retried at every sync until it exists, so a gh that failed once costs
+# nothing but a log line.
+pr_ensure() {
+  [ "$GH_OK" = 1 ] || return 0
+  gh_run "$DIR/.gh.out" 60 pr list --head "ralph/$NAME" --base "$BRANCH" --state open \
+    --limit 1 --json url --jq '.[0].url // empty' || {
+    log "sync: gh pr list failed (exit $RC); asking again next sync"
+    return 0
+  }
+  grep -q '^http' "$DIR/.gh.out" && return 0
+  local gates=""
+  [ -n "$VERIFY_CMD" ] && gates="VERIFY_CMD"
+  [ "$REVIEW" = 1 ] && gates="${gates:+$gates, }a read-only reviewer"
+  [ "${#FROZEN[@]}" -gt 0 ] && gates="${gates:+$gates, }the frozen-file check"
+  # shellcheck disable=SC2016  # the backticks are markdown, not a command
+  {
+    printf 'Commits kept by the ralph loop `%s`. Each one passed %s before it was pushed here.\n\n' \
+      "$NAME" "${gates:-no gate but the commit itself}"
+    printf 'The loop keeps pushing to this branch until the pull request is merged, and rebases it onto `%s` as that moves. ' "$BRANCH"
+    printf 'Merge with a merge commit or a rebase; a squash merge works too, because the harness asks gh which head was merged.\n\n'
+    printf 'Do not push to this branch yourself: the harness never overwrites commits it did not push, and stops pushing until they are gone.\n'
+  } > "$DIR/.pr-body"
+  if gh_run "$DIR/.gh.out" 120 pr create --base "$BRANCH" --head "ralph/$NAME" \
+    --title "ralph: $NAME" --body-file "$DIR/.pr-body"; then
+    local url
+    url="$(grep -Eo 'https?://[^[:space:]]+' "$DIR/.gh.out" | tail -n 1)"
+    log "opened pull request ${url:-(gh printed no URL)} for ralph/$NAME into $BRANCH"
+    notify pr "opened ${url:-a pull request} for ralph/$NAME into $BRANCH"
+  else
+    log "sync: gh pr create failed (exit $RC): $(grep -v '^[[:space:]]*$' "$DIR/.gh.out" | tail -n 1); trying again next sync"
+  fi
+}
+
 # ------------------------------------------------------------------ start
 
 # The config's own two fatals. Same words, same exit code and same log line as
@@ -1005,10 +1446,19 @@ fi
 # PUSH with nowhere to push. Every sync would fetch, fail, and copy git's
 # four-line complaint into the log; over days that is the whole log. Say it
 # once and keep the commits local, which is what PUSH=0 does anyway.
-if [ "$WORKTREE" = 1 ] && [ "$PUSH" = 1 ] \
-  && ! git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
-  log "PUSH=1 but $REPO has no origin remote — keeping commits local, as PUSH=0 does"
+if harness_pushes && ! git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
+  log "PUSH=$PUSH but $REPO has no origin remote — keeping commits local, as PUSH=0 does"
   PUSH=0
+fi
+
+# PUSH=pr opens the pull request through gh. Without a gh that is logged in the
+# branch is still pushed, and the human opens the pull request.
+if harness_pushes && [ "$PUSH" = pr ]; then
+  if command -v gh >/dev/null 2>&1 && gh_run "$DIR/.gh.out" 30 auth status; then
+    GH_OK=1
+  else
+    log "PUSH=pr: gh is missing or not logged in — ralph/$NAME is still pushed to origin; open its pull request by hand"
+  fi
 fi
 
 if [ "$WORKTREE" = 1 ]; then
@@ -1024,7 +1474,7 @@ if [ "$LIVE_STEER" = 1 ]; then
     "$HARNESS/hooks/steer.sh" > "$DIR/.agent-settings.json"
 fi
 
-log "ralph start: loop=$NAME repo=$REPO work=$WORK model=$MODEL max_iter=$MAX_ITER quiet_stop=$QUIET_STOP worktree=$WORKTREE push=$PUSH review=$REVIEW verify=${VERIFY_CMD:+yes}"
+log "ralph start: loop=$NAME repo=$REPO work=$WORK model=$MODEL max_iter=$MAX_ITER quiet_stop=$QUIET_STOP worktree=$WORKTREE push=$PUSH review=$REVIEW verify=${VERIFY_CMD:+yes} health=${HEALTH_CMD:+yes} churn_at=$CHURN_AT limit_reset=$LIMIT_RESET"
 [ "$JSON_OK" = 1 ] || log "cost: this perl has no JSON::PP, so claude runs in text mode and no cost is recorded"
 
 quiet=0
@@ -1061,15 +1511,22 @@ while :; do
 
   rotate_log
   if [ "$WORKTREE" = 1 ]; then
-    if [ "$PUSH" = 1 ]; then sync; else clean_tree; fi
+    if harness_pushes; then sync; else clean_tree; fi
   fi
   # The same text already sits in PROMPT.md's Steering section, which this
   # iteration reads; the live file is only for the iteration in flight.
   [ "$LIVE_STEER" = 1 ] && : > "$DIR/STEER.md" && : > "$DIR/STEER.md.delivered"
 
+  # After the sync, so it judges what is about to be worked on, and before
+  # DONE_CMD, because a job is not done while the system it runs is broken.
+  healthy=1
+  health || healthy=0
+
   # After the sync, so a push that failed after the last keep has been retried
   # and nothing DONE_CMD approves can still be dropped by it.
-  if [ -n "$DONE_CMD" ]; then
+  if [ -n "$DONE_CMD" ] && [ "$healthy" = 0 ]; then
+    log "DONE_CMD not asked: HEALTH_CMD is failing"
+  elif [ -n "$DONE_CMD" ]; then
     : > "$DIR/done.out"
     run_bounded 300 /dev/null "$DIR/done.out" \
       env "RALPH_DIR=$DIR" "RALPH_LOOP=$NAME" bash -c "$DONE_CMD"
@@ -1078,8 +1535,12 @@ while :; do
       unpushed=""
       if [ "$WORKTREE" = 1 ] && [ "$PUSH" = 1 ]; then
         unpushed="$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null)"
-        [ "${unpushed:-0}" -gt 0 ] 2>/dev/null || unpushed=""
+      elif [ "$WORKTREE" = 1 ] && [ "$PUSH" = pr ]; then
+        pushed_ref="refs/remotes/origin/ralph/$NAME"
+        git rev-parse -q --verify "$pushed_ref" >/dev/null || pushed_ref="origin/$BRANCH"
+        unpushed="$(git rev-list --count "$pushed_ref..HEAD" 2>/dev/null)"
       fi
+      [ "${unpushed:-0}" -gt 0 ] 2>/dev/null || unpushed=""
       stop_why="DONE_CMD says the job is done${unpushed:+ — $unpushed kept commits are still not pushed}"
       log "stopping: $stop_why"
       break
@@ -1091,6 +1552,7 @@ while :; do
   started=$(date +%s)
   log "=== iteration $iter (HEAD $before) ==="
 
+  churn_scan
   # PROMPT.md is re-read every iteration, so editing it (or `ralph steer`) redirects
   # the loop without restarting it.
   build_prompt
@@ -1105,7 +1567,7 @@ while :; do
   done
 
   envs=("RALPH_STEER_FILE=$DIR/STEER.md")
-  if [ "$WORKTREE" = 1 ] && [ "$PUSH" = 1 ]; then
+  if harness_pushes; then
     # The agent's own push to this repository fails; only the harness pushes.
     # Keyed on the URL, not on remote.origin.pushurl: git applies a setting from
     # the environment to every repository the process touches, so naming the
@@ -1236,7 +1698,7 @@ while :; do
       quiet=0; trouble=0; errors=0
       [ "$WORKTREE" = 1 ] && mark_gated
       log "iteration $iter shipped $after in ${took}s${reason:+ ($reason)}"
-      if [ "$WORKTREE" = 1 ] && [ "$PUSH" = 1 ]; then sync; fi
+      if harness_pushes; then sync; fi
       ;;
     quiet)
       quiet=$((quiet + 1)); trouble=0; errors=0
@@ -1250,13 +1712,20 @@ while :; do
       ;;
     ratelimit)
       limits=$((limits + 1))
-      log "iteration $iter hit a limit: $reason — trying it again in ${RATE_LIMIT_SLEEP}s"
-      # The first of the streak only. A loop can wait out a weekly limit over
-      # dozens of iterations, and a human needs to hear that once.
-      [ "$limits" -eq 1 ] && notify limit "$reason"
+      RESET_EPOCH=""
+      [ "$LIMIT_RESET" = 1 ] && reset_at "$reason"
+      if [ -n "$RESET_EPOCH" ]; then
+        log "iteration $iter hit a limit: $reason — it resets at $RESET_AT, waiting until then"
+        # The first of the streak only. A loop can wait out a weekly limit over
+        # dozens of iterations, and a human needs to hear that once.
+        [ "$limits" -eq 1 ] && notify limit "$reason — waiting until $RESET_AT"
+      else
+        log "iteration $iter hit a limit: $reason — trying it again in ${RATE_LIMIT_SLEEP}s"
+        [ "$limits" -eq 1 ] && notify limit "$reason"
+      fi
       # Waiting out a limit is not work, so it does not use up MAX_ITER.
       iter=$((iter - 1))
-      nap "$RATE_LIMIT_SLEEP"
+      if [ -n "$RESET_EPOCH" ]; then wait_until "$RESET_EPOCH"; else nap "$RATE_LIMIT_SLEEP"; fi
       ;;
     timeout|error)
       trouble=$((trouble + 1)); errors=$((errors + 1))

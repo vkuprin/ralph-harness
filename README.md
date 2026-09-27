@@ -112,7 +112,8 @@ flowchart TD
 4. The new commits go through the gates in order. The first failure resets the
    branch to where the iteration started.
 5. Kept commits are rebased onto origin if someone else pushed meanwhile, verified
-   again, and pushed by the harness.
+   again, and pushed by the harness: to `BRANCH` itself with `PUSH=1`, or to
+   `ralph/<name>` for a pull request with `PUSH=pr` (below).
 6. Every iteration leaves one row in `results.tsv`, which `ralph results` prints:
 
 | Verdict | Meaning |
@@ -127,17 +128,27 @@ flowchart TD
 | `revert:review` | the reviewer rejected the change, with its reason |
 | `revert:review-unavailable` | no reviewer verdict and no `VERIFY_CMD`, so nothing vouched for it |
 | `revert:history` | the agent left `ralph/<name>` or rewrote its history |
-| `drop:conflict`, `drop:reverify` | kept work no longer applied, or no longer passed, on top of a new origin; saved under `refs/ralph/dropped/` |
+| `drop:conflict`, `drop:reverify` | kept work no longer applied, or no longer passed, on top of a new origin; saved under `refs/ralph/dropped/`. Never with `PUSH=pr` |
 | `drop:interrupted` | on start: commits from an iteration that was killed before it was judged; saved under `refs/ralph/dropped/` |
 
 Limits heal on their own. When a run ends on a plan limit, an overloaded API or an
 API key out of credit, the loop sleeps `RATE_LIMIT_SLEEP` and tries the same
 iteration again, as often as it takes. A limited call fails at once without using
-quota, so the retries are free, and they do not count toward `MAX_ITER`. The
+quota, so the retries are free, and they do not count toward `MAX_ITER`. With
+`LIMIT_RESET=1` the loop reads the reset time out of the message instead —
+`hit your session limit · resets 9:10am (Europe/Paris)`, `resets Mon 9am` — and
+waits until then, plus two minutes, on the clock rather than by counting
+seconds, so a machine that sleeps through the wait wakes to the right answer. A
+message with no time in it (credit spent, an overloaded API) still waits
+`RATE_LIMIT_SLEEP`, and so does a time that has just gone by with the limit
+still on: that is a late reset, not tomorrow's. The
 reviewer waits the same way instead of letting a commit through unreviewed, but
 only `REVIEW_LIMIT_TRIES` times: it waits holding a commit that no gate has
 judged, and a limit that never clears (a spent credit balance) would park the
-loop on it for good. After that the iteration takes the reviewer-unavailable
+loop on it for good. With `LIMIT_RESET=1` that ceiling is counted in seconds,
+`REVIEW_LIMIT_TRIES × RATE_LIMIT_SLEEP`: a reset inside it is waited for, and
+one past it — a weekly limit — is given up on at once rather than after six
+hours of asking. After that the iteration takes the reviewer-unavailable
 path above — `keep:unreviewed` if `VERIFY_CMD` vouched for it, otherwise
 `revert:review-unavailable`. If
 the loop itself is killed (a reboot, `ralph stop` mid-iteration), commits the
@@ -154,9 +165,11 @@ looks. It is a shell command the harness runs on the events you would otherwise
 have to go and find: `stopped` (every way the loop can end), `refused` (a start
 that never ran an iteration), `stuck` (`ESCALATE_AFTER` reached), `limit` and
 `limit-clear` (the first iteration of a limit streak, and claude answering
-again), and `decision` — new text under "Needs a decision" in `PROGRESS.md`,
+again), `decision` — new text under "Needs a decision" in `PROGRESS.md`,
 which is the agent handing you a question it cannot settle (a line not there
-before; a question settled or moved is not news). Not on a keep, and
+before; a question settled or moved is not news) — `health` and
+`health-clear`, `churn`, and with `PUSH=pr`, `pr` (a pull request opened, with
+its URL) and `pr-blocked`, all described below. Not on a keep, and
 not on a quiet iteration: a notifier that speaks every iteration is one you stop
 reading. The event arrives in the environment — `RALPH_EVENT`, `RALPH_LOOP`,
 `RALPH_DIR`, `RALPH_ITER`, `RALPH_MESSAGE` — and never pasted into the command,
@@ -184,6 +197,44 @@ claims to have met it, never one that is simply a step short of it. "Direction"
 is for open-ended loops: what to look for, in which order, and what to leave
 alone. Each prompt also lists what the loop shipped recently, from its own kept
 commits in git, so an agent sees when it keeps circling one topic.
+
+`HEALTH_CMD` is your check of the running system, not of a commit: run in the
+work directory before every iteration, after the sync. `VERIFY_CMD` judges a
+commit before it ships; a regression the tests cannot see — a job that stopped
+running, notifications that stopped going out — shows only in production
+afterwards, and a loop left to itself goes on down its list while it is broken.
+One such regression was noticed thirty hours and four iterations after the
+commit that caused it. While `HEALTH_CMD` fails, the prompt leads with its last
+lines and the commits since it last passed, and tells the agent to fix that
+before anything else; `DONE_CMD` is not asked, because a job is not done while
+the system it runs is broken; and you hear `health` once when it starts failing
+and `health-clear` once when it passes again.
+
+The loop also counts, from git and its own keep rows, which files its recent kept
+iterations changed. A file that `CHURN_AT` or more of the last `CHURN_WINDOW`
+changed is named in the prompt, with the advice to close the class of defect in
+one commit or write down why it keeps breaking and go elsewhere; the reviewer is
+told when a commit touches one of them again, and holds it to a higher bar; and
+you hear `churn` once for each file that joins the list. Fix after fix in one
+place is how one loop spent twelve iterations in a row each closing the gap the
+last had left. `CHURN_IGNORE` leaves out files that change with every commit by
+design, such as a changelog.
+
+`PUSH=pr` is for a loop nobody is watching. The harness pushes `ralph/<name>` to
+origin and keeps one pull request open into `BRANCH`, through `gh` when it is
+logged in (without it, the branch is still pushed and the log says to open the
+pull request yourself). Nothing pushes `BRANCH`, so the credentials on the box
+only need to reach `ralph/*`. Before every iteration the branch is rebased onto
+`BRANCH` and verified again, as with `PUSH=1`, but nothing is ever dropped here:
+the unpushed work is everything since the last merge, not one iteration's, and
+you are the last gate anyway. A rebase that conflicts, or passes and then fails
+`VERIFY_CMD`, leaves the branch on its old base and tells you once
+(`pr-blocked`); the pull request shows the conflict. A merge commit, a rebase and
+a squash merge all work — for a squash the harness asks `gh` which head was
+merged and replays only what came after it — and GitHub deleting the branch after
+a merge is expected. Do not push to `ralph/<name>` yourself: the push is leased
+on the commit the harness last pushed, so commits it did not make are never
+overwritten, and the loop keeps its work local and says so until they are gone.
 
 What an iteration costs is in `results.tsv`, after the reason: `cost_usd` and
 `tokens` (input plus output, the agent's and the reviewer's together), read from
@@ -322,7 +373,7 @@ parse is judged, not what sourcing returns: a config ending in a false test, lik
 | `WORKTREE` | `1` | `0` | work in a harness-owned worktree; every gate needs it |
 | `WORKTREE_DIR` | | `<repo>-ralph-<name>` next to the repo | where the worktree goes; a path holding anything but a worktree of `REPO` is refused |
 | `BRANCH` | `main` | `main` | the branch the worktree starts from and pushes to |
-| `PUSH` | `1` | `0` | push kept commits to `origin/$BRANCH`; with `0` they wait on `ralph/<name>` for you. With no `origin` it says so once and behaves as `0` |
+| `PUSH` | `1` | `0` | push kept commits to `origin/$BRANCH`; with `pr`, push `ralph/<name>` and keep one pull request open into `BRANCH`; with `0` they wait on `ralph/<name>` for you. With no `origin` it says so once and behaves as `0` |
 | `SETUP_CMD` | | | run once in a new worktree (`npm ci`, copy `.env`). If it fails the worktree and its branch go, so the next start runs it again |
 | `VERIFY_CMD` | | | your check, run after every commit; failing resets the commit |
 | `VERIFY_TIMEOUT` | `1800` | `1800` | seconds `VERIFY_CMD` may take, counted awake |
@@ -330,10 +381,16 @@ parse is judged, not what sourcing returns: a config ending in a false test, lik
 | `REVIEW` | `1` | `0` | a read-only reviewer judges each commit |
 | `REVIEW_MODEL` | | `MODEL` | the reviewer's model; a cheaper one saves the shared plan limit |
 | `DENY` | `()` | `()` | tool patterns the agent may not use, such as `"Bash(ssh *)"`, each passed as `--disallowedTools`; see Safety |
+| `HEALTH_CMD` | | | your check of the running system, run before every iteration; while it fails it leads the prompt and `DONE_CMD` is not asked |
+| `HEALTH_TIMEOUT` | `300` | `300` | seconds `HEALTH_CMD` may take, counted awake; a timeout counts as failing |
+| `CHURN_AT` | `4` | `0` | name the files changed by at least this many of the last `CHURN_WINDOW` kept iterations to the agent, the reviewer and you; `0` is off |
+| `CHURN_WINDOW` | `8` | `8` | how many kept iterations `CHURN_AT` counts over |
+| `CHURN_IGNORE` | `()` | `()` | pathspecs left out of the count, such as `"CHANGELOG.md"` |
 | `DONE_CMD` | | | your check that the job is done, run before every iteration; exit 0 stops the loop |
 | `ACTIVE_HOURS` | | | local hours iterations may start in, like `22-08` (end excluded, wraps past midnight); empty is any hour |
 | `ITER_TIMEOUT` | `7200` | `7200` | seconds one agent run may take, counted awake |
 | `RATE_LIMIT_SLEEP` | `1800` | `1800` | wait before retrying after a limit |
+| `LIMIT_RESET` | `1` | `0` | wait until the reset time the limit message names instead; a message with none still waits `RATE_LIMIT_SLEEP` |
 | `RATE_LIMIT_RE` | | see `ralph.sh` | what counts as a limit; extend it with `RATE_LIMIT_RE="$RATE_LIMIT_RE\|your proxy's message"` |
 | `REVIEW_LIMIT_TRIES` | `12` | `12` | times a limited reviewer is asked again before the iteration gives up on the review; `0` waits forever |
 | `ERROR_SLEEP` | `300` | `300` | wait after a failure or reset, doubling in a row up to an hour |
@@ -365,8 +422,10 @@ user can. The harness narrows what that can do to your code, not to your machine
   resets commits happens only inside its own worktree. A `WORKTREE_DIR` that
   holds a checkout of some other repository is refused at start rather than
   reset: the loop only discards work on a worktree of its own `REPO`.
-- With `PUSH=1` the agent's own push to this repository fails, however it spells
-  it; only the harness pushes, and only what passed the gates. The block is keyed
+- With `PUSH=1` or `PUSH=pr` the agent's own push to this repository fails,
+  however it spells it; only the harness pushes, and only what passed the gates.
+  `PUSH=pr` never pushes `BRANCH`, so an unattended box can hold a deploy key
+  that cannot push `main` at all; protect `main` on the host as well. The block is keyed
   on the remote's URL, so a push to some other repository — the throwaway remote
   a test suite makes for itself, say — still works.
 - `DENY` turns tool patterns into `--disallowedTools` flags, which claude
@@ -387,6 +446,12 @@ user can. The harness narrows what that can do to your code, not to your machine
   unprompted agent. The reviewer reads it for the job it judges against, so with
   it gone the reviewer is not asked at all: that iteration takes the
   reviewer-unavailable path rather than an ACCEPT that means nothing.
+
+`HEALTH_CMD`'s output goes into the prompt of an agent that runs with
+`--dangerously-skip-permissions`, so have it print your own check's findings and
+not text from pages or users it measures; the same goes for anything else the
+agent reads. A loop that reads third-party content can be handed instructions
+in it: keep root keys and write access to production off the machine it runs on.
 
 If the loop can reach production, say in `PROMPT.md` what it must never write
 to. For stronger isolation, run the whole thing inside a container or a VM.

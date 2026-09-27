@@ -564,7 +564,9 @@ cmd_review() {
   local where="works in $repo"
   if [ "$worktree" = 1 ]; then
     where="works on ralph/$name in $work"
-    if [ "$push" = 1 ]; then where="$where, pushes to origin/$branch"; else where="$where, you merge"; fi
+    if [ "$push" = 1 ]; then where="$where, pushes to origin/$branch"
+    elif [ "$push" = pr ]; then where="$where, pushes it for a pull request into $branch"
+    else where="$where, you merge"; fi
   fi
   printf '%s — %s\n' "$name" "$where"
 
@@ -611,7 +613,11 @@ cmd_review() {
     printf '\nWaiting to merge into %s\n' "$branch"
     if [ -n "$waiting" ]; then
       printf '%s\n' "$waiting"
-      dim "  merge them: git -C $(shq "$repo") merge $(shq "ralph/$name")"
+      if [ "$push" = pr ]; then
+        dim "  merge them through the pull request from ralph/$name"
+      else
+        dim "  merge them: git -C $(shq "$repo") merge $(shq "ralph/$name")"
+      fi
     else
       dim "  nothing"
     fi

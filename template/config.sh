@@ -42,8 +42,14 @@ WORKTREE=1
 # The branch the worktree starts from, and the one kept commits are pushed to.
 BRANCH="main"
 
-# 1: the harness pushes kept commits to origin/$BRANCH itself (the agent cannot).
-# 0: commits stay on ralph/__NAME__ for you to merge.
+# 1:  the harness pushes kept commits to origin/$BRANCH itself (the agent cannot).
+# pr: the harness pushes ralph/__NAME__ to origin and keeps one pull request open
+#     into $BRANCH; you merge it. Nothing pushes $BRANCH, so the loop's credentials
+#     need only reach ralph/* — give an unattended box a deploy key that cannot push
+#     main, and protect main. Opens the pull request through gh when gh is logged
+#     in; without it the branch is still pushed. A rebase onto $BRANCH that
+#     conflicts keeps the branch as it is and tells you; no kept commit is dropped.
+# 0:  commits stay on ralph/__NAME__ for you to merge.
 # A repository with no origin says so once at start and behaves as 0.
 PUSH=1
 
@@ -81,6 +87,26 @@ REVIEW=1
 # DENY=("Bash(ssh *)" "Bash(psql *)" "Bash(git push *)")
 DENY=()
 
+# A check of the running system, run in the work directory before every
+# iteration. While it fails, its last lines lead the prompt and the agent fixes
+# that before anything else; DONE_CMD is not asked; you hear about it once when
+# it starts failing and once when it passes again. VERIFY_CMD judges a commit
+# before it ships; this notices what shipped broke. Its output goes into the
+# prompt, so print your own check's findings, not text from third-party pages.
+# HEALTH_CMD="python3 scripts/health.py --max-gap-hours 6"
+HEALTH_CMD=""
+HEALTH_TIMEOUT=300
+
+# Files changed by CHURN_AT or more of the last CHURN_WINDOW kept iterations are
+# named to the agent, to the reviewer when a commit touches them again, and to
+# you once. Fix after fix in one place is how a loop spends a dozen iterations
+# each closing the gap the last one left. 0 is off. CHURN_IGNORE lists
+# pathspecs that change with every commit by design.
+CHURN_AT=4
+CHURN_WINDOW=8
+# CHURN_IGNORE=("CHANGELOG.md")
+CHURN_IGNORE=()
+
 # ---------------------------------------------------------------- when to stop, when to run
 
 # Your own check that the job is done, run in the work directory before every
@@ -105,6 +131,11 @@ ITER_TIMEOUT=7200
 # overloaded API). A limit is not an error: the same iteration is tried again,
 # as often as it takes, and the retries do not count toward MAX_ITER.
 RATE_LIMIT_SLEEP=1800
+# 1: when the limit's message says when it resets ("resets 3am (Europe/Berlin)",
+# "resets Mon 9am"), wait until then instead of asking every RATE_LIMIT_SLEEP.
+# A message with no time in it (credit spent, API overloaded) still waits
+# RATE_LIMIT_SLEEP.
+LIMIT_RESET=1
 # To recognise another message as a limit (a proxy, a gateway), extend the pattern:
 # RATE_LIMIT_RE="$RATE_LIMIT_RE|quota window closed"
 
@@ -112,7 +143,9 @@ RATE_LIMIT_SLEEP=1800
 # holding a commit no gate has judged, so a limit that never clears (a spent
 # credit balance) would park the loop on that commit for good. After this many
 # tries the iteration gives up on the review and falls back to VERIFY_CMD
-# (keep:unreviewed) or, with no VERIFY_CMD, reverts. 0 waits forever.
+# (keep:unreviewed) or, with no VERIFY_CMD, reverts. 0 waits forever. With
+# LIMIT_RESET=1 the ceiling is REVIEW_LIMIT_TRIES * RATE_LIMIT_SLEEP seconds: a
+# reset inside it is waited for, one past it gives up at once.
 REVIEW_LIMIT_TRIES=12
 
 # Pause after a failed or reverted iteration, doubling each time in a row, up
@@ -141,6 +174,13 @@ ESCALATE_AFTER=3
 #   limit-clear  claude answered again
 #   decision     new text under "Needs a decision" in PROGRESS.md — the agent
 #                asking you something it cannot settle
+#   health       HEALTH_CMD started failing
+#   health-clear HEALTH_CMD passes again
+#   churn        a file joined the ones the loop keeps changing (CHURN_AT)
+#   pr           PUSH=pr opened a pull request; the message has its URL
+#   pr-blocked   PUSH=pr cannot move ralph/__NAME__ forward: it conflicts with
+#                $BRANCH, fails VERIFY_CMD after a rebase, or someone else
+#                pushed to it
 #
 # Never on a keep or a quiet iteration: that is the noise that makes you stop
 # reading them. The event arrives in the environment, not pasted into the
