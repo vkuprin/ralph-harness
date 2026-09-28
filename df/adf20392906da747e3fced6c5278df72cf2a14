@@ -1,0 +1,46 @@
+skills/ralph-new/SKILL.md
+  s_61d87e76411f43::t_8ac32af435b4b5 29-32
+README.md
+  s_61d87e76411f43::t_87cee801ac4238 12-23,29-44,205-206
+  s_61d87e76411f43::t_3e878feb9a0d17 79
+  s_61d87e76411f43::t_0b357866abdc7a 207
+.changeset/config.json
+  s_61d87e76411f43::t_5d41e22480e33b 1-12
+src/cli/main.ts
+  s_61d87e76411f43::t_d3eca7b996d7d9 62-65
+  s_61d87e76411f43::t_159849e0dcfed9 57,743-746
+  s_61d87e76411f43::t_e75064d6bd3dc9 747
+.github/workflows/test.yml
+  s_61d87e76411f43::t_3b9cf85c41b39c 43-114
+package.json
+  s_61d87e76411f43::t_12fb01e2d6e7e1 2-20,25-35,39-41,45-46
+  s_61d87e76411f43::t_66105d4e169460 49
+AGENTS.md
+  s_61d87e76411f43::t_8ac32af435b4b5 16-18,29,34,39-54
+  s_61d87e76411f43::t_a383978d64733c 55
+CHANGELOG.md
+  s_61d87e76411f43::t_a77fa5315b6ad3 1-27
+tests/e2e/cli.test.ts
+  s_61d87e76411f43::t_31464ad825990c 178,195,210-211
+  s_61d87e76411f43::t_7bde0493964f21 212
+.changeset/README.md
+  s_61d87e76411f43::t_5d41e22480e33b 1-5
+bun.lock
+  s_61d87e76411f43::t_b12f83d44b827f 8,15-56,103-138,142-143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "dfadf20392906da747e3fced6c5278df72cf2a14",
+  "prompts": {},
+  "sessions": {
+    "s_61d87e76411f43": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f36e8e2b-2819-4314-a20c-f51b1798c90c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
