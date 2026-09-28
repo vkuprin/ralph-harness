@@ -1,0 +1,46 @@
+src/loop/loop.ts
+  s_2987f973b7df5d::t_b5a885e969ab9e 10,48-52,55-66,93-99,411-413,416,527,535-543,990-993
+hooks/approve-plan.ts
+  s_2987f973b7df5d::t_185c0a0db5a006 1-74,76,78-89
+  s_2987f973b7df5d::t_ebac203cbd3599 75,77
+src/lib/config.ts
+  s_2987f973b7df5d::t_872c53a1ef55f4 44,111,167
+tests/stub/claude
+  s_2987f973b7df5d::t_3a2c8596b0d7d5 23-31,362-379
+  s_2987f973b7df5d::t_0266709e3ee23d 380-381
+template/config.schema.json
+  s_2987f973b7df5d::t_64e1dfe88f2934 140-151
+src/cli/main.ts
+  s_2987f973b7df5d::t_3b64d187852dbd 23,30-31,37-39,399-401,647-657,700-702,704
+skills/ralph-new/SKILL.md
+  s_2987f973b7df5d::t_2990a272c81445 3,22-24,91-92,97-102,137,191-192
+tests/e2e/plan.test.ts
+  s_2987f973b7df5d::t_f905b74fc0675c 1-160
+README.md
+  s_2987f973b7df5d::t_8a6b1870ac59d9 8-10,14-15,18,21-22,25,28-31,34,36,38-112,114,116,118-132,134-136,138,140-158,162-168,173-174,179-186
+AGENTS.md
+  s_2987f973b7df5d::t_f0ea21ca35597b 14-16,19-20,99-105
+template/config.json
+  s_2987f973b7df5d::t_486200fbaa19eb 108-112
+src/paths.ts
+  s_2987f973b7df5d::t_b5a885e969ab9e 11
+tests/contract/claude.test.ts
+  s_2987f973b7df5d::t_85b0b72f112052 2,7,23,25,38-39,77-95
+  s_2987f973b7df5d::t_fa160dd5093d49 96-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "888f79d2019265813d1e36682610f0f4e4afa151",
+  "prompts": {},
+  "sessions": {
+    "s_2987f973b7df5d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15ae0846-ead4-438d-8b1d-e1f98456d360",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
