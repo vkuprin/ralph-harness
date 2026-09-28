@@ -247,4 +247,14 @@ answers.
   will not merge, and `prReady` marks it ready only when the loop ends by itself,
   before `mergeAtEnd` waits for checks (some CI skips drafts). After a signal it
   stays a draft, as a signal never merges.
+- A started loop is not believed until it has run its first lines. Bun on Linux
+  now and then never finishes loading `src/loop/main.ts`: the process sits in
+  epoll with no child and no line of its own, and `ralph status` calls it
+  running. `ralph start` waits until the loop holds `ralph.lock` under its PID or
+  has exited, kills one that has done neither within 30s and starts it again, up
+  to three times, saying so in `ralph.log`; `fx.startLoop` does the same for the
+  suite. It is not our wait on a child: rewriting `run()` on `Bun.spawn` and
+  polling the child's status changed nothing, and the hung processes had not run
+  a line. `RALPH_TEST_BOOT_HANG` and `RALPH_TEST_BOOT_WAIT` are the suite's seams
+  into it, unset outside it like `RALPH_TEST_CLOCK`.
 - Defaults keep a loop written for an older version behaving the same.

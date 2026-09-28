@@ -14,6 +14,17 @@ import { hint } from "../lib/shq.ts";
 import { LOOP_MARK } from "../paths.ts";
 import { Loop, Stop, missingFile } from "./loop.ts";
 
+// The suite's stand-in for bun never finishing loading this file, which
+// `ralph start` has to notice: with the file there, it is taken away and this
+// process hangs before its first line, as the real hang does. Unset outside the
+// suite, like RALPH_TEST_CLOCK.
+const bootHang = process.env.RALPH_TEST_BOOT_HANG;
+if (bootHang && existsSync(bootHang)) {
+  rmSync(bootHang, { force: true });
+  setInterval(() => {}, 1 << 30);
+  await new Promise(() => {});
+}
+
 const arg = process.argv[2] || process.env.RALPH_LOOP || "";
 if (!arg) {
   process.stderr.write("usage: bun src/loop/main.ts <loop-dir>\n");

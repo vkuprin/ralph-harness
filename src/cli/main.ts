@@ -18,6 +18,7 @@ import { pathToFileURL } from "node:url";
 import { stampMinutes } from "../lib/clock.ts";
 import { checkSetting, parseConfig, pushProblem } from "../lib/config.ts";
 import { readResults } from "../lib/results.ts";
+import { Log } from "../lib/log.ts";
 import { hint } from "../lib/shq.ts";
 import { splitLines } from "../lib/text.ts";
 import { HARNESS, LOOP_ENTRY, LOOP_MARK, TEMPLATE, ralphHome } from "../paths.ts";
@@ -448,19 +449,62 @@ function cmdNew(args: string[]): void {
   dim(`  3. ${hint("ralph", "start", name)}`);
 }
 
-function cmdStart(name?: string): void {
+/**
+ * The loop has run its own first lines: it holds ralph.lock under its PID, or
+ * it has already exited (a refusal says why in ralph.log). Both take a moment.
+ */
+function booted(dir: string, pid: number, exited: () => boolean): boolean {
+  return exited() || !alive(pid) || read(join(dir, "ralph.lock")).trim() === String(pid);
+}
+
+// Now and then bun on Linux never finishes loading the loop's modules: the
+// process sits in epoll with no child and no line of its own written, and a
+// loop that `ralph status` calls running does nothing for ever. So a start is
+// not believed until the loop has run its first lines. One that has not within
+// BOOT_WAIT seconds is killed and started again, a few times, and ralph.log
+// says so.
+const BOOT_WAIT = Number(process.env.RALPH_TEST_BOOT_WAIT) || 30;
+const BOOT_TRIES = 3;
+
+async function cmdStart(name?: string): Promise<void> {
   const dir = loopDir(name);
   if (!isDir(dir)) die(`no such loop: ${name}`);
   if (loopKind(dir) === "sh") die(`${name} keeps its settings in config.sh — convert them first: ${hint("ralph", "migrate", name!)}`);
   const running = pidOf(dir);
   if (running) die(`already running as PID ${running}`);
-  const fd = openSync(join(dir, "ralph.out"), "a");
-  const child = spawn(process.execPath, [LOOP_ENTRY, dir], { detached: true, stdio: ["ignore", fd, fd] });
-  closeSync(fd);
-  child.unref();
-  writeFileSync(join(dir, "ralph.pid"), `${child.pid}\n`);
-  green(`started ${name} as PID ${child.pid}`);
-  dim(`  ${hint("ralph", "status", name!)}   ${hint("ralph", "tail", name!)}   ${hint("ralph", "stop", name!)}`);
+  const log = new Log(join(dir, "ralph.log"));
+  for (let attempt = 1; ; attempt++) {
+    const fd = openSync(join(dir, "ralph.out"), "a");
+    const child = spawn(process.execPath, [LOOP_ENTRY, dir], { detached: true, stdio: ["ignore", fd, fd] });
+    closeSync(fd);
+    child.unref();
+    const pid = child.pid!;
+    let exited = false;
+    child.once("exit", () => {
+      exited = true;
+    });
+    writeFileSync(join(dir, "ralph.pid"), `${pid}\n`);
+    for (let waited = 0; waited < BOOT_WAIT * 10 && !booted(dir, pid, () => exited); waited++) await Bun.sleep(100);
+    if (booted(dir, pid, () => exited)) {
+      green(`started ${name} as PID ${pid}`);
+      dim(`  ${hint("ralph", "status", name!)}   ${hint("ralph", "tail", name!)}   ${hint("ralph", "stop", name!)}`);
+      return;
+    }
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {}
+    }
+    rmSync(join(dir, "ralph.pid"), { force: true });
+    const why = `the loop process ${pid} had not started after ${BOOT_WAIT}s (bun never finished loading it)`;
+    if (attempt >= BOOT_TRIES) {
+      log.line(`ralph start: ${why}; gave up after ${BOOT_TRIES} tries`);
+      die(`${why}; gave up after ${BOOT_TRIES} tries — see ${join(dir, "ralph.log")}`);
+    }
+    log.line(`ralph start: ${why}; killed it and started it again`);
+  }
 }
 
 async function cmdStop(name?: string): Promise<void> {
@@ -714,7 +758,7 @@ switch (cmd) {
     cmdMigrate(args[0]);
     break;
   case "start":
-    cmdStart(args[0]);
+    await cmdStart(args[0]);
     break;
   case "stop":
     await cmdStop(args[0]);

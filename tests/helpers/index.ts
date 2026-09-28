@@ -198,17 +198,42 @@ export class Fx {
     return d;
   }
 
-  /** Start the loop on `dir`, output to `dir/ralph.out`. */
+  /**
+   * Start the loop on `dir`, output to `dir/ralph.out`. Bun on Linux now and
+   * then never finishes loading the loop (see cmdStart), and a test waiting on
+   * it waited out the whole hook timeout; so, as `ralph start` does, a loop
+   * that has not taken its lock or exited within 30s is killed and started
+   * again, twice at most. `proc` is the process running now.
+   */
   startLoop(dir: string, stub: string, opts: { remote?: string; env?: Record<string, string | undefined> } = {}): LoopRun {
-    const out = openSync(join(dir, "ralph.out"), "w");
-    const proc = Bun.spawn(loopArgv(dir), {
-      env: this.env({ STUB_DIR: stub, STUB_REMOTE: opts.remote ?? "", ...opts.env }),
-      stdin: "ignore",
-      stdout: out,
-      stderr: out,
-    });
-    closeSync(out);
-    return { proc, done: proc.exited };
+    const spawnOnce = (flags: string) => {
+      const out = openSync(join(dir, "ralph.out"), flags);
+      const proc = Bun.spawn(loopArgv(dir), {
+        env: this.env({ STUB_DIR: stub, STUB_REMOTE: opts.remote ?? "", ...opts.env }),
+        stdin: "ignore",
+        stdout: out,
+        stderr: out,
+      });
+      closeSync(out);
+      return proc;
+    };
+    const run: LoopRun = { proc: spawnOnce("w"), done: Promise.resolve(0) };
+    run.done = (async () => {
+      for (let attempt = 1; ; attempt++) {
+        const proc = run.proc;
+        let exited = false;
+        void proc.exited.then(() => {
+          exited = true;
+        });
+        const booted = () => exited || read(join(dir, "ralph.lock")).trim() === String(proc.pid);
+        if ((await until(booted, 30)) || attempt >= 3) return proc.exited;
+        console.warn(`loop ${dir} (PID ${proc.pid}) had not started after 30s; bun never finished loading it — starting it again`);
+        proc.kill("SIGKILL");
+        await proc.exited;
+        run.proc = spawnOnce("a");
+      }
+    })();
+    return run;
   }
 
   /** Run the loop on `dir` to the end; its exit status. */

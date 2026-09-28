@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import {
   Fx,
+  alive,
   cliPath,
   join,
   loopArgv,
@@ -570,5 +571,58 @@ describe("the commands ralph prints back are ones a shell will run", () => {
   });
   test("a name holding a single quote is quoted so the shell hands it back whole", () => {
     expect(pasted(printed(quoteHint, "ralph start"))).toBe("2|start a'b ");
+  });
+});
+
+describe("ralph start does not believe a loop that never finished starting", () => {
+  // Bun on Linux now and then never finishes loading the loop: no line of its
+  // own, no child, a PID that `ralph status` calls running. RALPH_TEST_BOOT_HANG
+  // makes the first process hang where the real one does, before its first line.
+  const home = fx.p("home-bootwatch");
+  const app = fx.p("app-bootwatch");
+  const slow = join(home, "slow");
+  const quick = join(home, "quick");
+  const hang = fx.p("boot-hang");
+  let started = { code: -1, out: "", err: "" };
+  let finished = false;
+  let log = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-bootwatch.git"));
+    const S = fx.stub("stub-bootwatch", ["nothing", "nothing"]);
+    const quiet = { QUIET_SLEEP: 0, STEP_SLEEP: 0, ERROR_SLEEP: 0, MAX_ITER: 1, REVIEW: false, PUSH: false };
+    fx.cli(home, ["new", "slow", app]);
+    patchConfig(slow, quiet);
+    writeFileSync(hang, "");
+    started = fx.cli(home, ["start", "slow"], { STUB_DIR: S, RALPH_TEST_BOOT_HANG: hang, RALPH_TEST_BOOT_WAIT: "2" });
+    finished = await until(() => read(join(slow, "ralph.log")).includes("ralph finished"), 30);
+    log = read(join(slow, "ralph.log"));
+
+    fx.cli(home, ["new", "quick", app]);
+    patchConfig(quick, quiet);
+    fx.cli(home, ["start", "quick"], { STUB_DIR: S, RALPH_TEST_BOOT_WAIT: "2" });
+    await until(() => read(join(quick, "ralph.log")).includes("ralph finished"), 30);
+  });
+
+  test("the start still succeeds", () => {
+    expect(started.code).toBe(0);
+    expect(started.out).toContain("started slow as PID");
+  });
+  test("ralph.log says the first process never started and was replaced", () => {
+    expect(log).toContain("had not started after 2s (bun never finished loading it); killed it and started it again");
+  });
+  test("the process that hung is gone", () => {
+    const pid = Number(/the loop process (\d+) had not started/.exec(log)?.[1] ?? 0);
+    expect(pid).toBeGreaterThan(0);
+    expect(alive(pid)).toBe(false);
+  });
+  test("the one started in its place ran the loop", () => {
+    expect(finished).toBe(true);
+    expect(log).toContain("=== iteration 1");
+  });
+  test("a loop that starts at once is started once, and ralph.log says nothing about it", () => {
+    const q = read(join(quick, "ralph.log"));
+    expect(q).toContain("=== iteration 1");
+    expect(q).not.toContain("had not started");
   });
 });
