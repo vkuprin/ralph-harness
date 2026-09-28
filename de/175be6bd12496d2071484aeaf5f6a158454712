@@ -1,0 +1,19 @@
+.github/workflows/flake.yml
+  s_3d0f116bf3ed78::t_8c489be67e817a 1-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "de175be6bd12496d2071484aeaf5f6a158454712",
+  "prompts": {},
+  "sessions": {
+    "s_3d0f116bf3ed78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4cb82a2f-8bdb-4b5c-938b-8b92b3ecf6e4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
