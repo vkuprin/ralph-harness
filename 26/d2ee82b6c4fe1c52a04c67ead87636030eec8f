@@ -1,0 +1,21 @@
+.github/workflows/test.yml
+  s_3d0f116bf3ed78::t_29f2ccb1907d37 106-108,111-129
+AGENTS.md
+  s_3d0f116bf3ed78::t_85654716fe1421 46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "26d2ee82b6c4fe1c52a04c67ead87636030eec8f",
+  "prompts": {},
+  "sessions": {
+    "s_3d0f116bf3ed78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4cb82a2f-8bdb-4b5c-938b-8b92b3ecf6e4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
