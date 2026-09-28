@@ -1,0 +1,25 @@
+.github/flake/stall.ts
+  s_3d0f116bf3ed78::t_4f9244006b0c4d 1-27
+.github/flake/watch-stall.sh
+  s_3d0f116bf3ed78::t_3fbf2fb1a6d8f1 1-14
+.github/workflows/flake.yml
+  s_3d0f116bf3ed78::t_64dbbf562e02c2 9,14-15,21-29
+src/lib/proc.ts
+  s_3d0f116bf3ed78::t_a66e7fac04c5c8 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ffa1f57ec11cccfc4680ba63fec34b5e3e584acc",
+  "prompts": {},
+  "sessions": {
+    "s_3d0f116bf3ed78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4cb82a2f-8bdb-4b5c-938b-8b92b3ecf6e4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
