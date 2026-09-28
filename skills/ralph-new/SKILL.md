@@ -1,6 +1,6 @@
 ---
 name: ralph-new
-description: Set up a new ralph loop (ralph-harness) on a repository. Asks the user how it should run (where the work lands, auto-merge of its pull request, the verify gate, the reviewer, when it stops, model, hours, notifications) with AskUserQuestion, then scaffolds it with `ralph new --set` and fills in PROMPT.md. Use when the user asks to create, set up, configure or start a ralph loop, to run ralph on a repo, or says /ralph-new.
+description: Set up a new ralph loop (ralph-harness) on a repository. Asks the user how it should run (where the work lands, auto-merge of its pull request, the verify gate, the reviewer, when it stops, model, plan mode, hours, notifications) with AskUserQuestion, then scaffolds it with `ralph new --set` and fills in PROMPT.md. Use when the user asks to create, set up, configure or start a ralph loop, to run ralph on a repo, or says /ralph-new.
 ---
 
 # Set up a ralph loop
@@ -18,6 +18,9 @@ end its label with "(Recommended)". Base that recommendation on what you found i
 the repository, not on the template.
 
 ## 1. Find the CLI
+
+`ralph setup` starts this skill and names the CLI's path in its first message. Use
+that path and skip the lookup below.
 
 ```bash
 command -v ralph || readlink ~/.claude/skills/ralph-new
@@ -85,11 +88,18 @@ Two combinations need a word before you go on:
 
 ## 5. Second round of questions
 
-Ask only the questions that apply, in one AskUserQuestion call:
+Ask only the questions that apply, at most four per AskUserQuestion call, in this
+order. If more than four apply, ask Notifications in one more call.
 
 - **How to merge** (header `Merge how`), only with "PR, merged when the loop ends":
   "Merge commit (Recommended)", "Squash", "Rebase".
 - **Model** (header `Model`): "opus (Recommended)", "sonnet".
+- **Plan first** (header `Plan first`): each iteration starts in Claude's plan mode,
+  the harness approves the plan at once, and the same run carries it out.
+  - "Off": runs straight from the prompt. Recommend it for audits and lists of
+    small, separate fixes.
+  - "On": recommend it when each iteration is a bigger change across several
+    files: a feature, a refactor, a migration.
 - **Hours** (header `Hours`): "Any time (Recommended)", "Nights only (22-08)". The
   user can type another window, such as `9-17`, through Other.
 - **Notifications** (header `Notify`):
@@ -124,6 +134,7 @@ gate needs it.
 | Nothing shipped N times | `QUIET_STOP=<N>` |
 | After N iterations | `MAX_ITER=<N>` |
 | Model | `MODEL=opus\|sonnet` |
+| Plan first on | `PLAN_FIRST=true` |
 | Nights only | `ACTIVE_HOURS=22-08` |
 | macOS or Telegram | `NOTIFY_CMD=<the matching example from the template's config.json>` |
 
@@ -177,7 +188,8 @@ Show a short summary:
 - the loop directory;
 - the branch;
 - where the work lands, and whether and how it is merged;
-- the gate, the reviewer and the stop condition.
+- the gate, the reviewer and the stop condition;
+- whether iterations plan first.
 
 Then ask with AskUserQuestion (header `Start`):
 

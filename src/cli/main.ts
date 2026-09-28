@@ -20,19 +20,23 @@ import { checkSetting, parseConfig } from "../lib/config.ts";
 import { readResults } from "../lib/results.ts";
 import { hint } from "../lib/shq.ts";
 import { splitLines } from "../lib/text.ts";
-import { LOOP_ENTRY, LOOP_MARK, TEMPLATE, ralphHome } from "../paths.ts";
+import { HARNESS, LOOP_ENTRY, LOOP_MARK, TEMPLATE, ralphHome } from "../paths.ts";
 import { migrate } from "./migrate.ts";
 
 const USAGE = `ralph — long-running Claude Code loops: a fresh \`claude -p\` every iteration,
 and git, not the model, decides what shipped.
 
 Getting started
-  ralph new audit ~/code/my-app    make a loop for a repository
+  ralph setup                      set a loop up with Claude, for the repo you are in
+  ralph new audit ~/code/my-app    or make one yourself
   ralph edit audit                 write the job into its PROMPT.md
   ralph start audit                run it in the background
   ralph review audit               later: what it shipped, what it threw away
 
 Commands
+  ralph setup                    open Claude Code here with the ralph-new skill
+                                 loaded; it asks how the loop should run and
+                                 scaffolds it. \`ralph new\` alone does the same
   ralph new <name> <repo-path> [--set KEY=VALUE]...
                                  scaffold a loop from the template. The name is
                                  a directory and, with WORKTREE on, the branch
@@ -392,7 +396,9 @@ function setKeys(text: string, sets: [string, unknown][]): string {
 
 function cmdNew(args: string[]): void {
   const [name, repoArg, ...rest] = args;
-  if (!name || !repoArg || name.startsWith("--") || repoArg.startsWith("--")) die("usage: ralph new <name> <repo-path> [--set KEY=VALUE]...");
+  if (!name || !repoArg || name.startsWith("--") || repoArg.startsWith("--")) {
+    die("usage: ralph new <name> <repo-path> [--set KEY=VALUE]... — or run `ralph setup` in the repository");
+  }
   // The name is a directory under $RALPH_HOME and, with WORKTREE on, the branch
   // ralph/<name>. Judged before anything is written, so the complaint arrives
   // with the name in it rather than at every start, in git's words. A `/` is
@@ -638,6 +644,17 @@ function cmdSteer(name?: string, ...words: string[]): void {
   green(`steered ${name} — the running iteration sees it at its next tool call, and every later one reads it from PROMPT.md`);
 }
 
+/** Claude Code in the current directory, with the ralph-new skill from this checkout loaded. */
+async function cmdSetup(): Promise<never> {
+  const claude = Bun.which("claude");
+  if (!claude) die("claude is not on PATH — install Claude Code first: https://code.claude.com");
+  const skill = join(HARNESS, "skills/ralph-new/SKILL.md");
+  const prompt = `Set up a ralph loop on the repository in this directory, following the ralph-new instructions in your system prompt. The ralph CLI is ${join(HARNESS, "bin/ralph")}.`;
+  const c = spawn(claude, ["--append-system-prompt-file", skill, prompt], { stdio: "inherit", cwd: process.cwd() });
+  const code = await new Promise<number>((r) => c.once("exit", (n) => r(n ?? 1)));
+  process.exit(code);
+}
+
 async function cmdEdit(name?: string): Promise<void> {
   const dir = loopDir(name);
   const c = spawn(process.env.EDITOR || "vi", [join(dir, "PROMPT.md")], { stdio: "inherit" });
@@ -680,7 +697,11 @@ function cmdHelp(): void {
 
 const [cmd = "help", ...args] = process.argv.slice(2);
 switch (cmd) {
+  case "setup":
+    await cmdSetup();
+    break;
   case "new":
+    if (args.length === 0) await cmdSetup();
     cmdNew(args);
     break;
   case "migrate":

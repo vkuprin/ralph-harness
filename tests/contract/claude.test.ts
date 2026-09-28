@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaults } from "../../src/lib/config.ts";
 import { claudeText } from "../../src/loop/cost.ts";
-import { agentArgs, agentSettings, reviewerArgs } from "../../src/loop/loop.ts";
+import { agentArgs, agentSettings, planMcpConfig, reviewerArgs } from "../../src/loop/loop.ts";
 
 // The stub on the suite's PATH accepts any argv, so nothing else here checks
 // that the real `claude` takes what the harness passes it, answers in the
@@ -20,9 +20,9 @@ const MODEL = process.env.RALPH_CONTRACT_MODEL ?? "haiku";
 const T = realpathSync(mkdtempSync(join(tmpdir(), "ralph-contract.")));
 afterAll(() => rmSync(T, { recursive: true, force: true }));
 
-function claude(args: string[], prompt: string, env: Record<string, string> = {}) {
+function claude(args: string[], prompt: string, env: Record<string, string> = {}, cwd = T) {
   const r = Bun.spawnSync(["claude", ...args], {
-    cwd: T,
+    cwd,
     stdin: new TextEncoder().encode(prompt),
     env: { ...process.env, ...env },
     timeout: 240_000,
@@ -35,7 +35,8 @@ describe("the real claude CLI takes what the harness passes it", () => {
 
   it("every flag the agent and the reviewer are given is one claude --help lists", () => {
     const help = Bun.spawnSync(["claude", "--help"]).stdout.toString();
-    const flags = new Set([...agentArgs(c, T), ...reviewerArgs(c, T)].filter((a) => a.startsWith("--")));
+    const all = [...agentArgs(c, T), ...agentArgs({ ...c, PLAN_FIRST: true }, T), ...reviewerArgs(c, T)];
+    const flags = new Set(all.filter((a) => a.startsWith("--")));
     const missing = [...flags].filter((f) => !help.includes(f));
     expect(missing).toEqual([]);
   });
@@ -70,6 +71,28 @@ describe("the real claude CLI takes what the harness passes it", () => {
         .filter((l) => l.startsWith("VERDICT:"))
         .at(-1);
       expect(verdict).toBe("VERDICT: ACCEPT");
+    },
+    300_000,
+  );
+
+  it(
+    "with PLAN_FIRST the plan reaches the harness's tool, is approved, and the same run carries it out",
+    () => {
+      const repo = join(T, "plan-repo");
+      mkdirSync(repo);
+      Bun.spawnSync(["git", "init", "-q", repo]);
+      Bun.spawnSync(["git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "init"]);
+      writeFileSync(join(T, ".plan-mcp.json"), JSON.stringify(planMcpConfig(T)));
+      writeFileSync(join(T, ".plan.md"), "");
+      const r = claude(
+        agentArgs({ ...c, LIVE_STEER: false, PLAN_FIRST: true }, T),
+        "Create a file hello.txt containing the word hi, then commit it with git. Plan it first.",
+        {},
+        repo,
+      );
+      expect(r.code).toBe(0);
+      expect(readFileSync(join(T, ".plan.md"), "utf8").trim()).not.toBe("");
+      expect(existsSync(join(repo, "hello.txt"))).toBe(true);
     },
     300_000,
   );

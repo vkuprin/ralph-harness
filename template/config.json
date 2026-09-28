@@ -105,6 +105,11 @@
   // "DENY": ["Bash(ssh *)", "Bash(psql *)", "Bash(git push *)"],
   "DENY": [],
 
+  // Start every iteration in Claude's plan mode: the agent plans, the harness
+  // approves the plan at once, and the same session carries it out. Off runs
+  // straight from the prompt.
+  "PLAN_FIRST": false,
+
   // A check of the running system, run in the work directory before every
   // iteration. While it fails, its last lines lead the prompt and the agent fixes
   // that before anything else; DONE_CMD is not asked; you hear about it once when

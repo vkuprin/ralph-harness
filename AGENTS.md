@@ -11,10 +11,13 @@ is one class on purpose, so an iteration reads in order.
 - `src/loop/{cost,limits,progress,active-hours,merge}.ts`: pure pieces with unit tests.
 - `src/lib/`: `proc` (bounded runs, process groups, the freeze on a signal),
   `clock` (the one test seam into time), `config`, `log`, `results`, `shq`, `text`.
-- `src/cli/main.ts`: the CLI (`new`, `start`, `stop`, `status`, `results`,
-  `steer`, …). `src/cli/migrate.ts`: `ralph migrate`, config.sh to config.json.
+- `src/cli/main.ts`: the CLI (`setup`, `new`, `start`, `stop`, `status`, `results`,
+  `steer`, …). `ralph setup` (and bare `ralph new`) opens Claude Code with
+  `skills/ralph-new/SKILL.md` from this checkout as system prompt. `src/cli/migrate.ts`: `ralph migrate`, config.sh to config.json.
 - `bin/ralph`: the CLI's entry point, the file people link onto PATH.
 - `hooks/steer.ts`: PreToolUse hook that delivers `ralph steer` mid-iteration.
+- `hooks/approve-plan.ts`: the MCP server `PLAN_FIRST` passes as
+  `--permission-prompt-tool`; it approves ExitPlanMode and denies the rest.
 - `template/`: what `ralph new` copies into a loop directory.
 - `skills/ralph-new/`: the Claude Code skill that asks how a loop should run
   (AskUserQuestion) and scaffolds it with `ralph new --set`. It calls the CLI, so
@@ -93,6 +96,13 @@ answers.
 
 - Every iteration is a new `claude -p`. Nothing but files crosses iterations.
   `agentArgs` builds the argv afresh; nothing resumes or continues a session.
+- With `PLAN_FIRST` the plan is approved by the harness's own prompt tool
+  (`hooks/approve-plan.ts`), never by text the model prints. `claude -p` offers
+  ExitPlanMode only when a permission host exists, which is why the tool is
+  there. It approves ExitPlanMode alone, switching the session to
+  bypassPermissions, and denies every other prompt, as a
+  `--dangerously-skip-permissions` run does. Off, the argv, prompt and log are
+  exactly what they were.
 - The gate is outside the model: git and commands the harness runs decide what
   shipped, never text the model prints. The agent's text is read only when HEAD
   did not move, to tell a limit from a crash.

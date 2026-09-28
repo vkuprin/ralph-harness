@@ -20,6 +20,15 @@ const has = (flag: string) => argv.includes(flag);
 const reviewer = has("--restricted");
 const json = argv.some((a, i) => a === "--output-format" && argv[i + 1] === "json");
 
+// Without -p it is an interactive session, which is what `ralph setup` opens:
+// record how it was started and where, and leave.
+if (!has("-p")) {
+  const s = bump("setup_calls");
+  writeFileSync(join(d, `argv.setup.${s}`), argv.map((a) => `${a}\n`).join(""));
+  writeFileSync(join(d, `cwd.setup.${s}`), `${process.cwd()}\n`);
+  process.exit(0);
+}
+
 function pop(queue: string, fallback: string): string {
   const q = join(d!, queue);
   if (!existsSync(q)) return fallback;
@@ -348,6 +357,26 @@ switch (mode) {
     writeFileSync("work.txt", "agent edit\n");
     git("add", "-A");
     git("commit", "-qm", `stub: conflicting (agent call ${n})`);
+    break;
+  }
+  case "plan-approve": {
+    // PLAN_FIRST: Claude Code sends the approval prompts of a -p run to the
+    // --permission-prompt-tool. The stub starts the MCP server the way the
+    // --mcp-config says, asks it about ExitPlanMode and about a Bash call,
+    // and records the answers, then commits as the approved plan would.
+    const cfg = JSON.parse(readFileSync(argv[argv.indexOf("--mcp-config") + 1] ?? "", "utf8")).mcpServers.ralph;
+    const call = (id: number, tool: string, input: object) =>
+      JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "approve", arguments: { tool_name: tool, input } } });
+    const input = [
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }),
+      JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+      JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+      call(3, "ExitPlanMode", { plan: "stub plan: edit work.txt\n" }),
+      call(4, "Bash", { command: "rm -rf build" }),
+    ].join("\n");
+    const r = spawnSync(cfg.command, cfg.args, { input: `${input}\n`, encoding: "utf8", env: { ...process.env, ...cfg.env } });
+    writeFileSync(join(d, `approve.${n}`), r.stdout ?? "");
+    commit("planned");
     break;
   }
   case "run-hook": {

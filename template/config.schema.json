@@ -137,6 +137,18 @@
         "type": "string"
       }
     },
+    "PLAN_FIRST": {
+      "type": [
+        "boolean",
+        "integer"
+      ],
+      "enum": [
+        true,
+        false,
+        0,
+        1
+      ]
+    },
     "REVIEW_MODEL": {
       "type": "string"
     },

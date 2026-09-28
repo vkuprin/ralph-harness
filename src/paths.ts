@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 export const HARNESS = realpathSync(resolve(import.meta.dir, ".."));
 export const LOOP_ENTRY = join(HARNESS, "src/loop/main.ts");
 export const STEER_HOOK = join(HARNESS, "hooks/steer.ts");
+export const APPROVE_PLAN = join(HARNESS, "hooks/approve-plan.ts");
 export const TEMPLATE = join(HARNESS, "template");
 
 /** What names a process as a loop of this harness on its command line. */

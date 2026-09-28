@@ -7,7 +7,7 @@ import { type Ran, nap, run, runBounded } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
 import { shq } from "../lib/shq.ts";
 import { chomp, headBytes, lastNonBlank, section, splitLines, tailLines } from "../lib/text.ts";
-import { STEER_HOOK } from "../paths.ts";
+import { APPROVE_PLAN, STEER_HOOK } from "../paths.ts";
 import { type Window, inWindow, parseHours } from "./active-hours.ts";
 import { addCost, addTokens, claudeText } from "./cost.ts";
 import { resetAt, limitLine, type Reset } from "./limits.ts";
@@ -45,9 +45,25 @@ export function missingFile(dir: string, ...names: string[]): string | null {
  * How the agent is started: a fresh `claude -p` with no permission prompts, the
  * loop directory readable, and its answer as JSON so the run's cost can be read.
  * DENY patterns are enforced by claude ahead of the skipped permissions.
+ *
+ * With PLAN_FIRST it starts in plan mode instead, with bypass available but not
+ * on. `claude -p` offers ExitPlanMode only when something can answer the
+ * approval prompt, so the harness's own MCP tool answers it: it approves the
+ * plan and switches the session to bypassPermissions, and denies the rest.
  */
 export function agentArgs(c: Config, dir: string): string[] {
-  const args = ["-p", "--dangerously-skip-permissions", "--add-dir", dir, "--model", c.MODEL];
+  const perms = c.PLAN_FIRST
+    ? [
+        "--permission-mode",
+        "plan",
+        "--allow-dangerously-skip-permissions",
+        "--mcp-config",
+        join(dir, ".plan-mcp.json"),
+        "--permission-prompt-tool",
+        "mcp__ralph__approve",
+      ]
+    : ["--dangerously-skip-permissions"];
+  const args = ["-p", ...perms, "--add-dir", dir, "--model", c.MODEL];
   for (const d of c.ADD_DIRS) args.push("--add-dir", d);
   if (c.LIVE_STEER) args.push("--settings", join(dir, ".agent-settings.json"));
   for (const d of c.DENY) args.push("--disallowedTools", d);
@@ -72,6 +88,13 @@ export function reviewerArgs(c: Config, dir: string): string[] {
     "--output-format",
     "json",
   ];
+}
+
+/** The MCP server behind PLAN_FIRST's --permission-prompt-tool; the plan it approves lands in `.plan.md`. */
+export function planMcpConfig(dir: string): object {
+  return {
+    mcpServers: { ralph: { command: process.execPath, args: [APPROVE_PLAN], env: { RALPH_PLAN_FILE: join(dir, ".plan.md") } } },
+  };
 }
 
 /** The PreToolUse hook that delivers `ralph steer` to the iteration in flight. */
@@ -385,9 +408,12 @@ export class Loop {
     if (c.LIVE_STEER) {
       writeFileSync(this.p(".agent-settings.json"), `${JSON.stringify(agentSettings())}\n`);
     }
+    if (c.PLAN_FIRST) {
+      writeFileSync(this.p(".plan-mcp.json"), `${JSON.stringify(planMcpConfig(this.dir))}\n`);
+    }
 
     this.log.line(
-      `ralph start: loop=${this.name} repo=${c.REPO} work=${this.work} model=${c.MODEL} max_iter=${c.MAX_ITER} quiet_stop=${c.QUIET_STOP} worktree=${c.WORKTREE ? 1 : 0} push=${pushWord(c.PUSH)} review=${c.REVIEW ? 1 : 0} verify=${c.VERIFY_CMD ? "yes" : ""} health=${c.HEALTH_CMD ? "yes" : ""} churn_at=${c.CHURN_AT} limit_reset=${c.LIMIT_RESET ? 1 : 0}`,
+      `ralph start: loop=${this.name} repo=${c.REPO} work=${this.work} model=${c.MODEL} max_iter=${c.MAX_ITER} quiet_stop=${c.QUIET_STOP} worktree=${c.WORKTREE ? 1 : 0} push=${pushWord(c.PUSH)} review=${c.REVIEW ? 1 : 0} verify=${c.VERIFY_CMD ? "yes" : ""} health=${c.HEALTH_CMD ? "yes" : ""} churn_at=${c.CHURN_AT} limit_reset=${c.LIMIT_RESET ? 1 : 0} plan_first=${c.PLAN_FIRST ? 1 : 0}`,
     );
   }
 
@@ -498,6 +524,7 @@ export class Loop {
     // message is among the last lines the limit check reads.
     const runJson = this.p(".run.json");
     writeFileSync(runJson, "");
+    if (c.PLAN_FIRST) writeFileSync(this.p(".plan.md"), "");
     const agent = await this.bounded(c.ITER_TIMEOUT, ["claude", ...args], {
       stdin: this.promptFile,
       out: runJson,
@@ -505,6 +532,15 @@ export class Loop {
       env,
     });
     const agentOut = claudeText(this.read(runJson));
+    if (c.PLAN_FIRST) {
+      const plan = this.read(this.p(".plan.md"));
+      if (plan.trim()) {
+        this.log.line("plan approved:");
+        this.log.raw(plan.endsWith("\n") ? plan : `${plan}\n`);
+      } else {
+        this.log.line("no plan was approved: the agent never called ExitPlanMode");
+      }
+    }
     this.log.raw(agentOut.text);
     let reviewCost = "-";
     let reviewTokens = "-";
@@ -950,6 +986,10 @@ export class Loop {
       s += `\n---\n\n# Harness: stuck\n\nThe last ${this.trouble} iterations were reverted or failed (see the verdicts). Stop attacking this. Write the blocker under "Needs a decision" in PROGRESS.md, with what was tried, then take unrelated work. If there is none, change nothing.\n`;
     } else if (e > 0 && this.trouble >= e) {
       s += `\n---\n\n# Harness: stuck\n\nThe last ${this.trouble} iterations were reverted or failed (see the verdicts). Do not retry that approach. Pivot to a different defect or a different method.\n`;
+    }
+    if (c.PLAN_FIRST) {
+      s +=
+        "\n---\n\n# Plan first\n\nYou start in plan mode. Read what you need and plan this one iteration, then call ExitPlanMode. The harness approves the plan at once and you carry it out in this same session, without prompts.\n";
     }
     s += `\n---\n\n${c.CLOSING}\n`;
     writeFileSync(this.promptFile, s);

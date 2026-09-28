@@ -41,6 +41,7 @@ export interface Config {
   ACTIVE_HOURS: string;
   ACTIVE_POLL: number;
   DENY: string[];
+  PLAN_FIRST: boolean;
   REVIEW_MODEL: string;
   HEALTH_CMD: string;
   HEALTH_TIMEOUT: number;
@@ -107,6 +108,7 @@ export function defaults(dir: string): Config {
     ACTIVE_HOURS: "",
     ACTIVE_POLL: 300,
     DENY: [],
+    PLAN_FIRST: false,
     REVIEW_MODEL: "",
     HEALTH_CMD: "",
     HEALTH_TIMEOUT: 300,
@@ -162,6 +164,7 @@ const KINDS: Record<keyof Config, Kind> = {
   ACTIVE_HOURS: "string",
   ACTIVE_POLL: "int",
   DENY: "strings",
+  PLAN_FIRST: "bool",
   REVIEW_MODEL: "string",
   HEALTH_CMD: "string",
   HEALTH_TIMEOUT: "int",
