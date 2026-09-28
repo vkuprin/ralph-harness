@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
-import { Fx, join, lines, mkNotifier, read, setup, statuses, until } from "../helpers/index.ts";
+import { chmodSync, existsSync, writeFileSync } from "node:fs";
+import { Fx, join, lines, mkNotifier, read, setup, sq, statuses, until } from "../helpers/index.ts";
 
 const fx = new Fx("merge");
 
@@ -209,5 +209,147 @@ describe("PR_MERGE refuses a config it cannot honour, and a signal never merges"
     expect(gone).toBe(true);
     expect(calls(S, "pr merge")).toEqual([]);
     expect(fx.git(R, "log", "--format=%s", "main")).not.toMatch(/^stub:/m);
+  });
+});
+
+/**
+ * A LAND_OK_CMD that fails its first `fails` calls, the way a check of
+ * production fails while a long job runs there. Every call records what origin
+ * holds for main at that moment, one sha per line in `<name>.seen`.
+ */
+function landScript(name: string, fails: number): { cmd: string; seen: string } {
+  const cmd = fx.p(`land-${name}.sh`);
+  const n = fx.p(`land-${name}.count`);
+  const seen = fx.p(`land-${name}.seen`);
+  writeFileSync(
+    cmd,
+    `#!/bin/sh
+n=$(cat ${sq(n)} 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > ${sq(n)}
+git ls-remote origin refs/heads/main | cut -f1 >> ${sq(seen)}
+if [ "$n" -le ${fails} ]; then echo "ingest_runs: 1 running"; exit 1; fi
+`,
+  );
+  chmodSync(cmd, 0o755);
+  return { cmd, seen };
+}
+
+describe("PR_DRAFT: the pull request is a draft until the loop ends by itself", () => {
+  let merged: Case;
+  let ready: Case;
+  const home = fx.p("draft-home");
+  const loop = join(home, "stopped");
+  const R = fx.p("remote-stopped.git");
+  let S = "";
+  let sleeping = false;
+  let gone = false;
+
+  setup(async () => {
+    merged = await merging("draft", { checks: [PASS], cfg: { PR_DRAFT: true } });
+    ready = await merging("drafted", { cfg: { PR_DRAFT: true, PR_MERGE: false } });
+
+    fx.makeRepo(fx.p("app-stopped"), R);
+    S = fx.stub("stub-stopped", ["commit", "sleep"]);
+    fx.makeLoop(loop, fx.p("app-stopped"), { WORKTREE: true, PUSH: "pr", PR_DRAFT: true, MAX_ITER: 2, ITER_TIMEOUT: 600 });
+    fx.cli(home, ["start", "stopped"], { STUB_DIR: S, STUB_REMOTE: R });
+    sleeping = await until(() => existsSync(join(S, "sleeper.pid")) && calls(S, "pr create").length === 1, 60);
+    fx.cli(home, ["stop", "stopped"]);
+    gone = await until(() => !existsSync(join(loop, "ralph.pid")), 30);
+  });
+
+  test("the pull request is opened as a draft", () => {
+    expect(calls(merged.stub, "pr create")[0]).toContain("--draft");
+  });
+  test("its description says it stays a draft while the loop runs", () => {
+    expect(read(join(merged.loop, ".pr-body"))).toContain("stays a draft while the loop runs");
+  });
+  test("with PR_MERGE it is marked ready before the merge, which GitHub refuses for a draft", () => {
+    const gh = lines(join(merged.stub, "gh.calls"));
+    const at = gh.findIndex((l) => l.startsWith("pr ready ralph/draft"));
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(at).toBeLessThan(gh.findIndex((l) => l.startsWith("pr merge ralph/draft")));
+    expect(said(merged.notes, "merged").length).toBe(1);
+    expect(said(merged.notes, "pr-ready")).toEqual([]);
+  });
+  test("without PR_MERGE it is marked ready and the human hears once", () => {
+    expect(calls(ready.stub, "pr ready")).toEqual(["pr ready ralph/drafted"]);
+    expect(said(ready.notes, "pr-ready").length).toBe(1);
+    expect(calls(ready.stub, "pr merge")).toEqual([]);
+  });
+  test("ralph stop leaves it a draft: the human who stopped the loop decides", () => {
+    expect(sleeping).toBe(true);
+    expect(gone).toBe(true);
+    expect(calls(S, "pr ready")).toEqual([]);
+    expect(existsSync(join(S, "gh-draft"))).toBe(true);
+  });
+});
+
+describe("LAND_OK_CMD: BRANCH does not move while production is busy", () => {
+  let held: Case;
+  let merge = { cmd: "", seen: "" };
+  let push = { cmd: "", seen: "" };
+  const loop = fx.p("loops/landpush");
+  const R = fx.p("remote-landpush.git");
+  const notes = fx.p("notify-landpush.log");
+  let S = "";
+  let start = "";
+
+  setup(async () => {
+    // A pass, then checks running again, then a pass: the wait for LAND_OK_CMD
+    // must not use up PR_MERGE_WAIT, or the pending look in the middle gives up.
+    merge = landScript("merge", 1);
+    held = await merging("landmerge", {
+      checks: [PASS, PENDING, PASS],
+      cfg: { LAND_OK_CMD: merge.cmd, ACTIVE_POLL: 1, PR_MERGE_WAIT: 1 },
+    });
+
+    push = landScript("push", 2);
+    fx.makeRepo(fx.p("app-landpush"), R);
+    start = fx.git(R, "rev-parse", "main");
+    S = fx.stub("stub-landpush", ["commit", "commit"]);
+    mkNotifier(notes, fx.p("notify-landpush.sh"));
+    fx.makeLoop(loop, fx.p("app-landpush"), {
+      WORKTREE: true,
+      PUSH: true,
+      PUSH_CONFIRM: "main",
+      MAX_ITER: 2,
+      LAND_OK_CMD: push.cmd,
+      ACTIVE_POLL: 1,
+      NOTIFY_CMD: fx.p("notify-landpush.sh"),
+    });
+    await fx.runLoop(loop, S, { remote: R });
+  });
+
+  test("the merge waits for it, then goes through", () => {
+    expect(held.rc).toBe(0);
+    expect(said(held.notes, "merged").length).toBe(1);
+    expect(said(held.notes, "merge-blocked")).toEqual([]);
+    expect(read(join(held.loop, "ralph.log"))).toContain("LAND_OK_CMD passes; going on with the merge of ralph/landmerge into main");
+  });
+  test("the human hears once that the merge is held, with the check's own words", () => {
+    const m = said(held.notes, "land-held");
+    expect(m.length).toBe(1);
+    expect(m[0]).toContain("ingest_runs: 1 running");
+  });
+  test("the pull request asks whoever merges it by hand to run the check first", () => {
+    expect(read(join(held.loop, ".pr-body"))).toContain(`check that \`${merge.cmd}\` passes`);
+  });
+  test("with PUSH true both commits reach main", () => {
+    expect(statuses(loop)).toBe("keep keep");
+    expect(fx.git(R, "log", "--format=%s", "main")).toContain("stub: work (agent call 2)");
+  });
+  test("but not while the check fails", () => {
+    const seen = lines(push.seen);
+    expect(seen.slice(0, 2)).toEqual([start, start]);
+    expect(seen[2]).toBe(start);
+  });
+  test("and no iteration starts while the push waits", () => {
+    const log = read(join(loop, "ralph.log"));
+    expect(log.indexOf("holding the push to origin/main")).toBeLessThan(log.indexOf("pushed "));
+    expect(log.indexOf("pushed ")).toBeLessThan(log.indexOf("=== iteration 2"));
+  });
+  test("one notification for the one wait", () => {
+    expect(said(notes, "land-held").length).toBe(1);
   });
 });

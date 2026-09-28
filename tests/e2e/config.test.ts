@@ -75,7 +75,7 @@ describe("bad configuration and odd inputs", () => {
     fx.gitOk(appI, "add", "-A");
     fx.gitOk(appI, "commit", "-qm", "initial");
     const Si = fx.stub("stub-i", ["commit", "commit"]);
-    fx.makeLoop(i, appI, { WORKTREE: true, PUSH: true, MAX_ITER: 2 });
+    fx.makeLoop(i, appI, { WORKTREE: true, PUSH: true, PUSH_CONFIRM: "main", MAX_ITER: 2 });
     await fx.runLoop(i, Si);
 
     // ralph/<name> deleted while the loop runs: the loop puts the branch back.
@@ -100,7 +100,7 @@ describe("bad configuration and odd inputs", () => {
     // A repo path with a space in it, through every gate there is.
     fx.makeRepo(fx.p("my app"), fx.p("remote-n.git"));
     const Sn = fx.stub("stub-n", ["commit", "nothing"]);
-    fx.makeLoop(n, fx.p("my app"), { WORKTREE: true, PUSH: true, REVIEW: true, MAX_ITER: 2, VERIFY_CMD: "./measure.sh" });
+    fx.makeLoop(n, fx.p("my app"), { WORKTREE: true, PUSH: true, PUSH_CONFIRM: "main", REVIEW: true, MAX_ITER: 2, VERIFY_CMD: "./measure.sh" });
     await fx.runLoop(n, Sn, { remote: fx.p("remote-n.git") });
   });
 
@@ -376,5 +376,78 @@ describe("ralph new writes a repo path the loop reads back exactly", () => {
   });
   test("the SETUP_CMD hint still shows the path as the reader would type it", () => {
     expect(read(cfg("plainsrc"))).toContain(`cp ${appSrc}/.env .`);
+  });
+});
+
+describe("PUSH true lands only on a branch the config names twice", () => {
+  // An old loop with PUSH true, restarted, pushed its kept commits straight to
+  // main, and on a repository whose main deploys that is production.
+  const home = fx.p("home-confirm");
+  const app = fx.p("app-confirm");
+  const R = fx.p("remote-confirm.git");
+  const bare = join(home, "bare");
+  const other = join(home, "other");
+  const pr = join(home, "viapr");
+  const notes = fx.p("notify-confirm.log");
+  let S = "";
+  let start = "";
+  let bareRc = -1;
+  let otherRc = -1;
+  let refusedNew = { code: -1, out: "", err: "" };
+  let confirmedNew = { code: -1, out: "", err: "" };
+
+  setup(async () => {
+    fx.makeRepo(app, R);
+    start = fx.git(R, "rev-parse", "main");
+    S = fx.stub("stub-confirm", ["commit", "commit", "nothing"]);
+    writeFileSync(fx.p("notify-confirm.sh"), `#!/bin/sh\necho "$RALPH_EVENT $RALPH_LOOP" >> ${sq(notes)}\n`);
+    chmodSync(fx.p("notify-confirm.sh"), 0o755);
+    const base = { WORKTREE: true, PUSH: true, MAX_ITER: 1, QUIET_SLEEP: 0, STEP_SLEEP: 0, NOTIFY_CMD: fx.p("notify-confirm.sh") };
+    fx.makeLoop(bare, app, base);
+    bareRc = await fx.runLoop(bare, S, { remote: R });
+    fx.makeLoop(other, app, { ...base, PUSH_CONFIRM: "develop" });
+    otherRc = await fx.runLoop(other, S, { remote: R });
+    fx.makeLoop(pr, app, { WORKTREE: true, PUSH: "pr", MAX_ITER: 1 });
+    await fx.runLoop(pr, S, { remote: R });
+
+    refusedNew = fx.cli(home, ["new", "straight", app, "--set", "PUSH=true"]);
+    confirmedNew = fx.cli(home, ["new", "confirmed", app, "--set", "PUSH=true", "--set", "PUSH_CONFIRM=main"]);
+    fx.cli(home, ["new", "plain", app]);
+  });
+
+  test("without PUSH_CONFIRM the loop refuses to start", () => {
+    expect(bareRc).toBe(2);
+    const log = read(join(bare, "ralph.log"));
+    expect(log).toContain("PUSH true pushes every kept commit straight to origin/main");
+    expect(log).toContain('set "PUSH_CONFIRM": "main" in config.json');
+    expect(log).not.toContain("=== iteration");
+  });
+  test("the human hears the refusal", () => {
+    expect(read(notes)).toContain("refused bare");
+  });
+  test("a PUSH_CONFIRM naming another branch is no confirmation", () => {
+    expect(otherRc).toBe(2);
+    expect(read(join(other, "ralph.log"))).toContain('PUSH_CONFIRM names "develop", not BRANCH "main"');
+  });
+  test("nothing reached main, and no worktree was made", () => {
+    expect(fx.git(R, "rev-parse", "main")).toBe(start);
+    expect(existsSync(fx.p("app-confirm-ralph-bare"))).toBe(false);
+  });
+  test("PUSH \"pr\" needs no confirmation", () => {
+    expect(read(join(pr, "ralph.log"))).toContain("=== iteration 1");
+  });
+  test("ralph new will not scaffold PUSH true without it, and leaves nothing behind", () => {
+    expect(refusedNew.code).not.toBe(0);
+    expect(refusedNew.err).toContain("--set PUSH_CONFIRM=main");
+    expect(existsSync(join(home, "straight"))).toBe(false);
+  });
+  test("with it, ralph new writes both", () => {
+    expect(confirmedNew.code).toBe(0);
+    expect(readConfigValue(join(home, "confirmed", "config.json"), "PUSH")).toBe("true");
+    expect(readConfigValue(join(home, "confirmed", "config.json"), "PUSH_CONFIRM")).toBe("main");
+  });
+  test("a new loop lands through a draft pull request unless told otherwise", () => {
+    expect(readConfigValue(join(home, "plain", "config.json"), "PUSH")).toBe("pr");
+    expect(readConfigValue(join(home, "plain", "config.json"), "PR_DRAFT")).toBe("true");
   });
 });

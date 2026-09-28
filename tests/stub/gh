@@ -11,6 +11,9 @@
 //                 call uses up a line and the last one stays, so a test can
 //                 script pending, then pass. No file: no checks at all.
 //   gh-merge-fail present: `pr merge` fails with its text, as branch protection does
+//   gh-draft      present: the open pull request is a draft. `pr create --draft`
+//                 writes it, `pr ready` removes it, and `pr merge` refuses a
+//                 draft, as GitHub does
 //
 // `pr merge` really merges, in a human's clone of $STUB_REMOTE, and only the
 // head --match-head-commit names, the way GitHub refuses a head that moved.
@@ -44,7 +47,16 @@ if (line === "auth status") {
   writeFileSync(join(d, "gh-created"), `${n}\n`);
   const url = `https://example.invalid/pull/${n}\n`;
   writeFileSync(join(d, "gh-open"), url);
+  if (args.includes("--draft")) writeFileSync(join(d, "gh-draft"), "");
+  else rmSync(join(d, "gh-draft"), { force: true });
   process.stdout.write(url);
+} else if (args[0] === "pr" && args[1] === "ready") {
+  if (!cat("gh-open")) {
+    process.stderr.write(`no pull requests found for branch "${args[2] ?? ""}"\n`);
+    process.exit(1);
+  }
+  rmSync(join(d, "gh-draft"), { force: true });
+  process.stdout.write(`✓ Pull request ${cat("gh-open").trim()} is marked as "ready for review"\n`);
 } else if (args[0] === "pr" && args[1] === "view") {
   const lines = cat("gh-checks").split("\n").filter((l) => l !== "");
   if (lines.length > 1) writeFileSync(join(d, "gh-checks"), lines.slice(1).map((l) => `${l}\n`).join(""));
@@ -61,6 +73,10 @@ if (line === "auth status") {
   const method = args.find((a) => a === "--merge" || a === "--squash" || a === "--rebase");
   const at = args.indexOf("--match-head-commit");
   const want = at >= 0 ? (args[at + 1] ?? "") : "";
+  if (existsSync(join(d, "gh-draft"))) {
+    process.stderr.write("GraphQL: Pull Request is still a draft (mergePullRequest)\n");
+    process.exit(1);
+  }
   if (existsSync(join(d, "gh-merge-fail"))) {
     process.stderr.write(cat("gh-merge-fail"));
     process.exit(1);

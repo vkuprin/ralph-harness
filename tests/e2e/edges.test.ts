@@ -109,7 +109,7 @@ describe("a BRANCH other than main", () => {
     fx.git(app, "commit", "-qm", "dev: start");
     fx.git(app, "push", "-q", "-u", "origin", "dev");
     fx.git(app, "checkout", "-q", "main");
-    fx.makeLoop(loop, app, { WORKTREE: true, PUSH: true, BRANCH: "dev", MAX_ITER: 1 });
+    fx.makeLoop(loop, app, { WORKTREE: true, PUSH: true, PUSH_CONFIRM: "dev", BRANCH: "dev", MAX_ITER: 1 });
     await fx.runLoop(loop, fx.stub("stub-br", ["commit"]), { remote });
   });
 
@@ -268,7 +268,7 @@ describe("a rebase that fails verify is dropped (PUSH=1)", () => {
     fx.makeRepo(app, remote);
     // The human's push adds human.txt, which this VERIFY_CMD refuses: the
     // commit passes on its own and fails once rebased onto the human's work.
-    fx.makeLoop(loop, app, { WORKTREE: true, PUSH: true, MAX_ITER: 1, VERIFY_CMD: "test ! -f human.txt" });
+    fx.makeLoop(loop, app, { WORKTREE: true, PUSH: true, PUSH_CONFIRM: "main", MAX_ITER: 1, VERIFY_CMD: "test ! -f human.txt" });
     await fx.runLoop(loop, fx.stub("stub-rev", ["human-main"]), { remote });
   });
 

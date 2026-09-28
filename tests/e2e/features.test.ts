@@ -72,7 +72,7 @@ describe("the reviewer sees what done looks like; the loop sees what it shipped"
     S = fx.stub("stub-done", ["commit", "commit", "commit"]);
     fx.makeLoop(loop, fx.p("app-done"), {
       WORKTREE: true,
-      PUSH: true,
+      PUSH: true, PUSH_CONFIRM: "main",
       REVIEW: true,
       MAX_ITER: 3,
       VERIFY_CMD: "./measure.sh",
@@ -95,7 +95,7 @@ describe("the reviewer sees what done looks like; the loop sees what it shipped"
     // The template's own placeholder is not a picture of anything.
     fx.makeRepo(fx.p("app-done2"), fx.p("remote-done2.git"));
     S2 = fx.stub("stub-done2", ["commit"]);
-    fx.makeLoop(loop2, fx.p("app-done2"), { WORKTREE: true, PUSH: true, REVIEW: true, MAX_ITER: 1, VERIFY_CMD: "./measure.sh" });
+    fx.makeLoop(loop2, fx.p("app-done2"), { WORKTREE: true, PUSH: true, PUSH_CONFIRM: "main", REVIEW: true, MAX_ITER: 1, VERIFY_CMD: "./measure.sh" });
     await fx.runLoop(loop2, S2, { remote: fx.p("remote-done2.git") });
   });
 
@@ -137,14 +137,14 @@ describe("DONE_CMD: a finished job stops the loop", () => {
   setup(async () => {
     fx.makeRepo(fx.p("app-fin"), remote);
     const S = fx.stub("stub-fin", ["commit", "finish", "commit", "commit"]);
-    fx.makeLoop(loop, fx.p("app-fin"), { WORKTREE: true, PUSH: true, MAX_ITER: 5, DONE_CMD: "test -f FINISHED" });
+    fx.makeLoop(loop, fx.p("app-fin"), { WORKTREE: true, PUSH: true, PUSH_CONFIRM: "main", MAX_ITER: 5, DONE_CMD: "test -f FINISHED" });
     await fx.runLoop(loop, S, { remote });
 
     fx.makeRepo(fx.p("app-fin2"), fx.p("remote-fin2.git"));
     const S2 = fx.stub("stub-fin2", ["commit", "commit"]);
     fx.makeLoop(loop2, fx.p("app-fin2"), {
       WORKTREE: true,
-      PUSH: true,
+      PUSH: true, PUSH_CONFIRM: "main",
       MAX_ITER: 2,
       DONE_CMD: 'test -f BACKLOG.md && ! grep -q "^- \\[ \\]" BACKLOG.md',
     });
@@ -268,7 +268,7 @@ describe("what an iteration costs", () => {
   setup(async () => {
     fx.makeRepo(fx.p("app-cost"), fx.p("remote-cost.git"));
     S = fx.stub("stub-cost", ["commit", "limit", "commit"]);
-    fx.makeLoop(loop, fx.p("app-cost"), { WORKTREE: true, PUSH: true, REVIEW: true, MAX_ITER: 2, VERIFY_CMD: "./measure.sh" });
+    fx.makeLoop(loop, fx.p("app-cost"), { WORKTREE: true, PUSH: true, PUSH_CONFIRM: "main", REVIEW: true, MAX_ITER: 2, VERIFY_CMD: "./measure.sh" });
     await fx.runLoop(loop, S, { remote: fx.p("remote-cost.git") });
     review = fx.cli(fx.p("loops"), ["review", "cost"]).out;
   });

@@ -26,6 +26,8 @@ export interface Config {
   WORKTREE_DIR: string;
   BRANCH: string;
   PUSH: Push;
+  PUSH_CONFIRM: string;
+  PR_DRAFT: boolean;
   PR_MERGE: boolean;
   PR_MERGE_METHOD: MergeMethod;
   PR_MERGE_WAIT: number;
@@ -45,6 +47,8 @@ export interface Config {
   REVIEW_MODEL: string;
   HEALTH_CMD: string;
   HEALTH_TIMEOUT: number;
+  LAND_OK_CMD: string;
+  LAND_OK_TIMEOUT: number;
   CHURN_AT: number;
   CHURN_WINDOW: number;
   CHURN_IGNORE: string[];
@@ -93,6 +97,8 @@ export function defaults(dir: string): Config {
     WORKTREE_DIR: "",
     BRANCH: "main",
     PUSH: false,
+    PUSH_CONFIRM: "",
+    PR_DRAFT: false,
     PR_MERGE: false,
     PR_MERGE_METHOD: "merge",
     PR_MERGE_WAIT: 3600,
@@ -112,6 +118,8 @@ export function defaults(dir: string): Config {
     REVIEW_MODEL: "",
     HEALTH_CMD: "",
     HEALTH_TIMEOUT: 300,
+    LAND_OK_CMD: "",
+    LAND_OK_TIMEOUT: 300,
     CHURN_AT: 0,
     CHURN_WINDOW: 8,
     CHURN_IGNORE: [],
@@ -149,6 +157,8 @@ const KINDS: Record<keyof Config, Kind> = {
   WORKTREE_DIR: "path",
   BRANCH: "string",
   PUSH: "push",
+  PUSH_CONFIRM: "string",
+  PR_DRAFT: "bool",
   PR_MERGE: "bool",
   PR_MERGE_METHOD: "method",
   PR_MERGE_WAIT: "int",
@@ -168,6 +178,8 @@ const KINDS: Record<keyof Config, Kind> = {
   REVIEW_MODEL: "string",
   HEALTH_CMD: "string",
   HEALTH_TIMEOUT: "int",
+  LAND_OK_CMD: "string",
+  LAND_OK_TIMEOUT: "int",
   CHURN_AT: "int",
   CHURN_WINDOW: "int",
   CHURN_IGNORE: "strings",
@@ -315,6 +327,21 @@ export function schema(): object {
 export function limitPattern(c: Config): RegExp {
   const base = c.RATE_LIMIT_RE;
   return new RegExp(c.RATE_LIMIT_EXTRA_RE ? `${base}|${c.RATE_LIMIT_EXTRA_RE}` : base, "i");
+}
+
+/**
+ * PUSH true sends every kept commit straight to origin/BRANCH, and whatever
+ * deploys BRANCH deploys it. That is said once, in the config, by naming the
+ * branch: an old loop restarted, or a config copied onto a repository whose
+ * main ships to production, must not do it by default. Naming the branch and
+ * not a bare true means a later change of BRANCH has to be confirmed again.
+ * The problem only; the start and `ralph new` each say how to fix it.
+ */
+export function pushProblem(c: Config): string | null {
+  if (!c.WORKTREE || c.PUSH !== true || c.PUSH_CONFIRM === c.BRANCH) return null;
+  const straight = `PUSH true pushes every kept commit straight to origin/${c.BRANCH}`;
+  if (c.PUSH_CONFIRM) return `${straight}, but PUSH_CONFIRM names ${JSON.stringify(c.PUSH_CONFIRM)}, not BRANCH ${JSON.stringify(c.BRANCH)}`;
+  return `${straight}, and whatever deploys ${c.BRANCH} deploys it; PUSH_CONFIRM has to name that branch`;
 }
 
 /** PUSH as the bash harness wrote it, for log lines people already grep. */

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { Fx, count, join, read, setup, sleeperGone, statuses } from "../helpers/index.ts";
+import { Fx, count, join, read, rows, setup, sleeperGone, statuses } from "../helpers/index.ts";
 
 const fx = new Fx("gates");
 const T = fx.T;
@@ -24,7 +24,7 @@ describe("gates, verdicts and pushes (WORKTREE=1 PUSH=1 REVIEW=1)", () => {
     );
     fx.makeLoop(loop, app, {
       WORKTREE: true,
-      PUSH: true,
+      PUSH: true, PUSH_CONFIRM: "main",
       REVIEW: true,
       ITER_TIMEOUT: 3,
       MAX_ITER: 10,
@@ -132,7 +132,7 @@ describe("escalation and the PROGRESS.md cap", () => {
   setup(async () => {
     fx.makeRepo(app, remote);
     S = fx.stub("stub-b", ["commit-bad", "commit-bad", "commit-bad", "commit-bad", "commit-bad", "commit-bad", "nothing"]);
-    fx.makeLoop(loop, app, { WORKTREE: true, PUSH: true, MAX_ITER: 7, PROGRESS_KEEP: 8, VERIFY_CMD: "./measure.sh" });
+    fx.makeLoop(loop, app, { WORKTREE: true, PUSH: true, PUSH_CONFIRM: "main", MAX_ITER: 7, PROGRESS_KEEP: 8, VERIFY_CMD: "./measure.sh" });
     writeFileSync(join(loop, "PROGRESS.md"), seededProgress());
     await fx.runLoop(loop, S, { remote });
   });
@@ -213,3 +213,78 @@ export function seededProgress(): string {
   }
   return out;
 }
+describe("the reviewer and the agent are told what the gate already checked", () => {
+  const app = fx.p("app-told");
+  const loop = fx.p("loops/told");
+  const bare = fx.p("loops/told-bare");
+  let S = "";
+  let B = "";
+  let failed: string[] = [];
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-told.git"));
+    S = fx.stub("stub-told", ["commit", "commit-bad", "limit", "nothing", "commit"], ["ACCEPT", "ACCEPT"]);
+    fx.makeLoop(loop, app, {
+      WORKTREE: true,
+      REVIEW: true,
+      MAX_ITER: 4,
+      FROZEN: ["measure.sh"],
+      VERIFY_CMD: "./measure.sh || { echo 'measure: BAD is there'; exit 1; }",
+    });
+    await fx.runLoop(loop, S);
+    failed = rows(loop).find((r) => r[4] === "revert:verify") ?? [];
+
+    fx.makeRepo(fx.p("app-told-bare"), fx.p("remote-told-bare.git"));
+    B = fx.stub("stub-told-bare", ["commit"], ["ACCEPT"]);
+    fx.makeLoop(bare, fx.p("app-told-bare"), { WORKTREE: true, REVIEW: true, MAX_ITER: 1 });
+    await fx.runLoop(bare, B);
+  });
+
+  test("verdicts in order", () => {
+    expect(statuses(loop)).toBe("keep revert:verify ratelimit quiet keep");
+  });
+  test("review.diff starts with each commit's message, which the reviewer cannot get from git", () => {
+    const diff = read(join(loop, "review.diff"));
+    expect(diff).toMatch(/^commit [0-9a-f]{40}\n\nstub: work \(agent call 5\)/);
+    expect(diff.indexOf("stub: work")).toBeLessThan(diff.indexOf("diff --git"));
+  });
+  test("the reviewer is told VERIFY_CMD passed, where its output is, and that the frozen files held", () => {
+    const prompt = read(join(S, "prompt.review.1"));
+    expect(prompt).toContain("VERIFY_CMD passed on these commits");
+    expect(prompt).toContain(join(loop, "verify.out"));
+    expect(prompt).toContain("None of the frozen files changed: measure.sh");
+    expect(prompt).toContain("Do not reject for not having run them");
+  });
+  test("the reviewer is told not to look for history in the worktree's .git", () => {
+    expect(read(join(S, "prompt.review.1"))).toContain("do not look for history there");
+  });
+  test("without VERIFY_CMD the reviewer is told nothing has run the commits", () => {
+    const prompt = read(join(B, "prompt.review.1"));
+    expect(prompt).toContain("Nothing has run these commits");
+    expect(prompt).not.toContain("VERIFY_CMD passed");
+  });
+  test("the agent is told the harness runs VERIFY_CMD, so not to run all of it", () => {
+    const prompt = read(join(S, "prompt.agent.1"));
+    expect(prompt).toContain("do not run the whole of it yourself");
+    expect(prompt).toContain("./measure.sh ||");
+    expect(read(join(B, "prompt.agent.1"))).not.toContain("do not run the whole of it");
+  });
+  test("after VERIFY_CMD fails, the next prompt holds its last lines and how to get the commits back", () => {
+    const prompt = read(join(S, "prompt.agent.3"));
+    expect(prompt).toContain("# Harness: VERIFY_CMD failed on the last commits");
+    expect(prompt).toContain("measure: BAD is there");
+    // results.tsv holds the first 12 characters of each sha; the prompt holds all of them.
+    expect(prompt).toMatch(new RegExp(`git cherry-pick ${failed[2]}[0-9a-f]{28}\\.\\.${failed[3]}[0-9a-f]{28}\``));
+    expect(read(join(S, "prompt.agent.1"))).not.toContain("VERIFY_CMD failed");
+  });
+  test("that range is the reset commit, still reachable", () => {
+    expect(fx.git(fx.p("app-told-ralph-told"), "log", "--format=%s", `${failed[2]}..${failed[3]}`)).toBe("stub: bad (agent call 2)");
+  });
+  test("a limit judged nothing, so the retry still hears about the failure", () => {
+    expect(read(join(S, "prompt.agent.4"))).toContain("VERIFY_CMD failed on the last commits");
+  });
+  test("an iteration that ran and shipped nothing clears it", () => {
+    expect(read(join(S, "prompt.agent.5"))).not.toContain("VERIFY_CMD failed");
+  });
+});
+

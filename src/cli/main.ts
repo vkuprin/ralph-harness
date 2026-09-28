@@ -16,7 +16,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stampMinutes } from "../lib/clock.ts";
-import { checkSetting, parseConfig } from "../lib/config.ts";
+import { checkSetting, parseConfig, pushProblem } from "../lib/config.ts";
 import { readResults } from "../lib/results.ts";
 import { hint } from "../lib/shq.ts";
 import { splitLines } from "../lib/text.ts";
@@ -425,6 +425,11 @@ function cmdNew(args: string[]): void {
   for (const [key, value] of sets) {
     const got = (back.config as unknown as Record<string, unknown>)[key];
     if (JSON.stringify(got) !== JSON.stringify(value)) die(`--set ${key} did not reach config.json: it reads back as ${JSON.stringify(got)}`);
+  }
+  // The loop would refuse to start on it, so it is not a scaffold either.
+  const push = pushProblem(back.config);
+  if (push) {
+    die(`${push} — add ${hint("--set", `PUSH_CONFIRM=${back.config.BRANCH}`)} to mean it, or ${hint("--set", "PUSH=pr")} to land through a pull request; nothing was created`);
   }
   // A scaffold the harness could not write is not a scaffold, and the exit
   // status is the only part a script can read.

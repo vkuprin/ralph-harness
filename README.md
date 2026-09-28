@@ -86,7 +86,7 @@ A loop lives in `~/.claude/ralph/<name>/` (`$RALPH_HOME`): `config.json`,
 Set them in the loop's `config.json` (JSON with comments), or when creating it with
 `ralph new … --set KEY=VALUE`. Read once at start: restart to apply. An unknown key
 or a wrong type refuses the start. The defaults below are what `ralph new` writes; a
-key left out of the file entirely is off for `WORKTREE`, `PUSH`, `REVIEW`,
+key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `REVIEW`,
 `LIMIT_RESET` and `CHURN_AT`.
 
 **Loop**
@@ -133,11 +133,15 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `REVIEW`,
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `BRANCH` | `"main"` | the base branch |
-| `PUSH` | `true` | `true` pushes kept commits to `BRANCH`; `"pr"` pushes `ralph/<name>` and keeps one pull request open; `false` stays local |
+| `PUSH` | `"pr"` | `"pr"` pushes `ralph/<name>` and keeps one pull request open; `true` pushes kept commits straight to `BRANCH`; `false` stays local |
+| `PUSH_CONFIRM` | `""` | required with `PUSH` `true`: the name of `BRANCH` again. Whatever deploys `BRANCH` deploys every kept commit, so the loop refuses to start without it |
+| `PR_DRAFT` | `true` | with `"pr"`, open the pull request as a draft and mark it ready when the loop ends by itself; with one loop per stage, nobody merges a stage half done |
 | `PR_MERGE` | `false` | with `"pr"`, merge the pull request when the loop ends by itself and every check passes |
 | `PR_MERGE_METHOD` | `"merge"` | `"merge"`, `"squash"` or `"rebase"` |
 | `PR_MERGE_WAIT` | `3600` | seconds to wait for checks still running |
 | `PR_MERGE_POLL` | `30` | seconds between two looks at the checks |
+| `LAND_OK_CMD` | `""` | your check that `BRANCH` may move now, like "no data load running in production"; while it fails, a push (`true`) or a merge (`PR_MERGE`) waits, asking every `ACTIVE_POLL` seconds |
+| `LAND_OK_TIMEOUT` | `300` | seconds `LAND_OK_CMD` may take |
 
 **Limits and errors**
 
@@ -160,7 +164,7 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `REVIEW`,
 | `NOTIFY_TIMEOUT` | `30` | seconds it may take; its exit status is ignored |
 
 Events: `stopped`, `refused`, `stuck`, `limit`, `limit-clear`, `decision`, `health`,
-`health-clear`, `churn`, `pr`, `pr-blocked`, `merged`, `merge-blocked`.
+`health-clear`, `churn`, `pr`, `pr-blocked`, `pr-ready`, `land-held`, `merged`, `merge-blocked`.
 `template/config.json` has a macOS notification and a Telegram example.
 
 **Memory and logs**

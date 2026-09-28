@@ -39,6 +39,12 @@ for every `ralph` command below. If neither exists, tell the user to install ral
   `$RALPH_HOME` (default `~/.claude/ralph`) and the branch `ralph/<name>`. It cannot
   hold a `/`, and `$RALPH_HOME/<name>` must not exist already. If it does, propose
   `<name>-2` or ask.
+- A job with stages (L1, L2, …) gets one loop per stage, named `<name>-<stage>`,
+  each with a `DONE_CMD` for its own stage. Its pull request is then the stage: it
+  stays a draft while the loop runs and is ready when the stage is done. One loop
+  across several stages keeps one pull request across them, and whoever merges it
+  midway lands half a stage. Set up the first stage now and say the next one is a
+  new loop.
 
 ## 3. Look before asking (read-only)
 
@@ -53,6 +59,9 @@ Collect what the questions need:
   `Cargo.toml` or `go.mod`. Prefer one command that runs tests and the type check
   together, for example `bun run check` or `npm test && npm run typecheck`.
 - `CLAUDE.md` and `AGENTS.md`: rules the loop's PROMPT.md should repeat.
+- Whether the base branch deploys: a deploy workflow on push to it, a Vercel or
+  Netlify config, a `deploy` script. Note what long jobs production runs (data
+  loads, migrations, ingest runs), if the repository shows any.
 
 ## 4. First round of questions
 
@@ -63,7 +72,8 @@ Ask these four questions in one AskUserQuestion call:
      pull request open, and merges it when the loop ends if every check on it
      passes. Recommend this when there is an origin and gh is logged in.
    - "PR, I merge it": the same pull request, merged by a human.
-   - "Push straight to <branch>": each kept commit goes to the base branch.
+   - "Push straight to <branch>": each kept commit goes to the base branch at once.
+     If that branch deploys, say so in the description and recommend a PR instead.
    - "Stay local": commits stay on `ralph/<name>` for the user to merge.
 2. **The gate every commit must pass** (header `Verify`): up to three of the
    commands you found, the best one first. If you found fewer than two, add
@@ -89,7 +99,7 @@ Two combinations need a word before you go on:
 ## 5. Second round of questions
 
 Ask only the questions that apply, at most four per AskUserQuestion call, in this
-order. If more than four apply, ask Notifications in one more call.
+order. If more than four apply, ask the rest (Deploy, Notifications) in one more call.
 
 - **How to merge** (header `Merge how`), only with "PR, merged when the loop ends":
   "Merge commit (Recommended)", "Squash", "Rebase".
@@ -102,6 +112,14 @@ order. If more than four apply, ask Notifications in one more call.
     files: a feature, a refactor, a migration.
 - **Hours** (header `Hours`): "Any time (Recommended)", "Nights only (22-08)". The
   user can type another window, such as `9-17`, through Other.
+- **Deploy guard** (header `Deploy`), only with "PR, merged when the loop ends" or
+  "Push straight to <branch>", and recommended when the base branch deploys: the
+  harness runs a check before it moves the branch and waits while it fails, so a
+  merge or a push never cuts off a long job in production.
+  - "A check command": ask in plain text for it. It exits 0 when the branch may
+    move, and non-zero while such a job runs, for example "no row of
+    `ingest_runs` is `running`".
+  - "None"
 - **Notifications** (header `Notify`):
   - "macOS notification"
   - "Telegram": it reads `TG_TOKEN` and `TG_CHAT` from the environment the loop
@@ -119,13 +137,16 @@ If the user has not already said what the loop is for, ask in plain text:
 ## 7. Scaffold
 
 Map the answers to settings. `WORKTREE` stays `true`, the template's value: every
-gate needs it.
+gate needs it. So does `PR_DRAFT`: the pull request is a draft until the loop ends
+by itself. `PUSH=true` without `PUSH_CONFIRM` naming the same branch is refused by
+`ralph new` and by the loop, because every kept commit then reaches that branch and
+whatever deploys it.
 
 | Answer | Settings |
 |---|---|
 | PR, merged when the loop ends | `PUSH=pr`, `PR_MERGE=true`, plus `PR_MERGE_METHOD=merge\|squash\|rebase` |
 | PR, I merge it | `PUSH=pr` |
-| Push straight to <branch> | `PUSH=true` |
+| Push straight to <branch> | `PUSH=true`, `PUSH_CONFIRM=<branch>` |
 | Stay local | `PUSH=false` |
 | Base branch, when it is not `main` | `BRANCH=<branch>` |
 | A verify command | `VERIFY_CMD=<command>` |
@@ -136,6 +157,7 @@ gate needs it.
 | Model | `MODEL=opus\|sonnet` |
 | Plan first on | `PLAN_FIRST=true` |
 | Nights only | `ACTIVE_HOURS=22-08` |
+| A deploy guard | `LAND_OK_CMD=<command>` |
 | macOS or Telegram | `NOTIFY_CMD=<the matching example from the template's config.json>` |
 
 Then run one command:
@@ -187,7 +209,8 @@ Show a short summary:
 
 - the loop directory;
 - the branch;
-- where the work lands, and whether and how it is merged;
+- where the work lands, and whether and how it is merged (a draft until the loop
+  ends; held while the deploy guard fails);
 - the gate, the reviewer and the stop condition;
 - whether iterations plan first.
 

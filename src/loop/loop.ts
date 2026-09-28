@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { hour, nowSec, stampMinutes } from "../lib/clock.ts";
-import { type Config, limitPattern, pushWord } from "../lib/config.ts";
+import { type Config, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
 import type { Log } from "../lib/log.ts";
 import { type Ran, nap, run, runBounded } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
@@ -141,6 +141,11 @@ export class Loop {
   private churnKept = 0;
   private capWarned = false;
   private injectWarned = false;
+  private landWaiting = false;
+  /** The loop has ended by itself: a pull request opened from here on is not a draft. */
+  private ended = false;
+  /** The last iteration's commits that VERIFY_CMD failed, for the next prompt. */
+  private verifyFailed: { before: string; after: string; tail: string } | null = null;
 
   constructor(
     readonly dir: string,
@@ -383,6 +388,13 @@ export class Loop {
         2,
       );
     }
+    const push = pushProblem(c);
+    if (push) {
+      await this.refuse(
+        `ralph: ${push} — set "PUSH_CONFIRM": ${JSON.stringify(c.BRANCH)} in config.json to mean it, or PUSH "pr" to land through a pull request`,
+        2,
+      );
+    }
 
     // PUSH with nowhere to push: every sync would fetch, fail and copy git's
     // complaint into the log. Say it once and keep the commits local.
@@ -395,6 +407,12 @@ export class Loop {
     if (this.harnessPushes() && c.PUSH === "pr") {
       if (await this.ghRun(30, ["auth", "status"])) this.ghOk = true;
       else this.log.line(`PUSH=pr: gh is missing or not logged in — ralph/${this.name} is still pushed to origin; open its pull request by hand`);
+    }
+    if (c.LAND_OK_CMD && !(this.harnessPushes() && (c.PUSH === true || c.PR_MERGE))) {
+      const pr = this.harnessPushes() && c.PUSH === "pr";
+      this.log.line(
+        `LAND_OK_CMD: this loop never moves ${c.BRANCH} itself (PUSH=${pushWord(c.PUSH)}${pr ? " without PR_MERGE" : ""}), so the check holds nothing${pr ? "; the pull request asks whoever merges it to run the check first" : ""}`,
+      );
     }
 
     if (c.WORKTREE) await this.setupWorktree();
@@ -413,7 +431,7 @@ export class Loop {
     }
 
     this.log.line(
-      `ralph start: loop=${this.name} repo=${c.REPO} work=${this.work} model=${c.MODEL} max_iter=${c.MAX_ITER} quiet_stop=${c.QUIET_STOP} worktree=${c.WORKTREE ? 1 : 0} push=${pushWord(c.PUSH)} review=${c.REVIEW ? 1 : 0} verify=${c.VERIFY_CMD ? "yes" : ""} health=${c.HEALTH_CMD ? "yes" : ""} churn_at=${c.CHURN_AT} limit_reset=${c.LIMIT_RESET ? 1 : 0} plan_first=${c.PLAN_FIRST ? 1 : 0}`,
+      `ralph start: loop=${this.name} repo=${c.REPO} work=${this.work} model=${c.MODEL} max_iter=${c.MAX_ITER} quiet_stop=${c.QUIET_STOP} worktree=${c.WORKTREE ? 1 : 0} push=${pushWord(c.PUSH)} review=${c.REVIEW ? 1 : 0} verify=${c.VERIFY_CMD ? "yes" : ""} health=${c.HEALTH_CMD ? "yes" : ""} churn_at=${c.CHURN_AT} limit_reset=${c.LIMIT_RESET ? 1 : 0} plan_first=${c.PLAN_FIRST ? 1 : 0} land_ok=${c.LAND_OK_CMD ? "yes" : ""}`,
     );
   }
 
@@ -449,7 +467,11 @@ export class Loop {
 
     // While the pid file is still there: `ralph status` shows a loop waiting on
     // its pull request's checks as running.
-    if (!this.broken) await this.mergeAtEnd();
+    if (!this.broken) {
+      this.ended = true;
+      await this.prReady();
+      await this.mergeAtEnd();
+    }
     rmSync(this.p("ralph.pid"), { force: true });
     this.log.line(`ralph finished after ${this.iter} iterations`);
     // The one stop notification, for every way the loop can end. Not for a
@@ -613,6 +635,11 @@ export class Loop {
     }
     const cost = addCost(agentOut.cost, reviewCost);
     const tokens = addTokens(agentOut.tokens, reviewTokens);
+    // Read now: a sync before the next iteration can run VERIFY_CMD again and
+    // overwrite verify.out. Kept through an iteration that judged nothing (a
+    // limit, a crash), so the retry still hears about it.
+    if (status === "revert:verify") this.verifyFailed = { before, after, tail: this.lastLines(this.p("verify.out")) };
+    else if (!["ratelimit", "timeout", "error"].includes(status)) this.verifyFailed = null;
 
     if (status.startsWith("revert:")) {
       await this.saveRef("reverted", after);
@@ -853,6 +880,46 @@ export class Loop {
     return false;
   }
 
+  /** The last 40 lines of a command's output, at most its last 4000 bytes: what a prompt can carry. */
+  private lastLines(file: string): string {
+    const tail = tailLines(this.read(file), 40).map((l) => `${l}\n`).join("");
+    return chomp(Buffer.from(tail).subarray(Math.max(0, Buffer.byteLength(tail) - 4000)).toString("utf8"));
+  }
+
+  /**
+   * LAND_OK_CMD, before the harness moves BRANCH — a push with PUSH true, the
+   * merge with PR_MERGE: true when BRANCH may move now. Otherwise the caller
+   * waits and asks again, for as long as it takes. The work it holds has passed
+   * every gate, so an unbounded wait costs nothing but time, and a deploy that
+   * cuts off a long job in production costs more. A human hears once per wait.
+   */
+  private async landHeld(what: string): Promise<boolean> {
+    const c = this.cfg;
+    if (!c.LAND_OK_CMD) return false;
+    const secs = c.LAND_OK_TIMEOUT >= 1 ? c.LAND_OK_TIMEOUT : 300;
+    const out = this.p("land.out");
+    writeFileSync(out, "");
+    const r = await this.bounded(secs, ["bash", "-c", c.LAND_OK_CMD], {
+      out,
+      env: { RALPH_DIR: this.dir, RALPH_LOOP: this.name },
+    });
+    this.log.raw(this.read(out));
+    if (!r.timedOut && r.rc === 0) {
+      if (this.landWaiting) this.log.line(`land: LAND_OK_CMD passes; going on with ${what}`);
+      this.landWaiting = false;
+      return false;
+    }
+    const why = r.timedOut ? `timed out after ${secs}s` : `exited ${r.rc}`;
+    if (!this.landWaiting) {
+      this.landWaiting = true;
+      this.log.line(`land: LAND_OK_CMD ${why} — holding ${what}, asking again every ${c.ACTIVE_POLL}s`);
+      const said = [...lastNonBlank(splitLines(this.read(out)))].slice(0, 300).join("");
+      await this.notify("land-held", `holding ${what}: LAND_OK_CMD ${why}${said ? `: ${said}` : ""}`);
+    }
+    await nap(c.ACTIVE_POLL);
+    return true;
+  }
+
   private async healthSection(): Promise<string> {
     if (this.healthState !== "fail") return "";
     let s = "\n---\n\n# Harness: the health check is failing — this comes first\n\n";
@@ -866,9 +933,7 @@ export class Loop {
       if (suspects) s += `\nCommits since it last passed, the first suspects:\n\n${suspects}\n`;
       else s += "\nNo commit has landed since it last passed, so the cause is outside this branch.\n";
     }
-    const tail = tailLines(this.read(this.p("health.out")), 40).map((l) => `${l}\n`).join("");
-    const lastBytes = Buffer.from(tail).subarray(Math.max(0, Buffer.byteLength(tail) - 4000)).toString("utf8");
-    s += `\nIts last lines:\n\n\`\`\`\n${chomp(lastBytes)}\n\`\`\`\n`;
+    s += `\nIts last lines:\n\n\`\`\`\n${this.lastLines(this.p("health.out"))}\n\`\`\`\n`;
     s +=
       '\nFind and fix the cause before any other work. If commits of this loop caused it, fix or revert them. If the cause is outside the code (an outage, a credential, a third party), write it under "Needs a decision" in PROGRESS.md and change nothing.\n';
     return s;
@@ -925,6 +990,20 @@ export class Loop {
   // ------------------------------------------------------------ the prompt
 
   /**
+   * The agent is told to leave the full VERIFY_CMD to the harness, so a failure
+   * has to cost it less than a lost iteration: the output, and the commits the
+   * gate reset, which saveRef keeps reachable.
+   */
+  private verifySection(): string {
+    const f = this.verifyFailed;
+    if (!f) return "";
+    let s = "\n---\n\n# Harness: VERIFY_CMD failed on the last commits\n\n";
+    s += `The harness ran \`${this.cfg.VERIFY_CMD}\` on them and reset them. Its last lines:\n\n\`\`\`\n${f.tail}\n\`\`\`\n`;
+    s += `\nThe commits are kept: \`git cherry-pick ${f.before}..${f.after}\` brings them back, to fix what failed rather than write them again.\n`;
+    return s;
+  }
+
+  /**
    * The commits this loop kept, newest first, as git has them. Built from the
    * keep rows, not from `git log`, which on a shared branch also shows commits
    * by people and other loops. Subjects are cut, so the prompt stays bounded.
@@ -963,6 +1042,7 @@ export class Loop {
     }
     s += await this.shippedRecently();
     s += this.churnSection();
+    s += this.verifySection();
 
     if (c.WORKTREE) {
       s += "\n---\n\n# Where you work\n\n";
@@ -977,6 +1057,9 @@ export class Loop {
         s += `Commit your work, but do not push: the harness checks each commit, pushes the ones it keeps to ralph/${this.name}, ${merges}. A rejected commit is reset, and the verdict shows up above next time.\n`;
       } else {
         s += `Commit your work, but do not push. A human merges ralph/${this.name}.\n`;
+      }
+      if (c.VERIFY_CMD) {
+        s += `\nAfter your turn the harness runs VERIFY_CMD on your commits — \`${c.VERIFY_CMD}\`, for up to ${c.VERIFY_TIMEOUT}s — and resets them if it fails. It runs whatever you did, so do not run the whole of it yourself: run the tests that cover what you changed, and leave the full run to the harness.\n`;
       }
     }
     if (c.FROZEN.length) s += `\nFrozen, never edit: ${c.FROZEN.join(" ")}. A commit that touches any of them is reset.\n`;
@@ -1028,9 +1111,13 @@ export class Loop {
     const gone = this.missing("PROMPT.md");
     if (gone) return { status: "unavailable", reason: `${gone} is gone, so there is no job to review against`, cost, tokens };
 
+    // The messages first, so the cap cannot cut them: they are where a commit
+    // claims what it measured, and the reviewer cannot reach git itself — in a
+    // worktree .git is a file pointing into a repository outside its reach.
+    const messages = (await this.git(["log", "--reverse", "--format=commit %H%n%n%B", `${before}..HEAD`])).stdout;
     const stat = (await this.git(["diff", "--stat", before, "HEAD"])).stdout;
     const diff = (await this.git(["diff", before, "HEAD"])).stdout;
-    writeFileSync(this.p("review.diff"), Buffer.from(`${stat}\n${diff}`).subarray(0, 200000));
+    writeFileSync(this.p("review.diff"), Buffer.from(`${messages}\n${stat}\n${diff}`).subarray(0, 200000));
     const prompt = this.read(this.p("PROMPT.md"));
     // A PROMPT.md written without that heading is still the job. Better the
     // reviewer reads all of it than judges the diff against nothing.
@@ -1052,6 +1139,22 @@ export class Loop {
         churnBlock = `\n## Files this loop keeps changing\n\nThis commit changes files that earlier kept commits of this loop changed again\nand again (counted from git):\n\n${hot}\n\nHold it to a higher bar. Reject one more fix for one more instance of a gap an\nearlier commit in the same place left open, unless the commit says why the\nearlier fixes missed it and closes the whole class, with a test for the class.\nAccept a commit that does close the class.\n`;
       }
     }
+    const checked: string[] = [];
+    if (c.FROZEN.length) checked.push(`- None of the frozen files changed: ${c.FROZEN.join(" ")}.`);
+    if (c.VERIFY_CMD) {
+      checked.push(
+        `- VERIFY_CMD passed on these commits: \`${c.VERIFY_CMD}\`. Its output is in ${this.p("verify.out")}.`,
+        "",
+        "You cannot run commands, and you do not need to: that the tests pass is settled.",
+        "Do not reject for not having run them. Judge what that check cannot see.",
+      );
+    } else {
+      checked.push(
+        "- Nothing has run these commits: this loop has no VERIFY_CMD, and you cannot run",
+        "  them either. A test the diff adds is not a test that passed.",
+      );
+    }
+    const checkedBlock = `\n## What the harness already checked\n\n${checked.join("\n")}\n`;
     // Steering handed to the agent mid-iteration by the steer hook.
     const delivered = this.read(this.p("STEER.md.delivered"));
     if (delivered !== "") steering = steering ? `${steering}\n${chomp(delivered)}` : chomp(delivered);
@@ -1067,16 +1170,19 @@ ${job}
 ## Steering from the human (outranks the job)
 
 ${steering || "(none)"}
-${doneBlock}${churnBlock}
+${doneBlock}${churnBlock}${checkedBlock}
 ## What to review
 
-The commits are in ${this.p("review.diff")}: a stat, then the full diff, capped at 200 KB.
+The commits are in ${this.p("review.diff")}: each commit's message, then a stat, then
+the full diff, capped at 200 KB. That file is everything git knows about them; the
+.git in ${this.work} is a file pointing elsewhere, so do not look for history there.
 Read it. Read files in ${this.work} if you need context.
 
 Reject when the change is wrong, is not what the job asks for, breaks something
-visible in the diff, weakens a test or a measurement so that it passes, or claims
-a result the diff does not support. Otherwise accept. Style alone is not a reason
-to reject.
+visible in the diff, weakens a test or a measurement so that it passes, or when a
+commit message claims a result (a measurement, a check that passes) that neither
+the diff nor the checks above support. Otherwise accept. Style alone is not a
+reason to reject.
 
 End your reply with exactly one line, either
 
@@ -1173,45 +1279,51 @@ VERDICT: REJECT: <one sentence saying why>
   private async syncOnce(): Promise<void> {
     const upstream = `origin/${this.cfg.BRANCH}`;
     await this.cleanTree();
-    if (!(await this.fetchUpstream())) return;
-    if ((await this.gitOut(["rev-list", `${upstream}..HEAD`])) === "") {
-      await this.git(["reset", "-q", "--hard", upstream]);
+    // Round again after a wait for LAND_OK_CMD: BRANCH may have moved meanwhile,
+    // and what is pushed has to be rebased and verified on what it now holds.
+    for (;;) {
+      if (!(await this.fetchUpstream())) return;
+      if ((await this.gitOut(["rev-list", `${upstream}..HEAD`])) === "") {
+        await this.git(["reset", "-q", "--hard", upstream]);
+        return;
+      }
+      if (!(await this.gitOk(["merge-base", "--is-ancestor", upstream, "HEAD"]))) {
+        const head = await this.gitOut(["rev-parse", "HEAD"]);
+        if (!(await this.gitOk(["rebase", "-q", upstream], { toLog: true }))) {
+          await this.git(["rebase", "--abort"], { quiet: true });
+          await this.saveRef("dropped", head);
+          await this.git(["reset", "-q", "--hard", upstream]);
+          record(this.results, this.iter, {
+            before: head,
+            after: await this.gitOut(["rev-parse", "HEAD"]),
+            status: "drop:conflict",
+            secs: 0,
+            reason: `rebase onto ${upstream} conflicted; unpushed commits dropped, saved under refs/ralph/dropped/`,
+          });
+          this.log.line("sync: rebase conflicted, dropped unpushed commits (saved under refs/ralph/dropped/)");
+          return;
+        }
+        const v = await this.verify();
+        if (v !== null) {
+          await this.saveRef("dropped", await this.gitOut(["rev-parse", "HEAD"]));
+          record(this.results, this.iter, {
+            before: head,
+            after: await this.gitOut(["rev-parse", "HEAD"]),
+            status: "drop:reverify",
+            secs: 0,
+            reason: `after rebase onto ${upstream}: ${v}`,
+          });
+          await this.git(["reset", "-q", "--hard", upstream]);
+          this.log.line("sync: rebased commits failed verify, dropped them (saved under refs/ralph/dropped/)");
+          return;
+        }
+      }
+      if (await this.landHeld(`the push to ${upstream}`)) continue;
+      const r = await this.bounded(300, ["git", "push", "-q", "origin", `HEAD:${this.cfg.BRANCH}`], { out: this.log.file });
+      if (r.rc === 0) this.log.line(`pushed ${await this.gitOut(["rev-parse", "HEAD"])} to ${upstream}`);
+      else this.log.line(`sync: push failed (exit ${r.rc}); the commits stay local and the next sync retries`);
       return;
     }
-    if (!(await this.gitOk(["merge-base", "--is-ancestor", upstream, "HEAD"]))) {
-      const head = await this.gitOut(["rev-parse", "HEAD"]);
-      if (!(await this.gitOk(["rebase", "-q", upstream], { toLog: true }))) {
-        await this.git(["rebase", "--abort"], { quiet: true });
-        await this.saveRef("dropped", head);
-        await this.git(["reset", "-q", "--hard", upstream]);
-        record(this.results, this.iter, {
-          before: head,
-          after: await this.gitOut(["rev-parse", "HEAD"]),
-          status: "drop:conflict",
-          secs: 0,
-          reason: `rebase onto ${upstream} conflicted; unpushed commits dropped, saved under refs/ralph/dropped/`,
-        });
-        this.log.line("sync: rebase conflicted, dropped unpushed commits (saved under refs/ralph/dropped/)");
-        return;
-      }
-      const v = await this.verify();
-      if (v !== null) {
-        await this.saveRef("dropped", await this.gitOut(["rev-parse", "HEAD"]));
-        record(this.results, this.iter, {
-          before: head,
-          after: await this.gitOut(["rev-parse", "HEAD"]),
-          status: "drop:reverify",
-          secs: 0,
-          reason: `after rebase onto ${upstream}: ${v}`,
-        });
-        await this.git(["reset", "-q", "--hard", upstream]);
-        this.log.line("sync: rebased commits failed verify, dropped them (saved under refs/ralph/dropped/)");
-        return;
-      }
-    }
-    const r = await this.bounded(300, ["git", "push", "-q", "origin", `HEAD:${this.cfg.BRANCH}`], { out: this.log.file });
-    if (r.rc === 0) this.log.line(`pushed ${await this.gitOut(["rev-parse", "HEAD"])} to ${upstream}`);
-    else this.log.line(`sync: push failed (exit ${r.rc}); the commits stay local and the next sync retries`);
   }
 
   // PUSH=pr: the harness pushes ralph/<name> to origin and keeps one pull
@@ -1380,10 +1492,17 @@ VERDICT: REJECT: <one sentence saying why>
       `Commits kept by the ralph loop \`${this.name}\`. Each one passed ${gates.join(", ") || "no gate but the commit itself"} before it was pushed here.\n\n` +
         `The loop keeps pushing to this branch until the pull request is merged, and rebases it onto \`${c.BRANCH}\` as that moves. ` +
         "Merge with a merge commit or a rebase; a squash merge works too, because the harness asks gh which head was merged.\n\n" +
-        "Do not push to this branch yourself: the harness never overwrites commits it did not push, and stops pushing until they are gone.\n",
+        "Do not push to this branch yourself: the harness never overwrites commits it did not push, and stops pushing until they are gone.\n" +
+        (c.PR_DRAFT
+          ? "\nIt stays a draft while the loop runs, and the harness marks it ready when the loop ends by itself. Merging it before then cuts the loop's work in half.\n"
+          : "") +
+        (c.LAND_OK_CMD
+          ? `\nBefore you merge it by hand, check that \`${c.LAND_OK_CMD}\` passes: the loop holds its own pushes and merges into \`${c.BRANCH}\` until it does.\n`
+          : ""),
     );
+    const draft = c.PR_DRAFT && !this.ended ? ["--draft"] : [];
     const created = await this.ghRun(120, [
-      "pr", "create", "--base", c.BRANCH, "--head", `ralph/${this.name}`, "--title", `ralph: ${this.name}`, "--body-file", this.p(".pr-body"),
+      "pr", "create", "--base", c.BRANCH, "--head", `ralph/${this.name}`, "--title", `ralph: ${this.name}`, "--body-file", this.p(".pr-body"), ...draft,
     ]);
     const out = this.read(this.p(".gh.out"));
     if (created) {
@@ -1420,7 +1539,10 @@ VERDICT: REJECT: <one sentence saying why>
     this.log.line(`PR_MERGE: the loop ended; merging ${branch} into ${c.BRANCH} once its checks pass, waiting up to ${naps * poll}s`);
     let url = "";
     let none = 0;
-    for (let n = 0; ; n++) {
+    // Counts only the looks at the checks: a wait for LAND_OK_CMD is not the
+    // checks being slow, and must not use up PR_MERGE_WAIT.
+    let n = 0;
+    for (;;) {
       // Each reading syncs first, as an iteration does: BRANCH can move while
       // the checks run, and what is merged has to be what they ran on.
       await this.sync();
@@ -1450,12 +1572,18 @@ VERDICT: REJECT: <one sentence saying why>
         }
         if (k.verdict === "closed") return this.mergeBlocked(`the pull request from ${branch} was closed without merging`, url);
         if (k.verdict === "fail") return this.mergeBlocked(`checks failed on ${head}: ${k.names.join(", ")}`, url);
-        if (k.verdict === "pass") return this.mergePr(branch, head, url, "every check passed");
+        if (k.verdict === "pass") {
+          if (await this.landHeld(`the merge of ${branch} into ${c.BRANCH}`)) continue;
+          return this.mergePr(branch, head, url, "every check passed");
+        }
         if (k.verdict === "none") {
           // Twice, a poll apart: just after a push GitHub may not have
           // registered the checks it is about to run.
           if (++none >= 2) {
-            if (c.VERIFY_CMD) return this.mergePr(branch, head, url, "no CI checks, and VERIFY_CMD passed on every commit");
+            if (c.VERIFY_CMD) {
+              if (await this.landHeld(`the merge of ${branch} into ${c.BRANCH}`)) continue;
+              return this.mergePr(branch, head, url, "no CI checks, and VERIFY_CMD passed on every commit");
+            }
             return this.mergeBlocked(`the pull request has no CI checks and the loop has no VERIFY_CMD, so nothing tested ${head}`, url);
           }
           why = "no checks reported";
@@ -1470,8 +1598,29 @@ VERDICT: REJECT: <one sentence saying why>
         }
       }
       if (n >= naps) return this.mergeBlocked(`gave up after PR_MERGE_WAIT=${c.PR_MERGE_WAIT}s: ${why}`, url);
+      n++;
       await nap(poll);
     }
+  }
+
+  /**
+   * PR_DRAFT: the pull request has been a draft while the loop ran, which
+   * GitHub will not merge, so a stage cannot be merged half done. Marked ready
+   * once the loop ends by itself, and before PR_MERGE waits for the checks:
+   * some CI does not run on a draft. After a signal it stays a draft; the human
+   * who stopped the loop decides.
+   */
+  private async prReady(): Promise<void> {
+    const c = this.cfg;
+    if (!c.PR_DRAFT || c.PUSH !== "pr" || !this.harnessPushes() || !this.ghOk) return;
+    const branch = `ralph/${this.name}`;
+    if (!(await this.ghRun(60, ["pr", "ready", branch]))) {
+      this.log.line(`PR_DRAFT: gh pr ready ${branch} failed (exit ${this.lastGhRc}): ${lastNonBlank(splitLines(this.read(this.p(".gh.out"))))}`);
+      return;
+    }
+    this.log.line(`PR_DRAFT: the loop ended; marked the pull request from ${branch} ready`);
+    // With PR_MERGE the merged or merge-blocked event follows and says it all.
+    if (!c.PR_MERGE) await this.notify("pr-ready", `the loop ended; the pull request from ${branch} into ${c.BRANCH} is ready to merge`);
   }
 
   private async mergePr(branch: string, head: string, url: string, why: string): Promise<void> {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_RATE_LIMIT_RE, KEYS, checkSetting, defaults, limitPattern, parseConfig, schema } from "../../src/lib/config.ts";
+import { DEFAULT_RATE_LIMIT_RE, KEYS, checkSetting, defaults, limitPattern, parseConfig, pushProblem, schema } from "../../src/lib/config.ts";
 
 const parse = (text: string) => parseConfig(text, "config.json", "/loops/x");
 const ok = (text: string) => {
@@ -97,5 +97,25 @@ describe("config.json", () => {
     const committed = readFileSync(join(import.meta.dir, "../../template/config.schema.json"), "utf8");
     expect(committed).toBe(`${JSON.stringify(schema(), null, 2)}\n`);
     expect(Object.keys((schema() as { properties: object }).properties).filter((k) => k !== "$schema")).toEqual(KEYS);
+  });
+});
+
+describe("pushProblem: PUSH true names its branch", () => {
+  const c = (over: Record<string, unknown>) => ({ ...defaults("/l"), WORKTREE: true, ...over }) as ReturnType<typeof defaults>;
+  test("PUSH true without PUSH_CONFIRM is a problem", () => {
+    expect(pushProblem(c({ PUSH: true }))).toContain("straight to origin/main");
+  });
+  test("PUSH_CONFIRM naming BRANCH settles it", () => {
+    expect(pushProblem(c({ PUSH: true, PUSH_CONFIRM: "main" }))).toBeNull();
+    expect(pushProblem(c({ PUSH: true, BRANCH: "dev", PUSH_CONFIRM: "dev" }))).toBeNull();
+  });
+  test("naming another branch does not: a later change of BRANCH is confirmed again", () => {
+    expect(pushProblem(c({ PUSH: true, BRANCH: "main", PUSH_CONFIRM: "dev" }))).toContain('names "dev", not BRANCH "main"');
+  });
+  test("nothing else needs it", () => {
+    expect(pushProblem(c({ PUSH: "pr" }))).toBeNull();
+    expect(pushProblem(c({ PUSH: false }))).toBeNull();
+    // Without a worktree the harness pushes nothing.
+    expect(pushProblem(c({ PUSH: true, WORKTREE: false }))).toBeNull();
   });
 });

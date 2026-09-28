@@ -226,4 +226,25 @@ answers.
   lines and the counts of every existing loop change with them. `results.tsv`
   keeps its column order, with the cost columns last, and readers accept the
   seven-column files older loops have.
+- `PUSH: true` needs `PUSH_CONFIRM` naming `BRANCH`. Every kept commit then lands
+  on `BRANCH` at once, and whatever deploys `BRANCH` deploys it; a restarted old
+  loop once had a commit on its way to production that way. `pushProblem` in
+  `src/lib/config.ts` is the one check, and both `Loop.start()` (a refusal) and
+  `ralph new` (no scaffold) ask it. Naming the branch, not a bare `true`, means a
+  later change of `BRANCH` is confirmed again. This is the one place a loop
+  written for an older version is refused on purpose: do not soften it to a
+  warning, and do not let `ralph migrate` fill it in.
+- `LAND_OK_CMD` holds; it never drops and never gives up. It is asked right
+  before the harness moves `BRANCH` (the push in `syncOnce`, the merge in
+  `mergeAtEnd`), and while it fails the push or the merge waits, unbounded, with
+  one `land-held` notification per wait. The work it holds has passed every
+  gate, so the wait is the cheap kind. With `PUSH: true` the wait sits inside
+  sync, so no iteration starts and unpushed work stays one iteration's, as
+  `syncOnce`'s drop path assumes; after it, sync fetches, rebases and verifies
+  again. In `mergeAtEnd` it does not count against `PR_MERGE_WAIT`, which bounds
+  the checks alone.
+- With `PR_DRAFT` the pull request is a draft while the loop runs, which GitHub
+  will not merge, and `prReady` marks it ready only when the loop ends by itself,
+  before `mergeAtEnd` waits for checks (some CI skips drafts). After a signal it
+  stays a draft, as a signal never merges.
 - Defaults keep a loop written for an older version behaving the same.

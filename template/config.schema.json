@@ -64,6 +64,21 @@
         1
       ]
     },
+    "PUSH_CONFIRM": {
+      "type": "string"
+    },
+    "PR_DRAFT": {
+      "type": [
+        "boolean",
+        "integer"
+      ],
+      "enum": [
+        true,
+        false,
+        0,
+        1
+      ]
+    },
     "PR_MERGE": {
       "type": [
         "boolean",
@@ -156,6 +171,12 @@
       "type": "string"
     },
     "HEALTH_TIMEOUT": {
+      "type": "integer"
+    },
+    "LAND_OK_CMD": {
+      "type": "string"
+    },
+    "LAND_OK_TIMEOUT": {
       "type": "integer"
     },
     "CHURN_AT": {

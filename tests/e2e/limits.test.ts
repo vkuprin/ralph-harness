@@ -37,7 +37,7 @@ describe("limits heal themselves; interrupted iterations are set aside", () => {
     S = fx.stub("stub-f", ["limit", "weekly", "credit", "custom-limit", "fail429", "commit"], ["LIMIT", "ACCEPT"]);
     fx.makeLoop(loop, app, {
       WORKTREE: true,
-      PUSH: true,
+      PUSH: true, PUSH_CONFIRM: "main",
       REVIEW: true,
       MAX_ITER: 2,
       VERIFY_CMD: "./measure.sh",
