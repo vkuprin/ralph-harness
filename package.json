@@ -1,6 +1,6 @@
 {
   "name": "@vkuprin/ralph-harness",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "A Ralph loop for Claude Code that runs for days: a fresh claude -p every iteration, and git, not the model, decides what shipped",
   "keywords": [
     "claude",
