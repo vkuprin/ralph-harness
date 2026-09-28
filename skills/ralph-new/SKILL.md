@@ -26,10 +26,10 @@ that path and skip the lookup below.
 command -v ralph || readlink ~/.claude/skills/ralph-new
 ```
 
-If `ralph` is not on PATH, the skill's symlink points into the ralph-harness checkout
-(`<checkout>/skills/ralph-new`), and the CLI is `<checkout>/bin/ralph`. Use that path
-for every `ralph` command below. If neither exists, tell the user to clone
-ralph-harness and link the skill, and stop.
+If `ralph` is not on PATH, the skill's symlink points into the ralph-harness install
+(`<harness>/skills/ralph-new`), and the CLI is `<harness>/bin/ralph`. Use that path
+for every `ralph` command below. If neither exists, tell the user to install ralph
+(`brew install vkuprin/tap/ralph`, or `bun add -g @vkuprin/ralph-harness`), and stop.
 
 ## 2. The repository and the loop's name
 

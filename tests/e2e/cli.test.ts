@@ -175,6 +175,7 @@ describe("CLI: usage, and a status with nothing to show", () => {
   let statusAll = "";
   let statusNosuch = "";
   let statusLogged = "";
+  let version = "";
 
   setup(() => {
     mkdirSync(join(home, "notaloop"), { recursive: true });
@@ -191,6 +192,7 @@ describe("CLI: usage, and a status with nothing to show", () => {
     writeConfig(logged, { REPO: app });
     writeFileSync(join(logged, "ralph.log"), "[2026-01-01 10:00] === iteration 1 ===\n");
     statusLogged = fx.cli(home, ["status", "logged"]).out;
+    version = fx.cli(home, ["--version"]).out;
   });
 
   test("bare ralph prints the usage instead of running status", () => {
@@ -204,6 +206,9 @@ describe("CLI: usage, and a status with nothing to show", () => {
   });
   test("iteration counts stay on one line when nothing shipped yet", () => {
     expect(statusLogged).toContain("1 run, 0 shipped a commit");
+  });
+  test("--version prints the version package.json ships with", () => {
+    expect(version).toBe(`ralph ${JSON.parse(read(join(ROOT, "package.json"))).version}\n`);
   });
 });
 

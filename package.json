@@ -1,19 +1,52 @@
 {
-  "name": "ralph-harness",
-  "private": true,
+  "name": "@vkuprin/ralph-harness",
+  "version": "1.0.0",
+  "description": "A Ralph loop for Claude Code that runs for days: a fresh claude -p every iteration, and git, not the model, decides what shipped",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "ralph",
+    "agent",
+    "loop",
+    "cli"
+  ],
+  "homepage": "https://github.com/vkuprin/ralph-harness#readme",
+  "bugs": "https://github.com/vkuprin/ralph-harness/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vkuprin/ralph-harness.git"
+  },
+  "license": "MIT",
+  "author": "Vitaly Kuprin",
   "type": "module",
   "bin": {
     "ralph": "bin/ralph"
   },
+  "files": [
+    "bin",
+    "src",
+    "hooks",
+    "template",
+    "skills"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "engines": {
     "bun": ">=1.3.8"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test --timeout 600000",
-    "check": "tsc --noEmit && bun test --timeout 600000"
+    "check": "tsc --noEmit && bun test --timeout 600000",
+    "changeset": "changeset"
   },
   "devDependencies": {
+    "@changesets/cli": "^3.0.3",
     "@types/bun": "~1.3.8",
     "typescript": "^7.0.2"
   }

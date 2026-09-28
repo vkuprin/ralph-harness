@@ -13,8 +13,9 @@ is one class on purpose, so an iteration reads in order.
   `clock` (the one test seam into time), `config`, `log`, `results`, `shq`, `text`.
 - `src/cli/main.ts`: the CLI (`setup`, `new`, `start`, `stop`, `status`, `results`,
   `steer`, …). `ralph setup` (and bare `ralph new`) opens Claude Code with
-  `skills/ralph-new/SKILL.md` from this checkout as system prompt. `src/cli/migrate.ts`: `ralph migrate`, config.sh to config.json.
-- `bin/ralph`: the CLI's entry point, the file people link onto PATH.
+  `skills/ralph-new/SKILL.md` from the harness as system prompt. `src/cli/migrate.ts`: `ralph migrate`, config.sh to config.json.
+- `bin/ralph`: the CLI's entry point, the file npm, Homebrew or a symlink puts
+  onto PATH.
 - `hooks/steer.ts`: PreToolUse hook that delivers `ralph steer` mid-iteration.
 - `hooks/approve-plan.ts`: the MCP server `PLAN_FIRST` passes as
   `--permission-prompt-tool`; it approves ExitPlanMode and denies the rest.
@@ -25,13 +26,32 @@ is one class on purpose, so an iteration reads in order.
 - `tests/e2e/`: end-to-end tests that drive the loop and the CLI as processes;
   `tests/unit/`: the pure parts; `tests/contract/`: the real `claude` CLI, only
   with `RALPH_REAL_CLAUDE=1`; `tests/stub/{claude,gh}` stand in for the CLIs.
+- `.changeset/`: pending release notes; `CHANGELOG.md` is what they become.
 
 ## Before you commit
 
     bun run check        # tsc --noEmit, then every test
+    bunx changeset       # when a user would notice the change: patch, minor or major
 
 CI runs the same on Linux, and on macOS once the repository is public. Bun is
 pinned there (`oven-sh/setup-bun`, `bun-version`); raise it deliberately.
+
+## Releasing
+
+Releases come from the `release` job in `.github/workflows/test.yml`, which runs
+only on a push to `main` that every other job passed. With changesets pending it
+opens a "chore: release" PR that bumps `package.json` and writes `CHANGELOG.md`;
+merging that PR publishes `@vkuprin/ralph-harness` to npm (trusted publishing,
+no token), pushes the `vX.Y.Z` tag, writes the GitHub Release and bumps
+`Formula/ralph.rb` in `vkuprin/homebrew-tap` (the `HOMEBREW_TAP_TOKEN` secret).
+
+What ships is the source tree, run by bun: the loop is spawned as
+`src/loop/main.ts` and the hooks run as files, so a compiled binary would break
+`LOOP_MARK` and every hook path. `files` in `package.json` is the list, and the
+formula's `libexec.install` repeats it. A new top-level directory the harness
+reads at runtime goes into both, or it works from a checkout and nowhere else;
+the `package` job installs the packed tarball to catch that. `@changesets/cli`
+is a devDependency; the runtime still has none.
 
 ## Rules the code has learned
 

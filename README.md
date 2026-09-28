@@ -10,10 +10,37 @@ Needs `bun`, `git` and the `claude` CLI. macOS and Linux. No npm dependencies.
 ## Install
 
 ```bash
+brew install vkuprin/tap/ralph
+```
+
+Or from npm. ralph runs on bun, so bun has to be on PATH either way:
+
+```bash
+bun add -g @vkuprin/ralph-harness        # or: npm i -g @vkuprin/ralph-harness
+```
+
+Or from source:
+
+```bash
 git clone https://github.com/vkuprin/ralph-harness && cd ralph-harness
 ln -s "$PWD/bin/ralph" ~/.local/bin/ralph
-ln -s "$PWD/skills/ralph-new" ~/.claude/skills/ralph-new   # optional: /ralph-new in any Claude session
 ```
+
+Optional: link the skill for `/ralph-new` in any Claude session (`ralph setup`
+doesn't need it):
+
+```bash
+ln -s "$(brew --prefix)/opt/ralph/libexec/skills/ralph-new" ~/.claude/skills/ralph-new                   # Homebrew
+ln -s ~/.bun/install/global/node_modules/@vkuprin/ralph-harness/skills/ralph-new ~/.claude/skills/ralph-new # bun
+ln -s "$(npm root -g)/@vkuprin/ralph-harness/skills/ralph-new" ~/.claude/skills/ralph-new                 # npm
+ln -s "$PWD/skills/ralph-new" ~/.claude/skills/ralph-new                                                  # source
+```
+
+To upgrade, run `brew upgrade ralph`, `bun add -g @vkuprin/ralph-harness@latest`
+or `git pull`, then restart any running loops (`ralph stop <name>`, `ralph start <name>`).
+A running loop keeps the files it started with, and Homebrew deletes the old
+version's files. What changed is in [CHANGELOG.md](CHANGELOG.md) and on the
+[releases page](https://github.com/vkuprin/ralph-harness/releases).
 
 ## Quick start
 
@@ -49,6 +76,7 @@ ralph status
 | `ralph tail <name>` | follow the log |
 | `ralph steer <name> "text"` | redirect it, starting with the iteration in flight |
 | `ralph migrate <name>` | convert an old bash-harness `config.sh` to `config.json` |
+| `ralph --version` | the installed version |
 
 A loop lives in `~/.claude/ralph/<name>/` (`$RALPH_HOME`): `config.json`,
 `PROMPT.md` (the job), `PROGRESS.md` (its memory), `ralph.log`, `results.tsv`.
@@ -173,6 +201,9 @@ Events: `stopped`, `refused`, `stuck`, `limit`, `limit-clear`, `decision`, `heal
 bun run check                                  # typecheck, then every test
 RALPH_REAL_CLAUDE=1 bun test tests/contract    # against the real claude CLI, a few cents
 ```
+
+A change users would notice comes with a changeset (`bunx changeset`). Merging
+the release PR it produces publishes the new version.
 
 ## Credits
 

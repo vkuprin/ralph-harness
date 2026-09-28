@@ -54,14 +54,15 @@ Commands
   ralph steer <name> "text"      redirect a running loop, starting with the iteration in flight
   ralph edit <name>              open PROMPT.md in $EDITOR
   ralph migrate <name>           convert a loop's config.sh to config.json
+  ralph --version                the installed version
 
 With no arguments it prints this, then the loops you have.
 
 Loops live in $RALPH_HOME (default ~/.claude/ralph), one directory each. The
-harness lives in this repo; loop contents stay on the machine, because they hold
-task state and production details. \`log\` and \`tail\` read ralph.log, which holds
-the agent's output and the harness's own errors both; nothing you need is only
-in the ralph.out that \`start\` leaves beside it.
+harness lives where ralph is installed; loop contents stay on the machine,
+because they hold task state and production details. \`log\` and \`tail\` read
+ralph.log, which holds the agent's output and the harness's own errors both;
+nothing you need is only in the ralph.out that \`start\` leaves beside it.
 `;
 
 const HOME = ralphHome();
@@ -738,6 +739,11 @@ switch (cmd) {
   case "--help":
   case "help":
     cmdHelp();
+    break;
+  case "-v":
+  case "--version":
+  case "version":
+    out(`ralph ${JSON.parse(readFileSync(join(HARNESS, "package.json"), "utf8")).version}\n`);
     break;
   default:
     die(`unknown command: ${cmd} (try: ralph help)`);
