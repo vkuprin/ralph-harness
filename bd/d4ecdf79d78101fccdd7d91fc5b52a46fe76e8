@@ -1,0 +1,21 @@
+.github/workflows/flake.yml
+  s_3d0f116bf3ed78::t_e67a4af339b87a 47-49
+src/lib/proc.ts
+  s_3d0f116bf3ed78::t_b9e2633ce93887 2,238-267
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "bdd4ecdf79d78101fccdd7d91fc5b52a46fe76e8",
+  "prompts": {},
+  "sessions": {
+    "s_3d0f116bf3ed78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4cb82a2f-8bdb-4b5c-938b-8b92b3ecf6e4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
