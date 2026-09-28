@@ -103,12 +103,27 @@ jobs:
       - id: version
         if: steps.changesets.outputs.published == 'true'
         run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+      # The tap is reached with a deploy key that can write to vkuprin/homebrew-tap
+      # and nothing else, and github.com's host key is pinned rather than trusted
+      # on first use.
       - if: steps.changesets.outputs.published == 'true'
-        uses: mislav/bump-homebrew-formula-action@v4
-        with:
-          formula-name: ralph
-          homebrew-tap: vkuprin/homebrew-tap
-          tag-name: v${{ steps.version.outputs.version }}
-          download-url: https://github.com/vkuprin/ralph-harness/archive/refs/tags/v${{ steps.version.outputs.version }}.tar.gz
         env:
-          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/vkuprin/ralph-harness/archive/refs/tags/v${VERSION}.tar.gz"
+          sha=$(curl -fsSL --retry 5 --retry-all-errors "$url" | sha256sum | cut -d' ' -f1)
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$TAP_KEY" > ~/.ssh/tap
+          chmod 600 ~/.ssh/tap
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          git clone -q git@github.com:vkuprin/homebrew-tap.git tap
+          cd tap
+          sed -i -E "s|^  url \".*\"$|  url \"${url}\"|; s|^  sha256 \".*\"$|  sha256 \"${sha}\"|" Formula/ralph.rb
+          grep -qF "  url \"${url}\"" Formula/ralph.rb
+          grep -qF "  sha256 \"${sha}\"" Formula/ralph.rb
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qam "ralph ${VERSION}"
+          git push -q origin HEAD

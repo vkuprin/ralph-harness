@@ -43,7 +43,7 @@ only on a push to `main` that every other job passed. With changesets pending it
 opens a "chore: release" PR that bumps `package.json` and writes `CHANGELOG.md`;
 merging that PR publishes `@vkuprin/ralph-harness` to npm (trusted publishing,
 no token), pushes the `vX.Y.Z` tag, writes the GitHub Release and bumps
-`Formula/ralph.rb` in `vkuprin/homebrew-tap` (the `HOMEBREW_TAP_TOKEN` secret).
+`Formula/ralph.rb` in `vkuprin/homebrew-tap` (over SSH with the `HOMEBREW_TAP_DEPLOY_KEY` secret, a deploy key that can write to the tap and nothing else).
 
 What ships is the source tree, run by bun: the loop is spawned as
 `src/loop/main.ts` and the hooks run as files, so a compiled binary would break
