@@ -1,0 +1,23 @@
+tests/unit/proc.test.ts
+  s_3d0f116bf3ed78::t_13e1920cec09be 79-95
+src/lib/proc.ts
+  s_3d0f116bf3ed78::t_d19fe886fee72e 42,209-214,219-226,228-238,240-242
+.github/workflows/flake.yml
+  s_3d0f116bf3ed78::t_af81215255f549 9,14,20-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "068c1881f25d5bf0d456b2ce8513e3c9ea430cca",
+  "prompts": {},
+  "sessions": {
+    "s_3d0f116bf3ed78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4cb82a2f-8bdb-4b5c-938b-8b92b3ecf6e4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
