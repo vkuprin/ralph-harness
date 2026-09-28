@@ -1,0 +1,30 @@
+src/cli/main.ts
+  s_3d0f116bf3ed78::t_4e3f8b0f7294ac 21,452-469,475-507,761
+tests/e2e/cli.test.ts
+  s_3d0f116bf3ed78::t_be257594325b99 5,576-627
+  s_3d0f116bf3ed78::t_4179d4b0dbeb28 628
+tests/helpers/index.ts
+  s_3d0f116bf3ed78::t_afbb80c027d8df 201-207,209-236
+AGENTS.md
+  s_3d0f116bf3ed78::t_23141fd2bb5399 250-259
+.changeset/boot-watch.md
+  s_3d0f116bf3ed78::t_23141fd2bb5399 1-5
+src/loop/main.ts
+  s_3d0f116bf3ed78::t_4e3f8b0f7294ac 17-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6b7ac2d578de3b52f460f315b2c14514a6d1ce42",
+  "prompts": {},
+  "sessions": {
+    "s_3d0f116bf3ed78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4cb82a2f-8bdb-4b5c-938b-8b92b3ecf6e4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
