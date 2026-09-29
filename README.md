@@ -1,25 +1,64 @@
-# ralph
+<p align="center">
+  <img src="./assets/readme/hero.svg" width="100%" alt="ralph: a Ralph loop for Claude Code that runs for days. Every iteration is a fresh claude -p, and git, not the model, decides what shipped.">
+</p>
 
-[![test](https://github.com/vkuprin/ralph-harness/actions/workflows/test.yml/badge.svg)](https://github.com/vkuprin/ralph-harness/actions/workflows/test.yml)
+<p align="center">
+  <a href="https://www.npmjs.com/package/@vkuprin/ralph-harness"><img src="https://img.shields.io/npm/v/@vkuprin/ralph-harness?style=flat-square&logo=npm&label=npm&labelColor=0F1115&color=CB3837" alt="npm version"></a>
+  <a href="https://github.com/vkuprin/homebrew-tap"><img src="https://img.shields.io/github/v/release/vkuprin/ralph-harness?style=flat-square&logo=homebrew&label=homebrew&labelColor=0F1115&color=FBB040" alt="Homebrew: vkuprin/tap/ralph"></a>
+  <a href="https://github.com/vkuprin/ralph-harness/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/vkuprin/ralph-harness/test.yml?branch=main&style=flat-square&label=test&labelColor=0F1115" alt="test"></a>
+  <a href="https://bun.sh"><img src="https://img.shields.io/badge/runs_on-bun-F4EFE6?style=flat-square&logo=bun&labelColor=0F1115" alt="runs on bun"></a>
+  <img src="https://img.shields.io/badge/dependencies-0-46D39A?style=flat-square&labelColor=0F1115" alt="zero runtime dependencies">
+  <a href="LICENSE"><img src="https://img.shields.io/npm/l/@vkuprin/ralph-harness?style=flat-square&labelColor=0F1115&color=8B93A1" alt="license"></a>
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="#options">Options</a> ·
+  <a href="#safety">Safety</a>
+</p>
 
 A Ralph loop for Claude Code that runs for days. Every iteration is a fresh
-`claude -p`, and git, not the model, decides what shipped.
+`claude -p` that reads the job from `PROMPT.md` and its own notes from
+`PROGRESS.md`, does some work and commits. Then git and your own commands decide
+whether that commit ships. What the model says about its work never counts.
 
 Needs `bun`, `git` and the `claude` CLI. macOS and Linux. No npm dependencies.
 
+## How it works
+
+<p align="center">
+  <img src="./assets/readme/loop.svg" width="100%" alt="One iteration: read PROMPT.md and PROGRESS.md, run a fresh claude -p that commits in its own worktree, then the harness gates the commit with FROZEN, VERIFY_CMD and a read-only reviewer. A kept commit is pushed to the pull request, a failed one is reset and saved in refs/ralph/. Only files carry over to the next iteration.">
+</p>
+
+- Every iteration is a new `claude -p` reading `PROMPT.md` and `PROGRESS.md`. It
+  commits and rewrites `PROGRESS.md`; nothing else carries over.
+- The agent never pushes. The harness checks each new commit (`FROZEN`,
+  `VERIFY_CMD`, reviewer), resets the ones that fail, and pushes the rest.
+- An iteration that ships nothing makes the loop wait longer, not stop, unless
+  `QUIET_STOP` says so.
+- A usage limit is waited out and doesn't count toward `MAX_ITER`.
+- `ralph stop` stops the loop right away, together with any tests or servers
+  the agent started.
+
 ## Install
+
+**[Homebrew](https://github.com/vkuprin/homebrew-tap)**
 
 ```bash
 brew install vkuprin/tap/ralph
 ```
 
-Or from npm. ralph runs on bun, so bun has to be on PATH either way:
+**[npm](https://www.npmjs.com/package/@vkuprin/ralph-harness).** ralph runs on
+bun, so bun has to be on PATH either way:
 
 ```bash
 bun add -g @vkuprin/ralph-harness        # or: npm i -g @vkuprin/ralph-harness
 ```
 
-Or from source:
+**From source**
 
 ```bash
 git clone https://github.com/vkuprin/ralph-harness && cd ralph-harness
@@ -89,7 +128,8 @@ or a wrong type refuses the start. The defaults below are what `ralph new` write
 key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `REVIEW`,
 `LIMIT_RESET` and `CHURN_AT`.
 
-**Loop**
+<details>
+<summary><b>Loop</b></summary>
 
 | Setting | Default | What it does |
 | --- | --- | --- |
@@ -109,7 +149,10 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | `ESCALATE_AFTER` | `3` | failures in a row before the prompt says pivot |
 | `CLOSING` | names `PROGRESS.md` | last line of every prompt |
 
-**Gates**
+</details>
+
+<details>
+<summary><b>Gates</b></summary>
 
 | Setting | Default | What it does |
 | --- | --- | --- |
@@ -128,7 +171,10 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | `CHURN_WINDOW` | `8` | kept iterations `CHURN_AT` counts over |
 | `CHURN_IGNORE` | `[]` | paths left out of that count |
 
-**Push and pull requests**
+</details>
+
+<details>
+<summary><b>Push and pull requests</b></summary>
 
 | Setting | Default | What it does |
 | --- | --- | --- |
@@ -143,7 +189,10 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | `LAND_OK_CMD` | `""` | your check that `BRANCH` may move now, like "no data load running in production"; while it fails, a push (`true`) or a merge (`PR_MERGE`) waits, asking every `ACTIVE_POLL` seconds |
 | `LAND_OK_TIMEOUT` | `300` | seconds `LAND_OK_CMD` may take |
 
-**Limits and errors**
+</details>
+
+<details>
+<summary><b>Limits and errors</b></summary>
 
 | Setting | Default | What it does |
 | --- | --- | --- |
@@ -156,7 +205,10 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | `ACTIVE_POLL` | `300` | seconds between clock checks while waiting |
 | `POLL_GAP_MAX` | `60` | a longer gap between polls is a suspend and doesn't count against a timeout |
 
-**Notifications**
+</details>
+
+<details>
+<summary><b>Notifications</b></summary>
 
 | Setting | Default | What it does |
 | --- | --- | --- |
@@ -167,7 +219,10 @@ Events: `stopped`, `refused`, `stuck`, `limit`, `limit-clear`, `decision`, `heal
 `health-clear`, `churn`, `pr`, `pr-blocked`, `pr-ready`, `land-held`, `merged`, `merge-blocked`.
 `template/config.json` has a macOS notification and a Telegram example.
 
-**Memory and logs**
+</details>
+
+<details>
+<summary><b>Memory and logs</b></summary>
 
 | Setting | Default | What it does |
 | --- | --- | --- |
@@ -177,17 +232,7 @@ Events: `stopped`, `refused`, `stuck`, `limit`, `limit-clear`, `decision`, `heal
 | `LOG_KEEP` | `3` | rotated logs kept |
 | `REF_KEEP` | `20` | thrown-away commits kept under `refs/ralph/`; `0` keeps all |
 
-## How it works
-
-- Every iteration is a new `claude -p` reading `PROMPT.md` and `PROGRESS.md`. It
-  commits and rewrites `PROGRESS.md`; nothing else carries over.
-- The agent never pushes. The harness checks each new commit (`FROZEN`,
-  `VERIFY_CMD`, reviewer), resets the ones that fail, and pushes the rest.
-- An iteration that ships nothing makes the loop wait longer, not stop, unless
-  `QUIET_STOP` says so.
-- A usage limit is waited out and doesn't count toward `MAX_ITER`.
-- `ralph stop` stops the loop right away, together with any tests or servers
-  the agent started.
+</details>
 
 ## Safety
 
@@ -223,3 +268,7 @@ for the steering hook, which `hooks/steer.ts` is adapted from (Apache-2.0).
 ## License
 
 MIT, except `hooks/steer.ts` (Apache-2.0). See [LICENSE](LICENSE).
+
+<p align="center">
+  <img src="./assets/readme/logo.svg" width="64" alt="ralph logo">
+</p>

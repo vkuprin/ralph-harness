@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">ralph</title>
+  <desc id="desc">A loop arrow around a terminal prompt, with one green commit on the loop: a fresh agent every iteration, and only the commits that pass the gates are kept.</desc>
+  <rect x="4" y="4" width="248" height="248" rx="56" fill="#0F1115"/>
+  <rect x="4" y="4" width="248" height="248" rx="56" fill="none" stroke="#2A2F3A" stroke-width="2"/>
+  <g id="loop">
+    <path d="M 186.2 79.1 A 76 76 0 1 1 106.6 55.1" fill="none" stroke="#FF8A4C" stroke-width="18" stroke-linecap="round"/>
+    <path d="M 131 47 L 101 36.5 L 112.2 74.3 Z" fill="#FF8A4C" stroke="#FF8A4C" stroke-width="6" stroke-linejoin="round"/>
+  </g>
+  <g id="prompt" fill="none" stroke="#F4EFE6" stroke-width="15" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="90,104 116,128 90,152"/>
+    <line x1="130" y1="152" x2="166" y2="152"/>
+  </g>
+  <circle id="commit" cx="74.3" cy="181.7" r="15" fill="#46D39A" stroke="#0F1115" stroke-width="7"/>
+</svg>

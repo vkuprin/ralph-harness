@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">One ralph iteration</title>
+  <desc id="desc">Each iteration reads PROMPT.md and PROGRESS.md, runs a fresh claude -p that commits in the loop's worktree, then the harness gates the commit: FROZEN paths, VERIFY_CMD, and a read-only reviewer. A commit that passes is kept and pushed to the pull request; one that fails is reset and saved under refs/ralph/. The next iteration starts over, and only files carry over.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8B93A1"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#46D39A"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#FF6B6B"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#FF8A4C"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="1198" height="518" rx="24" fill="#0F1115" stroke="#2A2F3A" stroke-width="2"/>
+
+  <text x="56" y="60" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" letter-spacing="3" fill="#FF8A4C">ONE ITERATION</text>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <!-- 1. the job -->
+    <g transform="translate(56 92)">
+      <rect width="232" height="156" rx="14" fill="#171A21" stroke="#2A2F3A" stroke-width="2"/>
+      <text x="24" y="42" font-size="18" fill="#8B93A1" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">01</text>
+      <text x="24" y="76" font-size="24" font-weight="700" fill="#F4EFE6">Read the job</text>
+      <text x="24" y="110" font-size="19" fill="#C9CED6" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">PROMPT.md</text>
+      <text x="24" y="136" font-size="19" fill="#C9CED6" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">PROGRESS.md</text>
+    </g>
+
+    <!-- 2. fresh agent -->
+    <g transform="translate(328 92)">
+      <rect width="232" height="156" rx="14" fill="#171A21" stroke="#2A2F3A" stroke-width="2"/>
+      <text x="24" y="42" font-size="18" fill="#8B93A1" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">02</text>
+      <text x="24" y="76" font-size="24" font-weight="700" fill="#F4EFE6">Fresh agent</text>
+      <text x="24" y="110" font-size="19" fill="#FF8A4C" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">claude -p</text>
+      <text x="24" y="136" font-size="19" fill="#8B93A1">no resumed session</text>
+    </g>
+
+    <!-- 3. commit -->
+    <g transform="translate(600 92)">
+      <rect width="232" height="156" rx="14" fill="#171A21" stroke="#2A2F3A" stroke-width="2"/>
+      <text x="24" y="42" font-size="18" fill="#8B93A1" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">03</text>
+      <text x="24" y="76" font-size="24" font-weight="700" fill="#F4EFE6">It commits</text>
+      <text x="24" y="110" font-size="19" fill="#C9CED6" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">ralph/&lt;name&gt;</text>
+      <text x="24" y="136" font-size="19" fill="#8B93A1">in its own worktree</text>
+    </g>
+
+    <!-- 4. gates -->
+    <g transform="translate(872 92)">
+      <rect width="272" height="156" rx="14" fill="#171A21" stroke="#FF8A4C" stroke-width="2"/>
+      <text x="24" y="42" font-size="18" fill="#8B93A1" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">04</text>
+      <text x="24" y="76" font-size="24" font-weight="700" fill="#F4EFE6">Harness gates it</text>
+      <text x="24" y="110" font-size="19" fill="#C9CED6" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">FROZEN · VERIFY_CMD</text>
+      <text x="24" y="136" font-size="19" fill="#C9CED6">read-only reviewer</text>
+    </g>
+
+    <!-- arrows between steps -->
+    <g stroke="#8B93A1" stroke-width="2.5" fill="none">
+      <line x1="292" y1="170" x2="322" y2="170" marker-end="url(#arrow)"/>
+      <line x1="564" y1="170" x2="594" y2="170" marker-end="url(#arrow)"/>
+      <line x1="836" y1="170" x2="866" y2="170" marker-end="url(#arrow)"/>
+    </g>
+
+    <!-- outcomes -->
+    <path d="M 1060 252 L 1060 300" stroke="#46D39A" stroke-width="2.5" fill="none" marker-end="url(#arrow-green)"/>
+    <path d="M 956 252 L 956 276 Q 956 286 946 286 L 800 286 Q 790 286 790 296 L 790 300" stroke="#FF6B6B" stroke-width="2.5" fill="none" marker-end="url(#arrow-red)"/>
+
+    <g transform="translate(872 306)">
+      <rect width="272" height="104" rx="14" fill="#10251C" stroke="#46D39A" stroke-width="2"/>
+      <text x="24" y="42" font-size="24" font-weight="700" fill="#46D39A">Kept</text>
+      <text x="24" y="76" font-size="19" fill="#C9CED6">pushed to its pull request</text>
+    </g>
+
+    <g transform="translate(572 306)">
+      <rect width="276" height="104" rx="14" fill="#2A1517" stroke="#FF6B6B" stroke-width="2"/>
+      <text x="24" y="42" font-size="24" font-weight="700" fill="#FF6B6B">Reset</text>
+      <text x="24" y="76" font-size="19" fill="#C9CED6">saved in <tspan font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">refs/ralph/</tspan></text>
+    </g>
+
+    <!-- back to the start -->
+    <path d="M 1008 414 L 1008 452 Q 1008 468 992 468 L 188 468 Q 172 468 172 452 L 172 256" stroke="#FF8A4C" stroke-width="2.5" stroke-dasharray="8 7" fill="none" marker-end="url(#arrow-orange)"/>
+    <path d="M 710 414 L 710 468" stroke="#FF8A4C" stroke-width="2.5" stroke-dasharray="8 7" fill="none"/>
+    <text x="208" y="440" font-size="19" fill="#8B93A1">next iteration · only files carry over, never the session</text>
+  </g>
+</svg>
