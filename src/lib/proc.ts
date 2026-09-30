@@ -1,6 +1,8 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
-import { constants } from "node:os";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { appendFileSync, closeSync, existsSync, openSync, realpathSync } from "node:fs";
+import { constants, devNull } from "node:os";
+import { dirname, join } from "node:path";
+import type { Readable } from "node:stream";
 import { nowSec, sleep } from "./clock.ts";
 
 // Everything the harness starts goes through this file, for two reasons.
@@ -16,6 +18,15 @@ import { nowSec, sleep } from "./clock.ts";
 // its gates while the handler is still cleaning up. So once `freeze()` is
 // called every primitive here stops returning, and the loop parks at its next
 // await until the handler exits the process.
+
+// Windows has neither process groups nor a TERM a console program can catch,
+// so the same promises are kept there another way, and every difference is in
+// this file: a tree kill (taskkill /T) stands in for the group, output bound
+// for a file is pumped through a pipe (see `pumped`), and a command line is
+// read from CIM rather than ps.
+export const IS_WIN = process.platform === "win32";
+/** Where output nobody reads goes: /dev/null, or NUL on Windows. */
+export const DEV_NULL = devNull;
 
 let frozen = false;
 const never = new Promise<never>(() => {});
@@ -82,6 +93,14 @@ function alive(pid: number): boolean {
  * can leave children behind in its group that ignore it.
  */
 export async function killGroup(pid: number, done?: Promise<number>): Promise<void> {
+  if (IS_WIN) {
+    // Nothing on Windows asks a process to stop that a console program started
+    // without a console can answer, so the tree goes at once: the command and
+    // everything it started.
+    killTree(pid);
+    if (done) await Promise.race([done, sleep(10_000)]);
+    return;
+  }
   try {
     process.kill(-pid, "SIGTERM");
   } catch {
@@ -97,6 +116,185 @@ export async function killGroup(pid: number, done?: Promise<number>): Promise<vo
   try {
     process.kill(-pid, "SIGKILL");
   } catch {}
+}
+
+/**
+ * KILL a process and everything it started, now: its group, or on Windows its
+ * tree. For a process that never got as far as a handler (a loop bun never
+ * finished loading) and for the last resort of `ralph stop`.
+ */
+export function killTree(pid: number): void {
+  if (IS_WIN) {
+    spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }
+}
+
+/**
+ * Whether output bound for a file is pumped through a pipe by this process
+ * rather than handed to the child as a descriptor. On Windows it is: the bash
+ * of Git for Windows (MSYS) drops every write to a handle opened for appending,
+ * so VERIFY_CMD said nothing into verify.out and a failure had no reason.
+ * Native programs (git, claude) write there fine, but bash is what every *_CMD
+ * setting runs in.
+ */
+const pumped = IS_WIN;
+
+/** Append whatever `stream` says to `file` as it arrives; resolves when it ends. */
+function pumpTo(stream: Readable | null, file: string): Promise<void> {
+  if (!stream) return Promise.resolve();
+  appendFileSync(file, "");
+  stream.on("data", (b: Buffer) => {
+    try {
+      appendFileSync(file, b);
+    } catch {}
+  });
+  return new Promise((resolve) => {
+    stream.once("close", () => resolve());
+    stream.once("error", () => resolve());
+  });
+}
+
+/**
+ * Once the child has exited: what it wrote before it went, and no more. A
+ * grandchild left running in the background (a dev server) can hold the pipe
+ * open for ever, which a descriptor to a file never made anyone wait on.
+ */
+async function drained(child: ChildProcess, pumps: Promise<void>[]): Promise<void> {
+  if (!pumps.length) return;
+  await Promise.race([Promise.all(pumps), sleep(2000)]);
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+}
+
+let bashFound: string | null = null;
+
+/**
+ * The bash that runs the *_CMD settings. On Windows it is Git for Windows' own:
+ * `bash` on a Windows PATH is usually WSL's, which runs the command in another
+ * machine with another filesystem. RALPH_BASH names one outright, then the one
+ * Claude Code is told to use, then the one that came with git.
+ */
+export function bash(): string {
+  if (!IS_WIN) return "bash";
+  if (bashFound) return bashFound;
+  const candidates = [process.env.RALPH_BASH, process.env.CLAUDE_CODE_GIT_BASH_PATH];
+  const git = Bun.which("git");
+  if (git) {
+    // git.exe is in Git\cmd, Git\bin or Git\mingw64\bin; bash.exe in Git\bin.
+    let d = dirname(realpathSync(git));
+    for (let i = 0; i < 3; i++, d = dirname(d)) candidates.push(join(d, "bin", "bash.exe"));
+  }
+  candidates.push(join(process.env.ProgramFiles || "C:\\Program Files", "Git", "bin", "bash.exe"));
+  bashFound = candidates.find((c) => c && existsSync(c)) ?? "bash";
+  return bashFound;
+}
+
+export interface ShellRun {
+  argv: string[];
+  /** What goes into the command's environment on top of the rest. */
+  env: Record<string, string>;
+}
+
+/**
+ * A *_CMD setting as the harness runs it: the user's own text, to `bash -c`.
+ *
+ * On Windows the text goes in the environment and bash is handed a constant
+ * that evals it. A program there gets one command line, not an argv, and an
+ * MSYS bash started by a native program cuts that line up itself, treating `'`
+ * as a quote and expanding globs: `'C:\tools\check.sh'`, with no space for the
+ * quoting to protect it, reached bash as C:\tools\check.sh and ran as
+ * C:toolscheck.sh. The environment is passed as it is, so the text arrives as
+ * written, which is the rule for user text anyway.
+ */
+export function shellCommand(command: string): ShellRun {
+  if (!IS_WIN) return { argv: ["bash", "-c", command], env: {} };
+  return { argv: [bash(), "-c", 'eval "$RALPH_SHELL_CMD"'], env: { RALPH_SHELL_CMD: command } };
+}
+
+/**
+ * On Windows the agent is started as `claude` with no shell, which finds
+ * claude.exe (the native build) and never the claude.cmd an npm install puts
+ * on PATH: that is a batch file, and starting it means cmd.exe reading the
+ * agent's arguments. A reason not to start, or null.
+ */
+export function claudeProblem(path = process.env.PATH): string | null {
+  if (!IS_WIN) return null;
+  const found = Bun.which("claude", { PATH: path });
+  if (!found || /\.exe$/i.test(found)) return null;
+  return `claude on PATH is ${found}, which the harness cannot start without cmd.exe reading the agent's arguments — install Claude Code's native build, claude.exe: https://code.claude.com`;
+}
+
+// A process's command line and start, which is what tells a loop from a
+// stranger who got its PID. ps has both. Windows has no ps that sees native
+// processes (Git's is MSYS's own), so it asks CIM, with the PID in the
+// environment rather than in the script.
+const CIM =
+  "$p = Get-CimInstance Win32_Process -Filter \"ProcessId=$([int]$env:RALPH_PID)\"; " +
+  "if ($p) { [Console]::Out.Write([string][int64](([DateTimeOffset]$p.CreationDate).ToUnixTimeSeconds()) + \"`n\" + $p.CommandLine) }";
+
+function cimArgv(): string[] {
+  return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", CIM];
+}
+
+function cimSplit(text: string): { started: number; command: string } | null {
+  const nl = text.indexOf("\n");
+  if (nl < 0) return null;
+  return { started: Number(text.slice(0, nl)), command: text.slice(nl + 1).trim() };
+}
+
+/** `pid`'s whole command line, or "" when it is not running. */
+export function commandLineSync(pid: string): string {
+  if (!IS_WIN) {
+    const r = spawnSync("ps", ["-ww", "-p", pid, "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return (r.stdout ?? "").trimEnd();
+  }
+  const r = spawnSync(cimArgv()[0]!, cimArgv().slice(1), {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    env: { ...process.env, RALPH_PID: pid },
+    windowsHide: true,
+  });
+  return cimSplit(r.stdout ?? "")?.command ?? "";
+}
+
+/** The same, through `run`, for the loop. */
+export async function commandLine(pid: string): Promise<string> {
+  if (!IS_WIN) return (await run(["ps", "-ww", "-p", pid, "-o", "command="])).stdout;
+  return cimSplit((await run(cimArgv(), { env: { ...process.env, RALPH_PID: pid } })).stdout)?.command ?? "";
+}
+
+/** How long `pid` has run, as ps's etime prints it: [[dd-]hh:]mm:ss. */
+export function upTimeSync(pid: string): string {
+  if (!IS_WIN) {
+    const r = spawnSync("ps", ["-p", pid, "-o", "etime="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return (r.stdout ?? "").trim();
+  }
+  const r = spawnSync(cimArgv()[0]!, cimArgv().slice(1), {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    env: { ...process.env, RALPH_PID: pid },
+    windowsHide: true,
+  });
+  const info = cimSplit(r.stdout ?? "");
+  if (!info || !Number.isFinite(info.started)) return "";
+  return etime(Math.max(0, Math.floor(Date.now() / 1000) - info.started));
+}
+
+export function etime(secs: number): string {
+  const two = (n: number) => String(n).padStart(2, "0");
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const lead = d ? `${d}-${two(h)}:` : h ? `${two(h)}:` : "";
+  return `${lead}${two(m)}:${two(secs % 60)}`;
 }
 
 export interface Bounded {
@@ -137,23 +335,30 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
   // Not an opt-out: a tolerance of 0 or less falls back to the default rather
   // than to no cap, because no cap is the defect above.
   const cap = opts.pollGapMax >= 1 ? opts.pollGapMax : 60;
-  const input = openSync(opts.stdin ?? "/dev/null", "r");
-  const out = openSync(opts.out, "a");
-  const err = opts.err && opts.err !== opts.out ? openSync(opts.err, "a") : out;
+  const input = openSync(opts.stdin ?? DEV_NULL, "r");
+  const errFile = opts.err ?? opts.out;
+  const out = pumped ? "pipe" : openSync(opts.out, "a");
+  const err = pumped ? "pipe" : errFile !== opts.out ? openSync(errFile, "a") : out;
   const [cmd, ...args] = argv;
   const child = spawn(cmd!, args, {
-    detached: true,
+    // A group of its own, to kill whole. Windows has no groups, and there a
+    // detached child gets a console window of its own; the tree is killed.
+    detached: !IS_WIN,
+    windowsHide: true,
     stdio: [input, out, err],
     env: clean(opts.env ?? process.env),
     cwd: opts.cwd,
   });
   closeSync(input);
-  closeSync(out);
-  if (err !== out) closeSync(err);
+  if (typeof out === "number") closeSync(out);
+  if (typeof err === "number" && err !== out) closeSync(err);
+  const pumps = pumped ? [pumpTo(child.stdout, opts.out), pumpTo(child.stderr, errFile)] : [];
   const done = exited(child);
   const pid = child.pid;
   if (pid === undefined) {
-    return settle({ rc: await done, timedOut: false });
+    const rc = await done;
+    await drained(child, pumps);
+    return settle({ rc, timedOut: false });
   }
   current = { pid, done };
   let finished = false;
@@ -182,6 +387,7 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
     polls++;
   }
   const rc = await done;
+  await drained(child, pumps);
   current = null;
   return settle({ rc, timedOut });
 }
@@ -209,20 +415,23 @@ export interface RunOptions {
  */
 export async function run(argv: string[], opts: RunOptions = {}): Promise<Ran> {
   const [cmd, ...args] = argv;
-  const errFd = opts.errTo ? openSync(opts.errTo, "a") : null;
-  const outFd = opts.outTo ? openSync(opts.outTo, "a") : null;
+  const errFd = opts.errTo && !pumped ? openSync(opts.errTo, "a") : null;
+  const outFd = opts.outTo && !pumped ? openSync(opts.outTo, "a") : null;
   const child = spawn(cmd!, args, {
     stdio: [opts.input === undefined ? "ignore" : "pipe", outFd ?? "pipe", errFd ?? "pipe"],
     env: clean(opts.env ?? process.env),
     cwd: opts.cwd,
+    windowsHide: true,
   });
   if (errFd !== null) closeSync(errFd);
   if (outFd !== null) closeSync(outFd);
   plainChildren.add(child);
   const chunks: Buffer[] = [];
   const errChunks: Buffer[] = [];
-  child.stdout?.on("data", (b: Buffer) => chunks.push(b));
-  child.stderr?.on("data", (b: Buffer) => errChunks.push(b));
+  if (pumped && opts.outTo) void pumpTo(child.stdout, opts.outTo);
+  else child.stdout?.on("data", (b: Buffer) => chunks.push(b));
+  if (pumped && opts.errTo) void pumpTo(child.stderr, opts.errTo);
+  else child.stderr?.on("data", (b: Buffer) => errChunks.push(b));
   if (opts.input !== undefined && child.stdin) {
     child.stdin.on("error", () => {});
     child.stdin.end(opts.input);
@@ -235,6 +444,20 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<Ran> {
         resolve(exitCode(c, s));
       }
     });
+    // A pumped file is a pipe, which a background grandchild can hold open
+    // after the command itself is gone; a descriptor never made anyone wait.
+    if (pumped && (opts.outTo || opts.errTo)) {
+      child.once("exit", (c, s) => {
+        setTimeout(() => {
+          if (!done) {
+            done = true;
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            resolve(exitCode(c, s));
+          }
+        }, 2000);
+      });
+    }
     child.once("error", () => {
       if (!done) {
         done = true;

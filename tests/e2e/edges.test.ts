@@ -13,7 +13,9 @@ import {
   rows,
   setup,
   sleeperGone,
+  sq,
   statuses,
+  term,
   until,
   waitProc,
 } from "../helpers/index.ts";
@@ -44,7 +46,7 @@ describe("ERROR_STOP, and the backoff between failures", () => {
   setup(async () => {
     fx.makeRepo(app, fx.p("remote-es.git"));
     mkNotifier(note, fx.p("notify-es.sh"));
-    fx.makeLoop(loop, app, { MAX_ITER: 5, ERROR_STOP: 2, NOTIFY_CMD: fx.p("notify-es.sh") });
+    fx.makeLoop(loop, app, { MAX_ITER: 5, ERROR_STOP: 2, NOTIFY_CMD: sq(fx.p("notify-es.sh")) });
     await fx.runLoop(loop, fx.stub("stub-es", ["fail", "fail", "fail"]));
     fx.makeLoop(loop2, app, { MAX_ITER: 3, ERROR_SLEEP: 1 });
     const t0 = Date.now();
@@ -80,7 +82,7 @@ describe("a signal during a nap ends the loop at once", () => {
     await until(() => read(join(loop, "ralph.log")).includes("shipped nothing"), 30);
     await Bun.sleep(300);
     const t0 = Date.now();
-    run.proc.kill("SIGTERM");
+    term(loop, run.proc);
     code = await Promise.race([run.done, Bun.sleep(15000).then(() => -1)]);
     took = Date.now() - t0;
     if (code === -1) run.proc.kill("SIGKILL");
@@ -385,7 +387,7 @@ describe("state that outlives a restart", () => {
       WORKTREE: true,
       MAX_ITER: 3,
       CHURN_AT: 2,
-      NOTIFY_CMD: fx.p("notify-rs-churn.sh"),
+      NOTIFY_CMD: sq(fx.p("notify-rs-churn.sh")),
       WORKTREE_DIR: fx.p("wt-rs-churn"),
     });
     await fx.runLoop(churn, fx.stub("stub-rs-c", ["commit", "commit", "commit"]));
@@ -394,7 +396,7 @@ describe("state that outlives a restart", () => {
     const appPr = fx.p("app-rs-pr");
     fx.makeRepo(appPr, remotePr);
     mkNotifier(prNote, fx.p("notify-rs-pr.sh"));
-    fx.makeLoop(pr, appPr, { WORKTREE: true, PUSH: "pr", MAX_ITER: 1, NOTIFY_CMD: fx.p("notify-rs-pr.sh") });
+    fx.makeLoop(pr, appPr, { WORKTREE: true, PUSH: "pr", MAX_ITER: 1, NOTIFY_CMD: sq(fx.p("notify-rs-pr.sh")) });
     await fx.runLoop(pr, fx.stub("stub-rs-p", ["commit"]), { remote: remotePr });
     await fx.runLoop(pr, fx.stub("stub-rs-p2", ["commit"]), { remote: remotePr });
   });

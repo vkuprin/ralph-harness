@@ -1,6 +1,6 @@
 import { afterAll } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +12,28 @@ import { join } from "node:path";
 // for the whole suite on purpose, so every check is made in their company; a
 // check that asserts about the whole machine fails the moment it is written.
 const dir = realpathSync(mkdtempSync(join(tmpdir(), "ralph-stranger.")));
+
+// Windows starts no script by its #! line, and the harness finds claude.exe on
+// PATH and never a batch file, so there the stand-ins for claude and gh are
+// compiled into programs, once per run, into this run's own directory.
+if (process.platform === "win32") {
+  const bin = join(dir, "stub-bin");
+  // Copied to .ts first: with no extension the bundler takes a stub for an
+  // asset, and the program it builds does nothing at all.
+  const src = join(dir, "stub-src");
+  mkdirSync(src);
+  const stubs = join(import.meta.dir, "../stub");
+  copyFileSync(join(stubs, "human.ts"), join(src, "human.ts"));
+  for (const name of ["claude", "gh"]) {
+    copyFileSync(join(stubs, name), join(src, `${name}.ts`));
+    const r = Bun.spawnSync(
+      [process.execPath, "build", "--compile", join(src, `${name}.ts`), "--outfile", join(bin, `${name}.exe`)],
+      { stdout: "ignore", stderr: "pipe" },
+    );
+    if (r.exitCode !== 0) throw new Error(`cannot compile tests/stub/${name}: ${r.stderr.toString()}`);
+  }
+  (globalThis as { ralphStubBin?: string }).ralphStubBin = bin;
+}
 const sleeper = spawn("sleep", ["999"], { stdio: "ignore" });
 const soak = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", join(dir, "home-soak-decoy")], {
   stdio: "ignore",

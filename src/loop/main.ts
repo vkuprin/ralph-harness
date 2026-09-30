@@ -9,9 +9,9 @@ import { existsSync, openSync, readFileSync, rmSync, statSync, writeFileSync, cl
 import { basename, join, resolve } from "node:path";
 import { loadConfig } from "../lib/config.ts";
 import { Log } from "../lib/log.ts";
-import { current, freeze, killGroup, plainChildren, run } from "../lib/proc.ts";
+import { IS_WIN, commandLine, current, freeze, killGroup, plainChildren } from "../lib/proc.ts";
 import { hint } from "../lib/shq.ts";
-import { LOOP_MARK } from "../paths.ts";
+import { LOOP_MARK, STOP_FILE } from "../paths.ts";
 import { Loop, Stop, missingFile } from "./loop.ts";
 
 // The suite's stand-in for bun never finishing loading this file, which
@@ -87,7 +87,7 @@ async function lockHolder(): Promise<string | null> {
   } catch {
     return null;
   }
-  const cmd = (await run(["ps", "-ww", "-p", pid, "-o", "command="])).stdout;
+  const cmd = await commandLine(pid);
   return cmd.includes(LOOP_MARK) || /ralph.*\.sh/.test(cmd) ? pid : null;
 }
 
@@ -140,6 +140,20 @@ async function onSignal(): Promise<void> {
 process.on("SIGTERM", () => void onSignal());
 process.on("SIGINT", () => void onSignal());
 process.on("SIGHUP", () => {});
+
+// Windows has no TERM to send: process.kill there ends a process on the spot,
+// with no handler run and the agent under it left running on its own. So
+// `ralph stop` asks through a file, and the loop answers it exactly as it
+// answers a signal. One left behind by a loop that was killed means nothing.
+if (IS_WIN) {
+  const stopFile = join(dir, STOP_FILE);
+  rmSync(stopFile, { force: true });
+  setInterval(() => {
+    if (!existsSync(stopFile)) return;
+    rmSync(stopFile, { force: true });
+    void onSignal();
+  }, 250).unref();
+}
 
 try {
   await loop.start();

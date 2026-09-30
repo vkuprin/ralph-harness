@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { hour, nowSec, stampMinutes } from "../lib/clock.ts";
 import { type Config, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
 import type { Log } from "../lib/log.ts";
-import { type Ran, nap, run, runBounded } from "../lib/proc.ts";
+import { DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
 import { shq } from "../lib/shq.ts";
 import { chomp, headBytes, lastNonBlank, section, splitLines, tailLines } from "../lib/text.ts";
@@ -97,11 +97,18 @@ export function planMcpConfig(dir: string): object {
   };
 }
 
-/** The PreToolUse hook that delivers `ralph steer` to the iteration in flight. */
+/**
+ * The PreToolUse hook that delivers `ralph steer` to the iteration in flight.
+ * Claude Code runs hook commands in a shell: Git Bash on Windows when Git for
+ * Windows is there, which the harness needs anyway. Its paths go with forward
+ * slashes there, which Windows takes and which shq then leaves bare, so an
+ * ordinary path reads the same to bash and to PowerShell.
+ */
 export function agentSettings(): object {
+  const path = (p: string) => (IS_WIN ? p.split("\\").join("/") : p);
   return {
     hooks: {
-      PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: `${shq(process.execPath)} ${shq(STEER_HOOK)}` }] }],
+      PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: `${shq(path(process.execPath))} ${shq(path(STEER_HOOK))}` }] }],
     },
   };
 }
@@ -177,7 +184,7 @@ export class Loop {
   private git(args: string[], opts: { cwd?: string; quiet?: boolean; toLog?: boolean } = {}): Promise<Ran> {
     return run(["git", ...args], {
       cwd: opts.cwd,
-      errTo: opts.quiet ? "/dev/null" : this.log.file,
+      errTo: opts.quiet ? DEV_NULL : this.log.file,
       outTo: opts.toLog ? this.log.file : undefined,
     });
   }
@@ -196,6 +203,12 @@ export class Loop {
       env: opts.env ? { ...process.env, ...opts.env } : undefined,
       pollGapMax: this.cfg.POLL_GAP_MAX,
     });
+  }
+
+  /** A *_CMD setting, bounded: the user's own text, run by bash. */
+  private shell(secs: number, command: string, opts: { out: string; env?: Record<string, string> }) {
+    const sh = shellCommand(command);
+    return this.bounded(secs, sh.argv, { ...opts, env: { ...opts.env, ...sh.env } });
   }
 
   missing(...names: string[]): string | null {
@@ -218,7 +231,7 @@ export class Loop {
   async notify(event: string, message: string): Promise<void> {
     if (!this.cfg.NOTIFY_CMD) return;
     const secs = this.cfg.NOTIFY_TIMEOUT >= 1 ? this.cfg.NOTIFY_TIMEOUT : 30;
-    const r = await this.bounded(secs, ["bash", "-c", this.cfg.NOTIFY_CMD], {
+    const r = await this.shell(secs, this.cfg.NOTIFY_CMD, {
       out: this.log.file,
       env: {
         RALPH_EVENT: event,
@@ -319,7 +332,8 @@ export class Loop {
       }
       if (SETUP_CMD) {
         this.log.line(`setup: ${SETUP_CMD}`);
-        const r = await run(["bash", "-c", SETUP_CMD], { cwd: WORK, outTo: this.log.file, errTo: this.log.file });
+        const sh = shellCommand(SETUP_CMD);
+        const r = await run(sh.argv, { cwd: WORK, env: { ...process.env, ...sh.env }, outTo: this.log.file, errTo: this.log.file });
         if (r.code !== 0) {
           // The branch goes with the worktree. Keeping it sent the next start
           // down the reuse path above, which never runs SETUP_CMD, so the loop
@@ -388,6 +402,9 @@ export class Loop {
         2,
       );
     }
+    // Every iteration would exit 127 and back off, for ever, with no word about why.
+    const claude = claudeProblem();
+    if (claude) await this.refuse(`ralph: ${claude}`, 2);
     const push = pushProblem(c);
     if (push) {
       await this.refuse(
@@ -730,7 +747,7 @@ export class Loop {
     const c = this.cfg;
     const out = this.p("done.out");
     writeFileSync(out, "");
-    const r = await this.bounded(300, ["bash", "-c", c.DONE_CMD], {
+    const r = await this.shell(300, c.DONE_CMD, {
       out,
       env: { RALPH_DIR: this.dir, RALPH_LOOP: this.name },
     });
@@ -855,7 +872,7 @@ export class Loop {
     const secs = c.HEALTH_TIMEOUT >= 1 ? c.HEALTH_TIMEOUT : 300;
     const out = this.p("health.out");
     writeFileSync(out, "");
-    const r = await this.bounded(secs, ["bash", "-c", c.HEALTH_CMD], {
+    const r = await this.shell(secs, c.HEALTH_CMD, {
       out,
       env: { RALPH_DIR: this.dir, RALPH_LOOP: this.name },
     });
@@ -899,7 +916,7 @@ export class Loop {
     const secs = c.LAND_OK_TIMEOUT >= 1 ? c.LAND_OK_TIMEOUT : 300;
     const out = this.p("land.out");
     writeFileSync(out, "");
-    const r = await this.bounded(secs, ["bash", "-c", c.LAND_OK_CMD], {
+    const r = await this.shell(secs, c.LAND_OK_CMD, {
       out,
       env: { RALPH_DIR: this.dir, RALPH_LOOP: this.name },
     });
@@ -1092,7 +1109,7 @@ export class Loop {
     if (!c.VERIFY_CMD) return null;
     const out = this.p("verify.out");
     writeFileSync(out, "");
-    const r = await this.bounded(c.VERIFY_TIMEOUT, ["bash", "-c", c.VERIFY_CMD], { out });
+    const r = await this.shell(c.VERIFY_TIMEOUT, c.VERIFY_CMD, { out });
     const text = this.read(out);
     this.log.raw(text);
     if (r.timedOut) return `verify timed out after ${c.VERIFY_TIMEOUT}s`;
