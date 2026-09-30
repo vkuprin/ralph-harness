@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
-import { Fx, join, read, rows, setup, sleeperGone, sq, statuses } from "../helpers/index.ts";
+import { Fx, basename, join, read, rows, setup, sleeperGone, sq, statuses } from "../helpers/index.ts";
 
 const fx = new Fx("suspend");
 
@@ -19,7 +19,7 @@ describe("time asleep is not time worked", () => {
 
   /** The loop on the fake clock, with an offset file of its own starting at 0. */
   async function runSlept(dir: string, stub: string, work = "1"): Promise<number> {
-    const clock = fx.p(`clock-${dir.slice(dir.lastIndexOf("/") + 1)}`);
+    const clock = fx.p(`clock-${basename(dir)}`);
     writeFileSync(clock, "0\n");
     return fx.runLoop(dir, stub, { env: { RALPH_TEST_CLOCK: clock, FAKE_WORK: work } });
   }

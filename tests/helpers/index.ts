@@ -14,9 +14,19 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 
 export const ROOT = resolve(import.meta.dir, "../..");
+export const IS_WIN = process.platform === "win32";
+
+/**
+ * Where the claude and gh stand-ins are. On Windows a script cannot be started
+ * as a program, and the harness finds claude.exe on PATH and nothing else, so
+ * the preload compiles each stub into an .exe once per run.
+ */
+export function stubDir(): string {
+  return (globalThis as { ralphStubBin?: string }).ralphStubBin ?? join(ROOT, "tests/stub");
+}
 
 // ---------------------------------------------------------------- the harness
 
@@ -65,6 +75,30 @@ export function readConfigValue(file: string, key: string): string | undefined {
 // ---------------------------------------------------------------- the fixture
 const KEEP = process.env.KEEP_T === "1";
 
+/**
+ * The PATH with every directory that holds a claude of its own taken out, on
+ * Windows. There a program is found by more than PATH order (the directory of
+ * the program starting it, the working directory, the extensions in PATHEXT),
+ * and the real claude.exe, reached once, ran a paid session under
+ * --dangerously-skip-permissions in a fixture. The stub has to be the only one.
+ */
+let pathNoClaude: string | null = null;
+function noClaude(): string {
+  if (pathNoClaude !== null) return pathNoClaude;
+  if (!existsSync(join(stubDir(), "claude.exe"))) throw new Error(`the claude stub was not compiled into ${stubDir()}`);
+  const exts = ["", ".exe", ".cmd", ".bat", ".ps1", ".com"];
+  pathNoClaude = (process.env.PATH ?? "")
+    .split(delimiter)
+    .filter((d) => d !== "" && !exts.some((e) => existsSync(join(d, `claude${e}`))))
+    .join(delimiter);
+  return pathNoClaude;
+}
+
+const WIN_ENV = [
+  "SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT", "TEMP", "TMP", "ProgramFiles", "ProgramFiles(x86)",
+  "ProgramData", "APPDATA", "LOCALAPPDATA", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+];
+
 export interface Ran {
   code: number;
   out: string;
@@ -107,9 +141,8 @@ export class Fx {
   /** The environment every process a test starts gets, plus `extra`. */
   env(extra: Record<string, string | undefined> = {}): Record<string, string> {
     const out: Record<string, string> = {
-      PATH: `${join(ROOT, "tests/stub")}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      PATH: `${stubDir()}${delimiter}${IS_WIN ? noClaude() : (process.env.PATH ?? "/usr/bin:/bin")}`,
       HOME: join(this.T, ".home"),
-      TMPDIR: process.env.TMPDIR ?? "/tmp",
       GIT_CONFIG_GLOBAL: join(this.T, ".gitconfig"),
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_AUTHOR_NAME: "ralph test",
@@ -117,6 +150,17 @@ export class Fx {
       GIT_COMMITTER_NAME: "ralph test",
       GIT_COMMITTER_EMAIL: "test@example.invalid",
     };
+    if (IS_WIN) {
+      // What Windows itself needs to start a program, and the fake home as the
+      // Windows home too: homedir() reads USERPROFILE there, not HOME.
+      out.USERPROFILE = out.HOME!;
+      for (const k of WIN_ENV) {
+        const v = process.env[k];
+        if (v !== undefined) out[k] = v;
+      }
+    } else {
+      out.TMPDIR = process.env.TMPDIR ?? "/tmp";
+    }
     for (const k of ["LANG", "LC_ALL", "TZ"]) {
       const v = process.env[k];
       if (v !== undefined) out[k] = v;
@@ -127,6 +171,8 @@ export class Fx {
 
   /** Run a command to completion. */
   sh(argv: string[], opts: { cwd?: string; env?: Record<string, string | undefined>; input?: string } = {}): Ran {
+    // Windows starts no script by its #! line; bun runs the CLI there.
+    if (IS_WIN && argv[0] === cliPath()) argv = [process.execPath, ...argv];
     const r = Bun.spawnSync(argv, {
       cwd: opts.cwd,
       env: this.env(opts.env),
@@ -295,14 +341,27 @@ export function lines(path: string): string[] {
 // checks red. The suite is a loop's VERIFY_CMD, so a red check resets a commit
 // that was fine.
 
+// Windows has no ps that sees native processes (Git's is MSYS's own), so the
+// command lines come from CIM there, with the PID in the environment.
+function cim(filter: string): string {
+  const script = `Get-CimInstance Win32_Process ${filter} | ForEach-Object { $_.CommandLine }`;
+  const r = Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], {
+    env: { ...process.env },
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  return r.stdout.toString();
+}
+
 function commandOf(pid: number): string {
+  if (IS_WIN) return cim(`-Filter "ProcessId=${Math.trunc(pid)}"`);
   const r = Bun.spawnSync(["ps", "-ww", "-p", String(pid), "-o", "command="]);
   return r.exitCode === 0 ? r.stdout.toString() : "";
 }
 
 /** Nothing on the machine runs out of this run's own path. Snapshot first, then a literal match. */
 export function noProc(text: string): boolean {
-  const snap = Bun.spawnSync(["ps", "-axww", "-o", "command="]).stdout.toString();
+  const snap = IS_WIN ? cim("") : Bun.spawnSync(["ps", "-axww", "-o", "command="]).stdout.toString();
   return !snap.includes(text);
 }
 
@@ -324,6 +383,22 @@ export async function waitProc(pid: number, text: string): Promise<boolean> {
     await Bun.sleep(100);
   }
   return false;
+}
+
+/**
+ * What `ralph stop` sends a loop: TERM, or on Windows, which has no TERM a
+ * program can catch, the stop file the loop watches for. `pid` when the loop
+ * is not `proc` itself (one `ralph start` put in the background).
+ */
+export function term(dir: string, proc: Bun.Subprocess | null, pid?: number): void {
+  if (IS_WIN) {
+    writeFileSync(join(dir, "ralph.stop"), "");
+    return;
+  }
+  try {
+    if (pid) process.kill(pid, "SIGTERM");
+    else proc?.kill("SIGTERM");
+  } catch {}
 }
 
 export function alive(pid: number): boolean {

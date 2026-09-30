@@ -58,7 +58,7 @@ async function merging(
     PR_MERGE_WAIT: 20,
     MAX_ITER: modes.length,
     VERIFY_CMD: "./measure.sh",
-    NOTIFY_CMD: fx.p(`notify-${name}.sh`),
+    NOTIFY_CMD: sq(fx.p(`notify-${name}.sh`)),
     ...opts.cfg,
   });
   c.rc = await fx.runLoop(c.loop, c.stub, { remote: c.remote });
@@ -232,7 +232,7 @@ if [ "$n" -le ${fails} ]; then echo "ingest_runs: 1 running"; exit 1; fi
 `,
   );
   chmodSync(cmd, 0o755);
-  return { cmd, seen };
+  return { cmd: sq(cmd), seen };
 }
 
 describe("PR_DRAFT: the pull request is a draft until the loop ends by itself", () => {
@@ -316,7 +316,7 @@ describe("LAND_OK_CMD: BRANCH does not move while production is busy", () => {
       MAX_ITER: 2,
       LAND_OK_CMD: push.cmd,
       ACTIVE_POLL: 1,
-      NOTIFY_CMD: fx.p("notify-landpush.sh"),
+      NOTIFY_CMD: sq(fx.p("notify-landpush.sh")),
     });
     await fx.runLoop(loop, S, { remote: R });
   });

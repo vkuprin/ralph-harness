@@ -8,6 +8,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   statSync,
   writeFileSync,
@@ -21,7 +22,8 @@ import { readResults } from "../lib/results.ts";
 import { Log } from "../lib/log.ts";
 import { hint } from "../lib/shq.ts";
 import { splitLines } from "../lib/text.ts";
-import { HARNESS, LOOP_ENTRY, LOOP_MARK, TEMPLATE, ralphHome } from "../paths.ts";
+import { IS_WIN, claudeProblem, commandLineSync, killTree, upTimeSync } from "../lib/proc.ts";
+import { HARNESS, LOOP_ENTRY, LOOP_MARK, STOP_FILE, TEMPLATE, endsWithArg, markThen, ralphHome } from "../paths.ts";
 import { migrate } from "./migrate.ts";
 
 const USAGE = `ralph — long-running Claude Code loops: a fresh \`claude -p\` every iteration,
@@ -116,10 +118,6 @@ function alive(pid: number): boolean {
   }
 }
 
-function commandOf(pid: string): string {
-  return sh(["ps", "-ww", "-p", pid, "-o", "command="]).out.trimEnd();
-}
-
 /**
  * A PID is not an identity. ralph.pid outlives a `kill -9`, the OOM killer and
  * a reboot, and after a reboot the kernel hands those low numbers straight back
@@ -132,9 +130,9 @@ function commandOf(pid: string): string {
 function pidOf(dir: string, bashToo = false): string | null {
   const pid = read(join(dir, "ralph.pid")).trim();
   if (!/^\d+$/.test(pid) || !alive(Number(pid))) return null;
-  const cmd = commandOf(pid);
-  if (!cmd.endsWith(` ${dir}`)) return null;
-  if (cmd.includes(`${LOOP_MARK} `)) return pid;
+  const cmd = commandLineSync(pid);
+  if (!endsWithArg(cmd, dir)) return null;
+  if (markThen(cmd, LOOP_MARK)) return pid;
   // The bash harness this replaced ran `bash <harness>/ralph.sh <dir>`.
   if (bashToo && cmd.includes("ralph") && cmd.includes(".sh ")) return pid;
   return null;
@@ -181,7 +179,7 @@ function loopConf(dir: string): Conf {
 function stateLine(dir: string): string {
   const pid = pidOf(dir);
   if (!pid) return "\x1b[2mstopped\x1b[0m";
-  const up = sh(["ps", "-p", pid, "-o", "etime="]).out.trim();
+  const up = upTimeSync(pid);
   return `\x1b[32mrunning\x1b[0m  PID ${pid}  up ${up}`;
 }
 
@@ -475,7 +473,7 @@ async function cmdStart(name?: string): Promise<void> {
   const log = new Log(join(dir, "ralph.log"));
   for (let attempt = 1; ; attempt++) {
     const fd = openSync(join(dir, "ralph.out"), "a");
-    const child = spawn(process.execPath, [LOOP_ENTRY, dir], { detached: true, stdio: ["ignore", fd, fd] });
+    const child = spawn(process.execPath, [LOOP_ENTRY, dir], { detached: true, windowsHide: true, stdio: ["ignore", fd, fd] });
     closeSync(fd);
     child.unref();
     const pid = child.pid!;
@@ -490,13 +488,7 @@ async function cmdStart(name?: string): Promise<void> {
       dim(`  ${hint("ralph", "status", name!)}   ${hint("ralph", "tail", name!)}   ${hint("ralph", "stop", name!)}`);
       return;
     }
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {}
-    }
+    killTree(pid);
     rmSync(join(dir, "ralph.pid"), { force: true });
     const why = `the loop process ${pid} had not started after ${BOOT_WAIT}s (bun never finished loading it)`;
     if (attempt >= BOOT_TRIES) {
@@ -513,12 +505,20 @@ async function cmdStop(name?: string): Promise<void> {
   if (!pid) die(`${name} is not running`);
   // TERM lets the loop take down the agent's whole process group (tests, dev
   // servers, MCP servers) and log where it stopped. That can take a few
-  // seconds, so wait before reaching for SIGKILL.
-  try {
-    process.kill(Number(pid), "SIGTERM");
-  } catch {}
+  // seconds, so wait before reaching for SIGKILL. Windows has no TERM, so
+  // there the loop is asked through a file it watches for.
+  if (IS_WIN) {
+    writeFileSync(join(dir, STOP_FILE), "");
+  } else {
+    try {
+      process.kill(Number(pid), "SIGTERM");
+    } catch {}
+  }
   for (let i = 0; i < 15 && alive(Number(pid)); i++) await Bun.sleep(1000);
-  if (alive(Number(pid))) {
+  if (alive(Number(pid)) && IS_WIN) {
+    // The loop and its whole tree: the agent is in it.
+    killTree(Number(pid));
+  } else if (alive(Number(pid))) {
     // Killing only the loop would leave the current `claude -p` orphaned and
     // still writing to the repository.
     for (const child of splitLines(sh(["pgrep", "-P", pid]).out)) {
@@ -535,6 +535,7 @@ async function cmdStop(name?: string): Promise<void> {
     } catch {}
   }
   rmSync(join(dir, "ralph.pid"), { force: true });
+  rmSync(join(dir, STOP_FILE), { force: true });
   green(`stopped ${name} (PID ${pid})`);
 }
 
@@ -559,10 +560,53 @@ function cmdLog(name?: string, n = "40"): void {
 
 async function cmdTail(name?: string): Promise<void> {
   const dir = loopDir(name);
+  if (IS_WIN) return follow(join(dir, "ralph.log"));
   // -F, not -f: a rotation renames the file this is following, and -f would
   // then sit on the old one, silent, for the rest of the run.
   const c = spawn("tail", ["-F", join(dir, "ralph.log")], { stdio: "inherit" });
   await new Promise((r) => c.once("exit", r));
+}
+
+/**
+ * `tail -F` for Windows, which has no tail: the last ten lines, then whatever is
+ * appended. A rotation is told by the file's identity, not by its size: the
+ * new ralph.log can grow past the old offset between two looks, and read from
+ * there it would lose its first lines. The identity is a bigint because NTFS
+ * file ids do not fit in a double.
+ */
+async function follow(file: string): Promise<never> {
+  const id = () => {
+    try {
+      return statSync(file, { bigint: true }).ino;
+    } catch {
+      return null;
+    }
+  };
+  let ino = id();
+  const text = read(file);
+  out(splitLines(text).slice(-10).map((l) => `${l}\n`).join(""));
+  let pos = Buffer.byteLength(text);
+  for (;;) {
+    await Bun.sleep(500);
+    let size: number;
+    try {
+      size = statSync(file).size;
+    } catch {
+      continue;
+    }
+    const now = id();
+    if (now !== ino || size < pos) {
+      ino = now;
+      pos = 0;
+    }
+    if (size === pos) continue;
+    const fd = openSync(file, "r");
+    const buf = Buffer.alloc(size - pos);
+    readSync(fd, buf, 0, buf.length, pos);
+    closeSync(fd);
+    process.stdout.write(buf);
+    pos = size;
+  }
 }
 
 /**
@@ -698,6 +742,8 @@ function cmdSteer(name?: string, ...words: string[]): void {
 async function cmdSetup(): Promise<never> {
   const claude = Bun.which("claude");
   if (!claude) die("claude is not on PATH — install Claude Code first: https://code.claude.com");
+  const problem = claudeProblem();
+  if (problem) die(problem);
   const skill = join(HARNESS, "skills/ralph-new/SKILL.md");
   const prompt = `Set up a ralph loop on the repository in this directory, following the ralph-new instructions in your system prompt. The ralph CLI is ${join(HARNESS, "bin/ralph")}.`;
   const c = spawn(claude, ["--append-system-prompt-file", skill, prompt], { stdio: "inherit", cwd: process.cwd() });
@@ -707,7 +753,7 @@ async function cmdSetup(): Promise<never> {
 
 async function cmdEdit(name?: string): Promise<void> {
   const dir = loopDir(name);
-  const c = spawn(process.env.EDITOR || "vi", [join(dir, "PROMPT.md")], { stdio: "inherit" });
+  const c = spawn(process.env.EDITOR || (IS_WIN ? "notepad" : "vi"), [join(dir, "PROMPT.md")], { stdio: "inherit" });
   await new Promise((r) => c.once("exit", r));
 }
 

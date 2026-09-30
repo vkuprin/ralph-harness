@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { Fx, ROOT, hookArgv, join, read, setup, statuses, waitProc } from "../helpers/index.ts";
+import { Fx, ROOT, hookArgv, join, read, setup, sq, statuses, waitProc } from "../helpers/index.ts";
 
 // config.json, its refusals, `ralph migrate` from the bash harness's config.sh,
 // and the steer hook's answer.
@@ -111,7 +111,7 @@ describe("ralph migrate turns config.sh into config.json", () => {
     loopWith(
       dir,
       `# Settings for the legacy loop.
-REPO=${app}
+REPO=${sq(app)}
 MAX_ITER=3 QUIET_SLEEP=0 STEP_SLEEP=0 ERROR_SLEEP=0
 WORKTREE=1
 FROZEN=("measure.sh")

@@ -4,6 +4,7 @@ import {
   cliPath,
   count,
   Fx,
+  IS_WIN,
   join,
   loopArgv,
   patchConfig,
@@ -289,10 +290,10 @@ describe("ralph new writes a repo path the loop reads back exactly", () => {
   /** REPO as the harness actually receives it. */
   const repoOf = (name: string) => readConfigValue(cfg(name), "REPO");
 
-  const srcDollar = `${T}/pre$HOME-src`;
+  const srcDollar = join(T, "pre$HOME-src");
   const ran = fx.p("SOURCED-RAN");
   const srcTick = `${T}/q\`touch ${ran}\`-src`;
-  const srcSub = `${T}/s$(echo no)-src`;
+  const srcSub = join(T, "s$(echo no)-src");
   const srcQuote = `${T}/d"q-src`;
   const appSrc = fx.p("app-src");
   let tickRan = true;
@@ -308,19 +309,25 @@ describe("ralph new writes a repo path the loop reads back exactly", () => {
     fx.cli(home, ["new", "dollar", srcDollar]);
 
     // The loud one: a backtick is command substitution, so merely reading the
-    // settings of such a loop runs a command out of a directory name.
-    fx.makeRepo(srcTick, fx.p("remote-src2.git"));
-    fx.cli(home, ["new", "tick", srcTick]);
-    rmSync(ran, { force: true });
-    tickRepo = repoOf("tick");
-    tickRan = existsSync(ran);
+    // settings of such a loop runs a command out of a directory name. On
+    // Windows no directory can be named after a command with a path in it.
+    if (!IS_WIN) {
+      fx.makeRepo(srcTick, fx.p("remote-src2.git"));
+      fx.cli(home, ["new", "tick", srcTick]);
+      rmSync(ran, { force: true });
+      tickRepo = repoOf("tick");
+      tickRan = existsSync(ran);
+    }
 
     // $(...) is the same substitution spelled differently, and a " ends the
     // string early — which swallows the settings after it rather than failing.
     fx.makeRepo(srcSub, fx.p("remote-src3.git"));
     fx.cli(home, ["new", "sub", srcSub]);
-    fx.makeRepo(srcQuote, fx.p("remote-src4.git"));
-    fx.cli(home, ["new", "quote", srcQuote]);
+    // Windows allows no " in a file name.
+    if (!IS_WIN) {
+      fx.makeRepo(srcQuote, fx.p("remote-src4.git"));
+      fx.cli(home, ["new", "quote", srcQuote]);
+    }
 
     // The strongest check: the scaffold is not merely written, it works.
     patchConfig(join(home, "dollar"), {
@@ -342,19 +349,19 @@ describe("ralph new writes a repo path the loop reads back exactly", () => {
   test("a $ in the repo path is not expanded", () => {
     expect(repoOf("dollar")).toBe(srcDollar);
   });
-  test("a backtick in the repo path stays text and is not run", () => {
+  test.skipIf(IS_WIN)("a backtick in the repo path stays text and is not run", () => {
     expect(tickRan).toBe(false);
   });
-  test("and that path too arrives whole", () => {
+  test.skipIf(IS_WIN)("and that path too arrives whole", () => {
     expect(tickRepo).toBe(srcTick);
   });
   test("a $(...) in the repo path is not run", () => {
     expect(repoOf("sub")).toBe(srcSub);
   });
-  test('a " in the repo path does not end the string early', () => {
+  test.skipIf(IS_WIN)('a " in the repo path does not end the string early', () => {
     expect(repoOf("quote")).toBe(srcQuote);
   });
-  test("so the settings after REPO are still read", () => {
+  test.skipIf(IS_WIN)("so the settings after REPO are still read", () => {
     expect(readConfigValue(cfg("quote"), "MAX_ITER") ?? "").not.toBe("");
   });
   test("and the loop scaffolded on such a path runs and keeps its commit", () => {
@@ -402,7 +409,7 @@ describe("PUSH true lands only on a branch the config names twice", () => {
     S = fx.stub("stub-confirm", ["commit", "commit", "nothing"]);
     writeFileSync(fx.p("notify-confirm.sh"), `#!/bin/sh\necho "$RALPH_EVENT $RALPH_LOOP" >> ${sq(notes)}\n`);
     chmodSync(fx.p("notify-confirm.sh"), 0o755);
-    const base = { WORKTREE: true, PUSH: true, MAX_ITER: 1, QUIET_SLEEP: 0, STEP_SLEEP: 0, NOTIFY_CMD: fx.p("notify-confirm.sh") };
+    const base = { WORKTREE: true, PUSH: true, MAX_ITER: 1, QUIET_SLEEP: 0, STEP_SLEEP: 0, NOTIFY_CMD: sq(fx.p("notify-confirm.sh")) };
     fx.makeLoop(bare, app, base);
     bareRc = await fx.runLoop(bare, S, { remote: R });
     fx.makeLoop(other, app, { ...base, PUSH_CONFIRM: "develop" });

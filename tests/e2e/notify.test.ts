@@ -75,7 +75,7 @@ describe("NOTIFY_CMD: the loop tells the human instead of failing quietly", () =
       ESCALATE_AFTER: 3,
       ITER_TIMEOUT: 10,
       VERIFY_CMD: "./measure.sh",
-      NOTIFY_CMD: fx.p("notify-nc.sh"),
+      NOTIFY_CMD: sq(fx.p("notify-nc.sh")),
     });
     // Only what an agent of *this* run writes under that heading is news.
     seedOldQuestion(nc);
@@ -85,7 +85,7 @@ describe("NOTIFY_CMD: the loop tells the human instead of failing quietly", () =
     // asking anything new.
     const ncsStub = fx.stub("stub-ncs", ["decide", "settle", "nothing"]);
     mkNotifier(ncsLog, fx.p("notify-ncs.sh"));
-    fx.makeLoop(ncs, app, { MAX_ITER: 3, NOTIFY_CMD: fx.p("notify-ncs.sh") });
+    fx.makeLoop(ncs, app, { MAX_ITER: 3, NOTIFY_CMD: sq(fx.p("notify-ncs.sh")) });
     seedOldQuestion(ncs);
     await fx.runLoop(ncs, ncsStub);
 
@@ -98,7 +98,7 @@ describe("NOTIFY_CMD: the loop tells the human instead of failing quietly", () =
       MAX_ITER: 5,
       QUIET_STOP: 1,
       VERIFY_CMD: "./measure.sh",
-      NOTIFY_CMD: fx.p("notify-nq.sh"),
+      NOTIFY_CMD: sq(fx.p("notify-nq.sh")),
     });
     await fx.runLoop(nq, nqStub);
 
@@ -114,7 +114,7 @@ describe("NOTIFY_CMD: the loop tells the human instead of failing quietly", () =
       ESCALATE_AFTER: 1,
       NOTIFY_TIMEOUT: 1,
       VERIFY_CMD: "./measure.sh",
-      NOTIFY_CMD: hang,
+      NOTIFY_CMD: sq(hang),
     });
     await fx.runLoop(nh, nhStub);
 
@@ -130,13 +130,13 @@ describe("NOTIFY_CMD: the loop tells the human instead of failing quietly", () =
     mkdirSync(fx.p("not-a-checkout"));
     copyFileSync(join(ROOT, "template/PROMPT.md"), join(nr, "PROMPT.md"));
     copyFileSync(join(ROOT, "template/PROGRESS.md"), join(nr, "PROGRESS.md"));
-    writeConfig(nr, { REPO: fx.p("not-a-checkout"), NOTIFY_CMD: fx.p("notify-nr.sh") });
+    writeConfig(nr, { REPO: fx.p("not-a-checkout"), NOTIFY_CMD: sq(fx.p("notify-nr.sh")) });
     nrRc = await fx.runLoop(nr, fx.stub("stub-nr"));
 
     // A start refused because SETUP_CMD failed.
     const nsStub = fx.stub("stub-ns", ["nothing"]);
     mkNotifier(nsLog, fx.p("notify-ns.sh"));
-    fx.makeLoop(ns, app, { WORKTREE: true, MAX_ITER: 1, SETUP_CMD: "exit 3", NOTIFY_CMD: fx.p("notify-ns.sh") });
+    fx.makeLoop(ns, app, { WORKTREE: true, MAX_ITER: 1, SETUP_CMD: "exit 3", NOTIFY_CMD: sq(fx.p("notify-ns.sh")) });
     nsRc = await fx.runLoop(ns, nsStub);
   });
 

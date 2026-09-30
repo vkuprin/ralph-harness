@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, symlinkSync } from "node:fs";
-import { Fx, ROOT, cliPath, join, lines, read, setup, statuses } from "../helpers/index.ts";
+import { copyFileSync, existsSync, linkSync, mkdirSync, symlinkSync } from "node:fs";
+import { Fx, IS_WIN, ROOT, cliPath, join, lines, read, setup, statuses } from "../helpers/index.ts";
 
 // PLAN_FIRST starts the agent in plan mode with the harness's MCP server as the
 // one thing that answers its approval prompts; `ralph setup` opens Claude Code
@@ -135,7 +135,17 @@ describe("ralph setup opens Claude Code with the ralph-new skill, where it was r
     // A PATH holding bun and nothing else: there is no claude to open.
     const bin = fx.p("only-bun");
     mkdirSync(bin);
-    symlinkSync(process.execPath, join(bin, "bun"));
+    // Windows makes no symlink without Developer Mode; a hard link, or a copy
+    // on another volume, is the same bun.
+    if (IS_WIN) {
+      try {
+        linkSync(process.execPath, join(bin, "bun.exe"));
+      } catch {
+        copyFileSync(process.execPath, join(bin, "bun.exe"));
+      }
+    } else {
+      symlinkSync(process.execPath, join(bin, "bun"));
+    }
     const r = fx.sh([process.execPath, cliPath(), "setup"], { cwd: repo, env: { ...env, PATH: bin } });
     missing = { code: r.code, err: r.err };
   });

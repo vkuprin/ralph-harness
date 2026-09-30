@@ -11,6 +11,7 @@ import {
   sq,
   statuses,
   type LoopRun,
+  term,
   until,
 } from "../helpers/index.ts";
 
@@ -215,10 +216,7 @@ out=${sq(log)}
     const within = (s: number) => Promise.race([run.done.then(() => true), Bun.sleep(s * 1000).then(() => false)]);
     if (await within(secs)) return true;
     const pid = Number(read(join(dir, "ralph.lock")).trim());
-    try {
-      if (pid) process.kill(pid, "SIGTERM");
-      else run.proc.kill("SIGTERM");
-    } catch {}
+    term(dir, run.proc, pid);
     if (!(await within(10))) run.proc.kill("SIGKILL");
     await run.done;
     return false;
@@ -251,7 +249,7 @@ out=${sq(log)}
       LIMIT_RESET: true,
       ACTIVE_POLL: 1,
       ITER_TIMEOUT: 600,
-      NOTIFY_CMD: fx.p("notify-lr.sh"),
+      NOTIFY_CMD: sq(fx.p("notify-lr.sh")),
     });
     const clockLr = fx.p("clock-lr");
     const bg = bgLoop(lr, S, clockLr);

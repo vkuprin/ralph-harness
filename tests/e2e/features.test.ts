@@ -319,7 +319,7 @@ describe("HEALTH_CMD: a broken system leads the prompt until it is fixed", () =>
       MAX_ITER: 4,
       HEALTH_CMD: 'if [ -f "$STUB_DIR/sick" ]; then echo "watch 42 has been silent for 30h"; exit 1; fi',
       DONE_CMD: 'test -f "$STUB_DIR/sick"',
-      NOTIFY_CMD: fx.p("notify-hl.sh"),
+      NOTIFY_CMD: sq(fx.p("notify-hl.sh")),
     });
     await fx.runLoop(H, S);
   });
@@ -382,7 +382,7 @@ describe("churn: the files the loop keeps changing are named", () => {
       MAX_ITER: 5,
       CHURN_AT: 3,
       CHURN_WINDOW: 8,
-      NOTIFY_CMD: fx.p("notify-ch.sh"),
+      NOTIFY_CMD: sq(fx.p("notify-ch.sh")),
     });
     await fx.runLoop(loop, S);
 

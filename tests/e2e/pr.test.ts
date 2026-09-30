@@ -41,7 +41,7 @@ describe("PUSH=pr: the harness pushes a branch and a human merges the pull reque
       PUSH: "pr",
       MAX_ITER: 5,
       VERIFY_CMD: "./measure.sh",
-      NOTIFY_CMD: fx.p("notify-pr.sh"),
+      NOTIFY_CMD: sq(fx.p("notify-pr.sh")),
     });
     await fx.runLoop(loop, S, { remote: R });
     review = fx.cli(fx.p("loops"), ["review", "pr"]).out;
@@ -54,7 +54,7 @@ describe("PUSH=pr: the harness pushes a branch and a human merges the pull reque
       PUSH: "pr",
       MAX_ITER: 4,
       VERIFY_CMD: "./measure.sh",
-      NOTIFY_CMD: fx.p("notify-pr2.sh"),
+      NOTIFY_CMD: sq(fx.p("notify-pr2.sh")),
     });
     await fx.runLoop(loop2, S2, { remote: R2 });
 

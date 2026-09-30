@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import {
   Fx,
+  IS_WIN,
   alive,
   join,
   noProc,
@@ -88,7 +89,14 @@ describe("a check is about this run and nothing else", () => {
   test("and so did the stranger whose command line holds home-soak", () => {
     expect(alive(strangers().soak)).toBe(true);
   });
-  test("the pattern those four checks used really does match the strangers", () => {
+  // Windows has no pgrep; there what matters is that the snapshot noProc reads
+  // sees the strangers at all, or every check that nothing is running passes
+  // for nothing.
+  test.if(IS_WIN)("the process snapshot on Windows sees the strangers", () => {
+    expect(noProc("sleep 999")).toBe(false);
+    expect(noProc("home-soak")).toBe(false);
+  });
+  test.skipIf(IS_WIN)("the pattern those four checks used really does match the strangers", () => {
     const pids = (pattern: string) => fx.sh(["pgrep", "-f", pattern]).out.split("\n");
     expect(pids("sleep 99[9]")).toContain(String(strangers().sleep));
     expect(pids("home-soa[k]")).toContain(String(strangers().soak));

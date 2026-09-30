@@ -25,7 +25,8 @@ A Ralph loop for Claude Code that runs for days. Every iteration is a fresh
 `PROGRESS.md`, does some work and commits. Then git and your own commands decide
 whether that commit ships. What the model says about its work never counts.
 
-Needs `bun`, `git` and the `claude` CLI. macOS and Linux. No npm dependencies.
+Needs `bun`, `git` and the `claude` CLI. macOS, Linux and [Windows](#windows).
+No npm dependencies.
 
 ## How it works
 
@@ -74,6 +75,45 @@ ln -s ~/.bun/install/global/node_modules/@vkuprin/ralph-harness/skills/ralph-new
 ln -s "$(npm root -g)/@vkuprin/ralph-harness/skills/ralph-new" ~/.claude/skills/ralph-new                 # npm
 ln -s "$PWD/skills/ralph-new" ~/.claude/skills/ralph-new                                                  # source
 ```
+
+### Windows
+
+ralph runs natively on Windows 10 and 11. It needs three things:
+
+- **[Git for Windows](https://git-scm.com/download/win).** It provides `git`, and
+  its Git Bash runs your `VERIFY_CMD`, `HEALTH_CMD`, `NOTIFY_CMD` and the other
+  `*_CMD` settings. Claude Code uses the same bash for its own shell commands.
+- **[bun](https://bun.sh)**: `powershell -c "irm bun.sh/install.ps1 | iex"`.
+- **Claude Code's native build** (`claude.exe`), from the
+  [install page](https://code.claude.com). The `claude.cmd` that
+  `npm i -g @anthropic-ai/claude-code` installs is a batch file, and the harness
+  won't start one: cmd.exe would read the agent's arguments. A loop refuses to
+  start if that's the `claude` on PATH.
+
+Then install from npm and use it from PowerShell, cmd or Git Bash:
+
+```powershell
+bun add -g @vkuprin/ralph-harness        # or: npm i -g @vkuprin/ralph-harness
+ralph setup
+```
+
+What works differently on Windows:
+
+- `*_CMD` settings run in Git Bash. ralph finds it next to `git.exe`. To use
+  another bash, set `RALPH_BASH` (or Claude Code's `CLAUDE_CODE_GIT_BASH_PATH`)
+  to its full path. The `bash` on a Windows PATH is often WSL's, and ralph
+  doesn't use that one.
+- Windows has no process groups and no TERM signal. `ralph stop` asks the loop to
+  stop through a `ralph.stop` file in its directory; the loop then kills the
+  agent's whole process tree (`taskkill /T`), logs where it stopped, and exits.
+  A loop that doesn't answer within 15s is killed together with its tree.
+- `ralph tail` follows the log itself, and `ralph edit` opens `notepad` when
+  `EDITOR` isn't set.
+- Loop names and repo paths can't contain characters Windows forbids in file
+  names (`< > : " | ? *`).
+
+WSL works too. There ralph is simply the Linux version, and the loop and the
+repository live in the Linux filesystem.
 
 To upgrade, run `brew upgrade ralph`, `bun add -g @vkuprin/ralph-harness@latest`
 or `git pull`, then restart any running loops (`ralph stop <name>`, `ralph start <name>`).
@@ -250,6 +290,10 @@ Events: `stopped`, `refused`, `stuck`, `limit`, `limit-clear`, `decision`, `heal
 bun run check                                  # typecheck, then every test
 RALPH_REAL_CLAUDE=1 bun test tests/contract    # against the real claude CLI, a few cents
 ```
+
+On Windows, run the suite from Git Bash: the tests use `sh`, `sleep` and the
+other tools it puts on PATH. The stand-ins for `claude` and `gh` are compiled
+to `.exe` on the fly, and no other `claude` on PATH is ever reached.
 
 A change users would notice comes with a changeset (`bunx changeset`). Merging
 the release PR it produces publishes the new version.

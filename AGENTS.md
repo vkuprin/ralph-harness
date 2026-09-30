@@ -33,8 +33,9 @@ is one class on purpose, so an iteration reads in order.
     bun run check        # tsc --noEmit, then every test
     bunx changeset       # when a user would notice the change: patch, minor or major
 
-CI runs the same on Linux, and on macOS once the repository is public. Bun is
-pinned there (`oven-sh/setup-bun`, `bun-version`); raise it deliberately.
+CI runs the same on Linux, on Windows (in Git Bash), and on macOS once the
+repository is public. Bun is pinned there (`oven-sh/setup-bun`, `bun-version`);
+raise it deliberately.
 
 ## Releasing
 
@@ -111,6 +112,33 @@ A test that spawns a process and later asks whether it is gone must ask whether
 it *exited* (`await proc.exited`), not whether its PID answers `kill -0`: a
 child of the test process stays a zombie until the test reaps it, and a zombie
 answers.
+
+Windows is a platform, not a port kept on the side, and every difference lives
+in `src/lib/proc.ts` behind `IS_WIN`, so the loop reads the same on all three.
+What stands in for what:
+
+- No process groups: `killGroup` and `killTree` kill the tree with
+  `taskkill /T /F`. No TERM a program started without a console can catch:
+  `ralph stop` writes `ralph.stop` into the loop directory, and `main.ts` answers
+  it through the same `onSignal` as a signal, freeze first. A new way to stop a
+  loop goes through that one handler on both.
+- No `ps` that sees native processes (Git's is MSYS's own): a command line and a
+  start time come from CIM (`commandLineSync`, `upTimeSync`), with the PID in the
+  environment. Windows quotes an argument holding a space, so the identity
+  checks are `markThen` and `endsWithArg` in `src/paths.ts`, still literal.
+- `*_CMD` runs in Git for Windows' bash (`bash()`), never the `bash` on PATH,
+  which is usually WSL's. The MSYS bash drops every write to a handle opened for
+  appending, so on Windows output bound for a file is pumped through a pipe
+  (`pumped`); pass the file, never a descriptor, and the pump is yours for free.
+- The agent is `claude.exe`. An npm `claude.cmd` is refused at start
+  (`claudeProblem`), because starting a batch file means cmd.exe reading the
+  agent's arguments, which is the shell this file forbids.
+- In the suite the stubs are compiled to `.exe` by the preload, and on Windows
+  `Fx.env` takes every other directory holding a `claude` off PATH. The suite
+  run unmodified on Windows once reached the real `claude.exe` and ran paid
+  sessions in its fixtures; the stub has to be the only claude there is.
+  A test that puts a path into a `*_CMD` quotes it with `sq`: bash reads the
+  backslashes of a bare Windows path as escapes.
 
 ## Invariants: do not change these
 

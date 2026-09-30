@@ -27,7 +27,7 @@ describe("config.json", () => {
     expect(c.PR_MERGE).toBe(false);
   });
   test("the default closing line names this loop's PROGRESS.md", () => {
-    expect(ok("{}").CLOSING).toContain("/loops/x/PROGRESS.md");
+    expect(ok("{}").CLOSING).toContain(join("/loops/x", "PROGRESS.md"));
   });
   test("comments and trailing commas are fine", () => {
     expect(ok('// a loop\n{\n  "MAX_ITER": 3, // three\n  /* and */ "FROZEN": ["a",],\n}').MAX_ITER).toBe(3);

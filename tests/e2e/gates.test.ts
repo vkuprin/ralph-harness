@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { Fx, count, join, read, rows, setup, sleeperGone, statuses } from "../helpers/index.ts";
+import { Fx, IS_WIN, count, join, read, rows, setup, sleeperGone, statuses } from "../helpers/index.ts";
 
 const fx = new Fx("gates");
 const T = fx.T;
@@ -26,7 +26,9 @@ describe("gates, verdicts and pushes (WORKTREE=1 PUSH=1 REVIEW=1)", () => {
       WORKTREE: true,
       PUSH: true, PUSH_CONFIRM: "main",
       REVIEW: true,
-      ITER_TIMEOUT: 3,
+      // Long enough for an agent that runs git eight times, which on a Windows
+      // runner, at a few hundred ms a process, took more than 3s.
+      ITER_TIMEOUT: IS_WIN ? 15 : 3,
       MAX_ITER: 10,
       VERIFY_CMD: `env > '${loop}/verify-env'; ./measure.sh`,
       FROZEN: ["measure.sh"],

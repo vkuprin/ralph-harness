@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import {
   Fx,
+  IS_WIN,
   alive,
   cliPath,
   join,
@@ -213,7 +214,9 @@ describe("CLI: usage, and a status with nothing to show", () => {
   });
 });
 
-describe("CLI through a symlink on PATH", () => {
+// Windows makes a symlink only with Developer Mode or as an administrator, and
+// installs the CLI as npm's ralph.cmd, which runs bin/ralph with bun, instead.
+describe.skipIf(IS_WIN)("CLI through a symlink on PATH", () => {
   const home = fx.p("home-e");
   let absolute = -1;
   let relativeHelp = "";
@@ -261,11 +264,14 @@ describe("ralph new writes the path it was given, not sed's reading of it", () =
     patchConfig(join(home, "amp"), TAME);
     await fx.runLoop(join(home, "amp"), S);
 
-    fx.makeRepo(pipe, fx.p("remote-scaf2.git"));
-    fx.cli(home, ["new", "pipe", pipe]);
+    // Neither | nor a backslash can be in a directory name on Windows.
+    if (!IS_WIN) {
+      fx.makeRepo(pipe, fx.p("remote-scaf2.git"));
+      fx.cli(home, ["new", "pipe", pipe]);
 
-    fx.makeRepo(esc, fx.p("remote-scaf3.git"));
-    fx.cli(home, ["new", "esc", esc]);
+      fx.makeRepo(esc, fx.p("remote-scaf3.git"));
+      fx.cli(home, ["new", "esc", esc]);
+    }
 
     // The loop's own name goes through the same substitution, into PROMPT.md as
     // well as the config.
@@ -281,10 +287,10 @@ describe("ralph new writes the path it was given, not sed's reading of it", () =
   test("and the loop it scaffolded runs and keeps its commit", () => {
     expect(statuses(join(home, "amp"))).toBe("keep");
   });
-  test("a | in the repo path does not leave config.json empty", () => {
+  test.skipIf(IS_WIN)("a | in the repo path does not leave config.json empty", () => {
     expect(scafRepo("pipe")).toBe(pipe);
   });
-  test("a backslash in the repo path is not eaten", () => {
+  test.skipIf(IS_WIN)("a backslash in the repo path is not eaten", () => {
     expect(scafRepo("esc")).toBe(esc);
   });
   test("an & in the loop name reaches PROMPT.md whole", () => {

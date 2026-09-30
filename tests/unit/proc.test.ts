@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { killGroup, run, runBounded } from "../../src/lib/proc.ts";
+import { etime, killGroup, run, runBounded, shellCommand } from "../../src/lib/proc.ts";
+import { endsWithArg, markThen } from "../../src/paths.ts";
 
 const T = realpathSync(mkdtempSync(join(tmpdir(), "ralph-unit-proc.")));
 const alive = (pid: number) => {
@@ -89,4 +90,60 @@ describe("killGroup", () => {
     await Bun.sleep(100);
     expect(alive(c.pid!)).toBe(false);
   }, 20_000);
+});
+
+describe("etime", () => {
+  test("prints elapsed seconds the way ps does", () => {
+    expect(etime(5)).toBe("00:05");
+    expect(etime(3599)).toBe("59:59");
+    expect(etime(3600)).toBe("01:00:00");
+    expect(etime(2 * 86400 + 3 * 3600 + 4 * 60 + 5)).toBe("2-03:04:05");
+  });
+});
+
+describe("reading a loop off a command line", () => {
+  const win = process.platform === "win32";
+  test("the directory has to be the last argument, literally", () => {
+    expect(endsWithArg("bun /h/src/loop/main.ts /loops/a", "/loops/a")).toBe(true);
+    expect(endsWithArg("bun /h/src/loop/main.ts /loops/ab", "/loops/a")).toBe(false);
+    expect(endsWithArg("bun /h/src/loop/main.ts /loops/a.b", "/loops/a?b")).toBe(false);
+  });
+  test("the entry has to be followed by more", () => {
+    expect(markThen("bun /h/src/loop/main.ts /loops/a", "/src/loop/main.ts")).toBe(true);
+    expect(markThen("bun /h/src/loop/main.tsx /loops/a", "/src/loop/main.ts")).toBe(false);
+  });
+  test("Windows writes an argument holding a space in quotes, and only there does that count", () => {
+    const cmd = 'C:\\bun.exe "C:\\my harness\\src\\loop\\main.ts" "C:\\Users\\a b\\ralph\\x"';
+    expect(endsWithArg(cmd, "C:\\Users\\a b\\ralph\\x")).toBe(win);
+    expect(markThen(cmd, "\\src\\loop\\main.ts")).toBe(win);
+  });
+});
+
+describe("shellCommand", () => {
+  // Windows hands a program one command line, and an MSYS bash cuts it up
+  // itself: a command with no space in it once lost its single quotes there.
+  test("bash gets the text as written, quotes and globs and all", async () => {
+    const out = join(T, "shell.out");
+    const words = ["'lone'", "'a  b'", '"c d"', "'*.ts'", "'x|y'"];
+    for (const w of words) {
+      writeFileSync(out, "");
+      const sh = shellCommand(`printf '%s\n' ${w}`);
+      const r = await runBounded(10, sh.argv, { out, env: { ...process.env, ...sh.env }, pollGapMax: 60 });
+      expect(r.rc).toBe(0);
+      expect(readFileSync(out, "utf8")).toBe(`${w.slice(1, -1)}\n`);
+    }
+  });
+  test("a script's path in single quotes, with nothing else, runs the script", async () => {
+    // The exact shape that broke: no space anywhere, so nothing but the single
+    // quotes kept a Windows path's backslashes from bash.
+    const script = join(T, "ok.sh");
+    writeFileSync(script, "#!/bin/sh\necho ok\n");
+    chmodSync(script, 0o755);
+    const out = join(T, "shell2.out");
+    writeFileSync(out, "");
+    const sh = shellCommand(`'${script}'`);
+    const r = await runBounded(10, sh.argv, { out, env: { ...process.env, ...sh.env }, pollGapMax: 60 });
+    expect(readFileSync(out, "utf8")).toBe("ok\n");
+    expect(r.rc).toBe(0);
+  });
 });
