@@ -1,0 +1,5 @@
+# LF everywhere, Windows checkouts included. Git for Windows checks text out
+# with CRLF by default, and the harness reads its own files byte for byte:
+# template/ is copied into a loop, the schema is compared with what the
+# harness writes, and bin/ralph and the stubs start with a #! line.
+* text=auto eol=lf
