@@ -7,9 +7,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The release PR (changeset-release/main) and its merge into main change only
+  # package.json, CHANGELOG.md and .changeset/, on top of a commit that already
+  # passed every job below: that is when the release job opened the PR. So both
+  # skip the suite, and the merge goes straight to release. Each test job
+  # repeats that condition, since a job's `if` cannot read a shared variable.
+
   # Pinned rather than ubuntu-latest, so the runner image moving underneath the
   # suite is a change someone makes, not one that happens to it.
   linux:
+    if: >-
+      ${{ !(github.head_ref == 'changeset-release/main' || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'changeset-release/main') || startsWith(github.event.head_commit.message, 'chore: release')))) }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -28,7 +36,8 @@ jobs:
   # directories differ there. macOS minutes cost ten times as much on private
   # repositories, so this job runs once the repository is public, or by hand.
   macos:
-    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
+    if: >-
+      ${{ (!github.event.repository.private || github.event_name == 'workflow_dispatch') && !(github.head_ref == 'changeset-release/main' || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'changeset-release/main') || startsWith(github.event.head_commit.message, 'chore: release')))) }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -46,6 +55,8 @@ jobs:
   # Git Bash, which puts sh, sleep and the rest the suite uses on PATH; the
   # claude and gh stand-ins are compiled to .exe by the preload.
   windows:
+    if: >-
+      ${{ !(github.head_ref == 'changeset-release/main' || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'changeset-release/main') || startsWith(github.event.head_commit.message, 'chore: release')))) }}
     runs-on: windows-2025
     # The suite takes about 15 minutes here. A hang is not allowed the six
     # hours GitHub would give it.
@@ -70,6 +81,8 @@ jobs:
   # left out of "files" in package.json fails here, not on someone's machine.
   # On Windows npm puts a shim for bin/ralph at the prefix itself, not in bin/.
   package:
+    if: >-
+      ${{ !(github.head_ref == 'changeset-release/main' || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'changeset-release/main') || startsWith(github.event.head_commit.message, 'chore: release')))) }}
     strategy:
       fail-fast: false
       matrix:
@@ -102,13 +115,18 @@ jobs:
           "$ralph" new smoke "$RUNNER_TEMP/app"
           "$ralph" status smoke
 
-  # Runs only on a commit every job above passed. With changesets pending it
+  # Runs only on a commit no job above failed: they all passed, or all skipped
+  # because this is the release PR's merge. With changesets pending it
   # opens or updates the release PR; once that PR is merged it publishes to npm
   # (trusted publishing, no token), tags vX.Y.Z, writes the GitHub Release and
   # bumps the Homebrew formula in vkuprin/homebrew-tap.
   release:
     needs: [linux, macos, windows, package]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      ${{ !cancelled()
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+      && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     concurrency: release
     permissions:
