@@ -6,7 +6,11 @@ const fx = new Fx("identity");
 
 /** A stranger: a process that is not a loop and now owns the number a dead loop left behind. */
 function stranger(): Bun.Subprocess {
-  return Bun.spawn(["sleep", "41"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  // Long enough to outlive the checks around it, which each test kills it
+  // after: on a Windows runner a `ralph status` and a `ralph stop`, reading
+  // processes through CIM, took more than 41s, and a stranger that had simply
+  // finished read as one the stop had killed.
+  return Bun.spawn(["sleep", "600"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
 }
 
 describe("a PID is not an identity: ralph.pid and ralph.lock left by a dead loop", () => {
