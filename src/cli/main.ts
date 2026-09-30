@@ -569,10 +569,20 @@ async function cmdTail(name?: string): Promise<void> {
 
 /**
  * `tail -F` for Windows, which has no tail: the last ten lines, then whatever is
- * appended. A rotation leaves a new, shorter ralph.log, and that is read from
- * its start.
+ * appended. A rotation is told by the file's identity, not by its size: the
+ * new ralph.log can grow past the old offset between two looks, and read from
+ * there it would lose its first lines. The identity is a bigint because NTFS
+ * file ids do not fit in a double.
  */
 async function follow(file: string): Promise<never> {
+  const id = () => {
+    try {
+      return statSync(file, { bigint: true }).ino;
+    } catch {
+      return null;
+    }
+  };
+  let ino = id();
   const text = read(file);
   out(splitLines(text).slice(-10).map((l) => `${l}\n`).join(""));
   let pos = Buffer.byteLength(text);
@@ -584,7 +594,11 @@ async function follow(file: string): Promise<never> {
     } catch {
       continue;
     }
-    if (size < pos) pos = 0;
+    const now = id();
+    if (now !== ino || size < pos) {
+      ino = now;
+      pos = 0;
+    }
     if (size === pos) continue;
     const fd = openSync(file, "r");
     const buf = Buffer.alloc(size - pos);

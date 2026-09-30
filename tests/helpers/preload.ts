@@ -29,6 +29,7 @@ if (process.platform === "win32") {
     // A compile takes a second. On a CI runner one once hung for good, before
     // the first test and with nothing to say so, and took the job with it: so
     // each try is bounded, a hung one is tried again, and the last says why.
+    let built = false;
     let why = "";
     for (let attempt = 1; attempt <= 3; attempt++) {
       const r = Bun.spawnSync(
@@ -36,13 +37,17 @@ if (process.platform === "win32") {
         { stdout: "ignore", stderr: "pipe", timeout: 120_000 },
       );
       if (r.exitCode === 0) {
-        why = "";
+        built = true;
         break;
       }
-      why = r.exitedDueToTimeout ? `bun build --compile hung for 120s, ${attempt} times` : r.stderr.toString();
+      // Success is the exit status, never an empty stderr: a compile killed
+      // before it said anything is still no stub.
+      why = r.exitedDueToTimeout
+        ? `bun build --compile hung for 120s, ${attempt} times`
+        : r.stderr.toString().trim() || `bun build --compile exited ${r.exitCode ?? r.signalCode}`;
       if (!r.exitedDueToTimeout) break;
     }
-    if (why) throw new Error(`cannot compile tests/stub/${name}: ${why}`);
+    if (!built) throw new Error(`cannot compile tests/stub/${name}: ${why}`);
   }
   (globalThis as { ralphStubBin?: string }).ralphStubBin = bin;
 }
