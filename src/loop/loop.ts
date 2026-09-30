@@ -300,7 +300,11 @@ export class Loop {
     const common = r.stdout.trim();
     if (r.code !== 0 || !common) return "";
     try {
-      return realpathSync(resolve(path, common));
+      // .native: on Windows the JS realpath leaves an 8.3 short name as it is,
+      // and git names the same directory by its long name, so C:\Users\RUNNER~1
+      // and C:\Users\runneradmin read as two repositories and the worktree was
+      // refused as one this loop does not own.
+      return realpathSync.native(resolve(path, common));
     } catch {
       return "";
     }
