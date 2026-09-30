@@ -47,6 +47,9 @@ jobs:
   # claude and gh stand-ins are compiled to .exe by the preload.
   windows:
     runs-on: windows-2025
+    # The suite takes about 15 minutes here. A hang is not allowed the six
+    # hours GitHub would give it.
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash

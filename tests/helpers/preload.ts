@@ -26,11 +26,23 @@ if (process.platform === "win32") {
   copyFileSync(join(stubs, "human.ts"), join(src, "human.ts"));
   for (const name of ["claude", "gh"]) {
     copyFileSync(join(stubs, name), join(src, `${name}.ts`));
-    const r = Bun.spawnSync(
-      [process.execPath, "build", "--compile", join(src, `${name}.ts`), "--outfile", join(bin, `${name}.exe`)],
-      { stdout: "ignore", stderr: "pipe" },
-    );
-    if (r.exitCode !== 0) throw new Error(`cannot compile tests/stub/${name}: ${r.stderr.toString()}`);
+    // A compile takes a second. On a CI runner one once hung for good, before
+    // the first test and with nothing to say so, and took the job with it: so
+    // each try is bounded, a hung one is tried again, and the last says why.
+    let why = "";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const r = Bun.spawnSync(
+        [process.execPath, "build", "--compile", join(src, `${name}.ts`), "--outfile", join(bin, `${name}.exe`)],
+        { stdout: "ignore", stderr: "pipe", timeout: 120_000 },
+      );
+      if (r.exitCode === 0) {
+        why = "";
+        break;
+      }
+      why = r.exitedDueToTimeout ? `bun build --compile hung for 120s, ${attempt} times` : r.stderr.toString();
+      if (!r.exitedDueToTimeout) break;
+    }
+    if (why) throw new Error(`cannot compile tests/stub/${name}: ${why}`);
   }
   (globalThis as { ralphStubBin?: string }).ralphStubBin = bin;
 }
