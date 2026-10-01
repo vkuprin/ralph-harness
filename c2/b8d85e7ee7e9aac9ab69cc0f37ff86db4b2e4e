@@ -1,0 +1,28 @@
+.changeset/ps-locale.md
+  s_423f941b06ad25::t_8aa98c0922055e 1-5
+tests/e2e/identity.test.ts
+  s_423f941b06ad25::t_08c963bd033f5c 3
+  s_423f941b06ad25::t_e6aa02f6117278 114,136,174
+  s_423f941b06ad25::t_ca52553b158f23 95-97
+  s_423f941b06ad25::t_7c19fa86ca4d96 88-94,98-113,115-135,137-173,175-179
+src/lib/proc.ts
+  s_423f941b06ad25::t_f5ba9e107e3be1 259,267,282
+  s_423f941b06ad25::t_4ac1e5aa4691bb 253-254,260,264-266,268
+  s_423f941b06ad25::t_ca52553b158f23 255-258
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "c2b8d85e7ee7e9aac9ab69cc0f37ff86db4b2e4e",
+  "prompts": {},
+  "sessions": {
+    "s_423f941b06ad25": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6df72072-e91a-4ba5-9dc9-859ae2f7480d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
