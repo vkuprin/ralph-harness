@@ -1,0 +1,27 @@
+README.md
+  s_3585eb7347c2a1::t_b730404bd4791e 196
+tests/e2e/edges.test.ts
+  s_3585eb7347c2a1::t_2f0672644ef936 105-170
+.changeset/no-wait-after-last.md
+  s_3585eb7347c2a1::t_fbee5de79e8668 5
+  s_3585eb7347c2a1::t_b730404bd4791e 1-4
+src/loop/loop.ts
+  s_3585eb7347c2a1::t_4a36e9a00022f1 505-507,511-512,746,772,778,782,841-849
+  s_3585eb7347c2a1::t_2d6c0fd6e3d425 850-851
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b2fcbfeb91bf39fb4def93b40c326defbce64011",
+  "prompts": {},
+  "sessions": {
+    "s_3585eb7347c2a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82885ed6-685f-4599-b508-8210aeb34166",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
