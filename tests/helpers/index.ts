@@ -387,11 +387,20 @@ export function noProc(text: string): boolean {
  * The sleeper this run started died with its process group. The stub records
  * the PID of the `sleep` it leaves behind, so this asks about that one process.
  * An empty file is a failure: the stub never got as far as sleeping.
+ *
+ * A sleep killed a moment ago is still listed until it is reaped (macOS shows
+ * the zombie as "(sleep)"), so one look races the kill. It gets up to 2s to go,
+ * a deadline rather than a count because one look through CIM is slow.
  */
 export function sleeperGone(pidFile: string): boolean {
   const pid = Number(read(pidFile).trim());
   if (!pid) return false;
-  return !commandOf(pid).includes("sleep");
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    if (!commandOf(pid).includes("sleep")) return true;
+    if (Date.now() >= deadline) return false;
+    Bun.sleepSync(100);
+  }
 }
 
 /** Wait until ps shows `pid` running something holding `text`. */
