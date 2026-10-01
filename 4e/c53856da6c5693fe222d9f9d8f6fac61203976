@@ -1,0 +1,116 @@
+tests/e2e/typescript.test.ts
+  s_510605e86c6767::t_b4065777075bb2 9,209,215
+  s_510605e86c6767::t_f4207e11adf752 138-141
+  s_510605e86c6767::t_ab88115321f5c4 3,210-212
+tests/e2e/features.test.ts
+  s_510605e86c6767::t_3df79268da2b64 2
+  s_510605e86c6767::t_f4207e11adf752 3,60-61,84-91,108,138-139,263-270
+tests/e2e/plan.test.ts
+  s_510605e86c6767::t_5391e7c55e1eb9 84
+  s_510605e86c6767::t_f4207e11adf752 87-91
+  s_510605e86c6767::t_88e6ba5a09cbe2 63-64,77-78,83
+tests/e2e/pr.test.ts
+  s_510605e86c6767::t_3df79268da2b64 2
+src/loop/cost.ts
+  s_510605e86c6767::t_f4207e11adf752 34
+  s_510605e86c6767::t_24c57eb8496d60 36-37,39,42
+AGENTS.md
+  s_510605e86c6767::t_23f788b1b3346e 33-34,38-51
+src/cli/main.ts
+  s_510605e86c6767::t_f4207e11adf752 426-427,432-434,561-566,595-600,634-635,644-645,738-741
+  s_510605e86c6767::t_24c57eb8496d60 169,192,859
+src/lib/proc.ts
+  s_510605e86c6767::t_f4207e11adf752 240-241
+src/loop/loop.ts
+  s_510605e86c6767::t_24c57eb8496d60 6,1232,1237
+  s_510605e86c6767::t_f4207e11adf752 430-433,629-631,911-918,1248-1251,1401-1414,1525-1538,1564-1574,1687-1689
+package.json
+  s_510605e86c6767::t_878da2f1a5d181 44-47,49
+  s_510605e86c6767::t_0f4dc42679ae80 54,56-59,61
+  s_510605e86c6767::t_d204f4eaa84dfe 60
+tests/contract/claude.test.ts
+  s_510605e86c6767::t_f4207e11adf752 44-58,60-68,70-86
+src/loop/main.ts
+  s_510605e86c6767::t_24c57eb8496d60 80
+  s_510605e86c6767::t_f4207e11adf752 53-55
+tests/e2e/config.test.ts
+  s_510605e86c6767::t_f4207e11adf752 104-111,450
+tests/unit/config.test.ts
+  s_510605e86c6767::t_f4207e11adf752 4-13
+tests/e2e/logs.test.ts
+  s_510605e86c6767::t_f4207e11adf752 178
+  s_510605e86c6767::t_3df79268da2b64 222
+tests/e2e/limits.test.ts
+  s_510605e86c6767::t_f4207e11adf752 3,27-28
+.github/workflows/test.yml
+  s_510605e86c6767::t_3e2e622c565852 30-34
+tests/helpers/index.ts
+  s_510605e86c6767::t_f4207e11adf752 103-117,440
+  s_510605e86c6767::t_3df79268da2b64 49
+  s_510605e86c6767::t_ab88115321f5c4 38-43
+tests/unit/cost.test.ts
+  s_510605e86c6767::t_f4207e11adf752 6-8
+  s_510605e86c6767::t_3df79268da2b64 20-22
+tests/stub/gh
+  s_510605e86c6767::t_f4207e11adf752 61-71
+.prettierrc.json
+  s_510605e86c6767::t_be1d33dfc5ae99 1-4
+src/lib/results.ts
+  s_510605e86c6767::t_24c57eb8496d60 40
+src/lib/config.ts
+  s_510605e86c6767::t_f4207e11adf752 267-270,346-347
+tests/helpers/preload.ts
+  s_510605e86c6767::t_f4207e11adf752 35-39
+hooks/approve-plan.ts
+  s_510605e86c6767::t_f4207e11adf752 70-72
+  s_510605e86c6767::t_24c57eb8496d60 65
+tests/e2e/merge.test.ts
+  s_510605e86c6767::t_f4207e11adf752 102-104,203
+.prettierignore
+  s_510605e86c6767::t_22e83e2450df24 1-8
+tests/e2e/gates.test.ts
+  s_510605e86c6767::t_f4207e11adf752 27-28,144
+tests/unit/migrate.test.ts
+  s_510605e86c6767::t_3df79268da2b64 65
+  s_510605e86c6767::t_f4207e11adf752 30-32,117,127
+tests/e2e/edges.test.ts
+  s_510605e86c6767::t_b4065777075bb2 162-164,188
+  s_510605e86c6767::t_f4207e11adf752 449-453
+  s_510605e86c6767::t_05b331cabf62e1 5
+  s_510605e86c6767::t_04931984d8f482 338
+  s_510605e86c6767::t_5391e7c55e1eb9 165-166
+tests/unit/shq.test.ts
+  s_510605e86c6767::t_f4207e11adf752 4,7-25
+tests/stub/claude
+  s_510605e86c6767::t_3df79268da2b64 9
+tests/e2e/cli.test.ts
+  s_510605e86c6767::t_3df79268da2b64 212
+  s_510605e86c6767::t_f4207e11adf752 330-338,340-347,383
+  s_510605e86c6767::t_04931984d8f482 327
+  s_510605e86c6767::t_b4065777075bb2 506,515
+tests/e2e/progress.test.ts
+  s_510605e86c6767::t_f4207e11adf752 234,254-259
+eslint.config.ts
+  s_510605e86c6767::t_ae5b30082572fe 1-5,8-10,12-18,25-27,29,32-33,37-39
+  s_510605e86c6767::t_3438df7bda6e86 6-7,11,19-24,28,30-31,34-36
+bun.lock
+  s_510605e86c6767::t_9fc8c592505521 9,11-16,21-24,59-88,99-104,107-128,169-178,183-216,225-238,241-242,245-252,255-258,261-262,265-280,283-286,291-298,301-304,313-319,323-328,330-337
+tsconfig.json
+  s_510605e86c6767::t_66e38b635abe39 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "4ec53856da6c5693fe222d9f9d8f6fac61203976",
+  "prompts": {},
+  "sessions": {
+    "s_510605e86c6767": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b2088b01-9881-41a2-a66f-cc3c00805104",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
