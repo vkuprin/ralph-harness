@@ -1,0 +1,31 @@
+.changeset/plugin-marketplace.md
+  s_83375383eea428::t_1ada4c1402cf24 1-5
+.claude-plugin/plugin.json
+  s_83375383eea428::t_904a6fb1bd1315 1-9
+.claude-plugin/marketplace.json
+  s_83375383eea428::t_904a6fb1bd1315 1-2,8-15
+  s_83375383eea428::t_eaa5cba44d8bdc 3-7
+README.md
+  s_83375383eea428::t_016e2e6ea54db4 50-51,53,56-57
+  s_83375383eea428::t_8742903ffbfd0f 48-49,52,54-55,58-62,66-69
+  s_83375383eea428::t_17b03b831b784b 92-100
+  s_83375383eea428::t_d20e9f33ef9d1f 18,343-345
+  s_83375383eea428::t_6f5c33467bc86f 331-342,346
+  s_83375383eea428::t_a2af0a45096e9f 63-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "fd34774ed36bedfaa4d41bede0f4c71e9e139895",
+  "prompts": {},
+  "sessions": {
+    "s_83375383eea428": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7ac5795-5178-4b29-a780-b6e7b805edcc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
