@@ -250,10 +250,22 @@ function cimSplit(text: string): { started: number; command: string } | null {
   return { started: Number(text.slice(0, nl)), command: text.slice(nl + 1).trim() };
 }
 
+// ps prints a command line in the caller's locale, and outside a UTF-8 one it
+// escapes every byte past ASCII: macOS writes the ø in a loop directory as
+// M-CM-8, and procps, going by its source, as ?. A `ralph status` from cron,
+// launchd or an ssh session without LANG then matched nothing, calling a
+// running loop stopped, and `ralph stop` left it running. In C.UTF-8 ps
+// prints the bytes as they are.
+const psEnv = () => ({ ...process.env, LC_ALL: "C.UTF-8" });
+
 /** `pid`'s whole command line, or "" when it is not running. */
 export function commandLineSync(pid: string): string {
   if (!IS_WIN) {
-    const r = spawnSync("ps", ["-ww", "-p", pid, "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const r = spawnSync("ps", ["-ww", "-p", pid, "-o", "command="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: psEnv(),
+    });
     return (r.stdout ?? "").trimEnd();
   }
   const r = spawnSync(cimArgv()[0]!, cimArgv().slice(1), {
@@ -267,7 +279,7 @@ export function commandLineSync(pid: string): string {
 
 /** The same, through `run`, for the loop. */
 export async function commandLine(pid: string): Promise<string> {
-  if (!IS_WIN) return (await run(["ps", "-ww", "-p", pid, "-o", "command="])).stdout;
+  if (!IS_WIN) return (await run(["ps", "-ww", "-p", pid, "-o", "command="], { env: psEnv() })).stdout;
   return cimSplit((await run(cimArgv(), { env: { ...process.env, RALPH_PID: pid } })).stdout)?.command ?? "";
 }
 

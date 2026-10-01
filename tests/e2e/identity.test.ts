@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { copyFileSync, writeFileSync } from "node:fs";
-import { Fx, alive, join, read, setup, until } from "../helpers/index.ts";
+import { Fx, IS_WIN, alive, join, read, readConfigValue, setup, sleeperGone, until } from "../helpers/index.ts";
 
 const fx = new Fx("identity");
 
@@ -83,5 +83,97 @@ describe("a PID is not an identity: ralph.pid and ralph.lock left by a dead loop
   });
   test("the stranger holding the lock's PID survived that too", () => {
     expect(lockStrangerAlive).toBe(true);
+  });
+});
+
+// Windows reads a command line from CIM, not ps, and nobody has run this there.
+describe.skipIf(IS_WIN)("a loop whose paths hold letters past ASCII, driven from a shell without a UTF-8 locale", () => {
+  // The repo and RALPH_HOME each hold a space and an ø (a home like
+  // /Users/jørgen), and so does the loop name, which git allows in a branch.
+  // The CLI runs in the C locale, as it does from cron, launchd or an ssh
+  // session that sent no LANG. ps escaped every byte past ASCII there (macOS
+  // printed ø as M-CM-8; procps, by its source, writes ?), the loop's
+  // directory matched nothing on its command line, and a running loop read as
+  // stopped: `ralph stop` said it was not running and left it, agent and all.
+  const app = fx.p("my app ø");
+  const home = fx.p("hø me");
+  const name = "ø";
+  const loop = join(home, name);
+  const C = { LANG: "C", LC_ALL: "C" };
+  let S = "";
+  let newRc = -1;
+  let repoBack: string | undefined;
+  let startRc = -1;
+  let pid = 0;
+  let running = "";
+  let runningAll = "";
+  let second = { code: -1, text: "" };
+  let review = "";
+  let stop = { code: -1, text: "" };
+  let loopGone = false;
+  let agentGone = false;
+  let stopped = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-ø.git"));
+    S = fx.stub("stub-ø", ["commit", "sleep"]);
+    const sets = ["QUIET_SLEEP=0", "STEP_SLEEP=0", "ERROR_SLEEP=0", "VERIFY_CMD=./measure.sh", "MAX_ITER=3"];
+    newRc = fx.cli(home, ["new", name, `${app}/`, ...sets.flatMap((s) => ["--set", s])], C).code;
+    repoBack = readConfigValue(join(loop, "config.json"), "REPO");
+    startRc = fx.cli(home, ["start", name], { ...C, STUB_DIR: S }).code;
+    try {
+      // The second iteration is in its sleep once the stub has recorded the sleeper.
+      await until(() => read(join(S, "sleeper.pid")).trim() !== "", 30);
+      pid = Number(read(join(loop, "ralph.pid")).trim());
+      running = fx.cli(home, ["status", name], C).out;
+      runningAll = fx.cli(home, ["status"], C).out;
+      const r = fx.cli(home, ["start", name], { ...C, STUB_DIR: S });
+      second = { code: r.code, text: r.out + r.err };
+      review = fx.cli(home, ["review", name], C).out;
+      const s = fx.cli(home, ["stop", name], C);
+      stop = { code: s.code, text: s.out + s.err };
+      loopGone = await until(() => !alive(pid), 20);
+      agentGone = sleeperGone(join(S, "sleeper.pid"));
+      stopped = fx.cli(home, ["status", name], C).out;
+    } finally {
+      // The loop is not this test's child, so `kill -0` answers for it alone.
+      if (pid && alive(pid)) process.kill(pid, "SIGKILL");
+      const sleeper = Number(read(join(S, "sleeper.pid")).trim());
+      if (sleeper && alive(sleeper)) process.kill(sleeper, "SIGKILL");
+    }
+  });
+
+  test("ralph new takes the repo path, trailing slash and all", () => {
+    expect(newRc).toBe(0);
+    expect(repoBack).toBe(app);
+  });
+  test("ralph start starts it", () => {
+    expect(startRc).toBe(0);
+    expect(pid).toBeGreaterThan(0);
+  });
+  test("status calls the running loop running", () => {
+    expect(running).toContain("running");
+    expect(running).toContain(`${app}-ralph-${name}`);
+  });
+  test("so does the status of every loop", () => {
+    expect(runningAll).toContain("running");
+  });
+  test("a second start is refused by the CLI, not by the loop's lock after the CLI said started", () => {
+    expect(second.code).not.toBe(0);
+    expect(second.text).toContain("already running");
+  });
+  test("review lists the commit the first iteration shipped", () => {
+    expect(review.slice(review.indexOf("Shipped"))).toContain("stub: work (agent call 1)");
+  });
+  test("stop stops it", () => {
+    expect(stop.code).toBe(0);
+    expect(stop.text).toContain(`stopped ${name}`);
+    expect(loopGone).toBe(true);
+  });
+  test("and the agent's process group with it", () => {
+    expect(agentGone).toBe(true);
+  });
+  test("status then says stopped", () => {
+    expect(stopped).toContain("stopped");
   });
 });
