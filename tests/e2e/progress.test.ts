@@ -1,6 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { Fx, ROOT, count, join, num, read, setup, statuses } from "../helpers/index.ts";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { relative } from "node:path";
+import { Fx, IS_WIN, ROOT, count, join, num, read, setup, statuses } from "../helpers/index.ts";
 
 const fx = new Fx("progress");
 
@@ -275,3 +287,80 @@ function entries(...files: string[]): number[] {
     .map((l) => Number(l.replace(/.*iteration /, "")))
     .sort((a, b) => a - b);
 }
+
+describe.skipIf(IS_WIN)("a PROMPT.md or PROGRESS.md linked in from elsewhere stays a link", () => {
+  // The loop reads both files through a symlink like any file, so a human may
+  // keep the job and the notes somewhere of their own and link them in. Two
+  // writers rewrote theirs by renaming a new file over the path, which put a
+  // copy where the link was: `ralph steer` on PROMPT.md, and the entry cap on
+  // PROGRESS.md. The steer never reached the file the human edits, no later
+  // edit of that file reached the loop, and a PROMPT.md kept at 0600 came back
+  // 0644. Measured before the fix: the link a plain file after one steer, the
+  // linked file without the steer, and the mode 0644.
+  const app = fx.p("app-link");
+  const home = fx.p("home-link");
+  const D = join(home, "lnk");
+  const kept = fx.p("kept-link");
+  const STEER = "read the linked prompt";
+  let S = "";
+  let steerRc = -1;
+  let promptLinked = false;
+  let promptMode = 0;
+  let promptHasSteer = false;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-link.git"));
+    fx.makeLoop(D, app, { MAX_ITER: 1, PROGRESS_KEEP: 8 });
+    fx.fresh(kept);
+    mkdirSync(kept);
+    renameSync(join(D, "PROMPT.md"), join(kept, "PROMPT.md"));
+    chmodSync(join(kept, "PROMPT.md"), 0o600);
+    symlinkSync(join(kept, "PROMPT.md"), join(D, "PROMPT.md"));
+    seedLog(kept);
+    rmSync(join(D, "PROGRESS.md"));
+    // A relative link, so the rewrite resolves it from the loop directory and
+    // not from wherever the harness happens to run.
+    symlinkSync(relative(D, join(kept, "PROGRESS.md")), join(D, "PROGRESS.md"));
+
+    steerRc = fx.cli(home, ["steer", "lnk", STEER]).code;
+    promptLinked = lstatSync(join(D, "PROMPT.md")).isSymbolicLink();
+    // Through the link: before the fix this was the copy the steer left.
+    promptMode = statSync(join(D, "PROMPT.md")).mode & 0o777;
+    promptHasSteer = read(join(kept, "PROMPT.md")).includes(STEER);
+
+    S = fx.stub("stub-link", ["nothing"]);
+    await fx.runLoop(D, S);
+  });
+
+  test("the steer is taken", () => {
+    expect(steerRc).toBe(0);
+  });
+  test("ralph steer leaves PROMPT.md a link", () => {
+    expect(promptLinked).toBe(true);
+  });
+  test("the steer is in the file the link points at", () => {
+    expect(promptHasSteer).toBe(true);
+  });
+  test("and the file the loop reads keeps its mode", () => {
+    expect(promptMode).toBe(0o600);
+  });
+  test("the agent read the job, steer and all, through the link", () => {
+    expect(read(join(S, "prompt.agent.1"))).toContain(STEER);
+  });
+  test("the entry cap ran", () => {
+    expect(read(join(D, "ralph.log"))).toContain("moved 4 old Log entries");
+  });
+  test("and left PROGRESS.md a link", () => {
+    expect(lstatSync(join(D, "PROGRESS.md")).isSymbolicLink()).toBe(true);
+  });
+  test("it trimmed the file the link points at to the eight entries it keeps", () => {
+    expect(count(read(join(kept, "PROGRESS.md")), /^### /)).toBe(8);
+  });
+  test("and no entry is lost", () => {
+    expect(entries(join(kept, "PROGRESS.md"), join(D, "PROGRESS-archive.md"))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+  test("no temporary file is left beside either file", () => {
+    expect(readdirSync(kept).sort()).toEqual(["PROGRESS.md", "PROMPT.md"]);
+    expect(readdirSync(D).filter((f) => f.includes(".tmp."))).toEqual([]);
+  });
+});

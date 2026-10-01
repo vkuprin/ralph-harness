@@ -18,6 +18,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stampMinutes } from "../lib/clock.ts";
 import { checkSetting, parseConfig, pushProblem } from "../lib/config.ts";
+import { rewrite } from "../lib/files.ts";
 import { readResults } from "../lib/results.ts";
 import { Log } from "../lib/log.ts";
 import { hint } from "../lib/shq.ts";
@@ -796,9 +797,7 @@ function cmdSteer(name?: string, ...words: string[]): void {
       seen = true;
     }
   }
-  const tmp = `${promptFile}.tmp.${process.pid}`;
-  writeFileSync(tmp, lines.map((l) => `${l}\n`).join(""));
-  renameSync(tmp, promptFile);
+  rewrite(promptFile, lines.map((l) => `${l}\n`).join(""));
   appendFileSync(join(dir, "STEER.md"), `${text}\n`);
   green(`steered ${name} — the running iteration sees it at its next tool call, and every later one reads it from PROMPT.md`);
 }

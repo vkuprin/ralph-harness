@@ -1,7 +1,8 @@
-import { accessSync, constants, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { hour, nowSec, stampMinutes } from "../lib/clock.ts";
 import { type Config, defaults, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
+import { rewrite } from "../lib/files.ts";
 import type { Log } from "../lib/log.ts";
 import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
@@ -898,9 +899,7 @@ export class Loop {
     const archive = this.p("PROGRESS-archive.md");
     if (!existsSync(archive)) writeFileSync(archive, ARCHIVE_HEADER);
     writeFileSync(archive, this.read(archive) + r.archived);
-    const tmp = `${file}.tmp.${process.pid}`;
-    writeFileSync(tmp, r.kept);
-    renameSync(tmp, file);
+    rewrite(file, r.kept);
     this.log.line(`progress cap: moved ${r.entries - keep} old Log entries to PROGRESS-archive.md`);
   }
 
