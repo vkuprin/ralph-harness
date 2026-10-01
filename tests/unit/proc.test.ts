@@ -102,15 +102,57 @@ describe("run", () => {
 
 describe("killGroup", () => {
   test("ends a group whose leader ignores TERM", async () => {
+    // The leader and its child both ignore TERM, so only the KILL to the group
+    // ends either. The child writes its own PID once it runs, and the kill waits
+    // for that: a TERM that lands before the trap is set, or a tree still being
+    // forked, would test something else.
     const { spawn } = await import("node:child_process");
-    const c = spawn("sh", ["-c", "trap '' TERM; sleep 30"], { detached: true, stdio: "ignore" });
-    await Bun.sleep(100);
-    const t0 = Date.now();
-    await killGroup(c.pid!);
-    expect(Date.now() - t0).toBeLessThan(12_000);
-    await Bun.sleep(100);
-    expect(alive(c.pid!)).toBe(false);
-  }, 20_000);
+    const pidFile = join(T, "group-child.pid");
+    const script = join(T, "group-child.js");
+    writeFileSync(
+      script,
+      `process.on("SIGTERM", () => {}); require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 30000);`,
+    );
+    const slash = (p: string) => p.split("\\").join("/");
+    const c = spawn("sh", ["-c", `trap '' TERM; '${slash(process.execPath)}' '${slash(script)}' & wait`], {
+      detached: true,
+      stdio: "ignore",
+    });
+    // The leader is this test's child, a zombie until it is reaped here: ask
+    // whether it exited, not whether its PID answers.
+    const exited = new Promise<string>((resolve) => c.once("exit", (_code, signal) => resolve(signal ?? "exited")));
+    let child = 0;
+    let gone = false;
+    try {
+      for (let i = 0; i < 100 && !child; i++) {
+        await Bun.sleep(100);
+        try {
+          child = Number(readFileSync(pidFile, "utf8").trim());
+        } catch {}
+      }
+      expect(child).toBeGreaterThan(0);
+      const t0 = Date.now();
+      await killGroup(c.pid!);
+      expect(Date.now() - t0).toBeLessThan(12_000);
+      const how = await Promise.race([exited, Bun.sleep(5000).then(() => "still running")]);
+      // Only a KILL ends a leader that ignores TERM; Windows kills the tree with taskkill.
+      expect(how).toBe(process.platform === "win32" ? "exited" : "SIGKILL");
+      // The child is the leader's, not this test's, so once the leader is gone
+      // init reaps it, and its PID going quiet is the answer.
+      for (let i = 0; i < 50 && alive(child); i++) await Bun.sleep(100);
+      expect(alive(child)).toBe(false);
+      gone = true;
+    } finally {
+      // A failed check leaves nothing behind for the next test to trip on.
+      if (!gone) {
+        for (const pid of [-c.pid!, child]) {
+          try {
+            if (pid) process.kill(pid, "SIGKILL");
+          } catch {}
+        }
+      }
+    }
+  }, 30_000);
 });
 
 describe("etime", () => {
