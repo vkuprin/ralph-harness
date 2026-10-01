@@ -1,0 +1,25 @@
+.changeset/kept-commit-survives-stop.md
+  s_1fce73be9c7d11::t_d4868566430694 1-5
+src/loop/loop.ts
+  s_1fce73be9c7d11::t_9e363130aae6c2 683-690
+  s_1fce73be9c7d11::t_de09bb60e3aa20 357-361
+tests/e2e/limits.test.ts
+  s_1fce73be9c7d11::t_8b71c4019af9f3 2,112,135
+  s_1fce73be9c7d11::t_a39e98a78a4276 81-111,113-134,136-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "334a576ec4de901269dda73df9e4f4d8ef5f20fe",
+  "prompts": {},
+  "sessions": {
+    "s_1fce73be9c7d11": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d00168a7-752a-4b0d-88c0-2742908916e0",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
