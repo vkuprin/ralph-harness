@@ -1,0 +1,29 @@
+tests/e2e/cli.test.ts
+  s_249556efd6a7fb::t_603d0622df81f8 645-646
+  s_249556efd6a7fb::t_37a7d0e3490965 623-626,653-657
+  s_249556efd6a7fb::t_eb07a9e8da9ad4 595-622,627-644,647-652,658-686,688-700
+  s_249556efd6a7fb::t_79219bcf055b57 687
+  s_249556efd6a7fb::t_3caa2c57329716 19-20
+src/lib/shq.ts
+  s_249556efd6a7fb::t_44125a18e7b6e6 6-10,13
+tests/unit/shq.test.ts
+  s_249556efd6a7fb::t_c5061348446b8a 4-7,28-30,32-46,52-55
+.changeset/zsh-equals-hint.md
+  s_249556efd6a7fb::t_841947e3858a76 1-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "53657ba8f5fa6acad59641f1bd7d4c818a62be26",
+  "prompts": {},
+  "sessions": {
+    "s_249556efd6a7fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "10d9036d-6baf-41f3-b8fd-c9a67635c307",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
