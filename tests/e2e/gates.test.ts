@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { Fx, IS_WIN, count, join, read, rows, setup, sleeperGone, statuses } from "../helpers/index.ts";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { Fx, IS_WIN, count, join, read, rows, setup, sleeperGone, sq, statuses } from "../helpers/index.ts";
 
 const fx = new Fx("gates");
 const T = fx.T;
@@ -286,5 +286,65 @@ describe("the reviewer and the agent are told what the gate already checked", ()
   });
   test("an iteration that ran and shipped nothing clears it", () => {
     expect(read(join(S, "prompt.agent.5"))).not.toContain("VERIFY_CMD failed");
+  });
+});
+
+describe("a coloured VERIFY_CMD reaches every reader as plain text", () => {
+  // What bun test prints when it fails: a coloured line, here with a tab in it,
+  // and after it a line that only resets the colour.
+  const app = fx.p("app-colour");
+  const loop = fx.p("loops/colour");
+  const said = fx.p("notified-colour");
+  const why = "verify exited 1: (fail) one thing";
+  let S = "";
+  let results = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-colour.git"));
+    S = fx.stub("stub-colour", ["commit", "commit"]);
+    const notifier = fx.p("notify-colour.sh");
+    writeFileSync(notifier, `#!/usr/bin/env bash\nprintf '%s=%s\\n' "$RALPH_EVENT" "$RALPH_MESSAGE" >> ${sq(said)}\n`);
+    chmodSync(notifier, 0o755);
+    fx.makeLoop(loop, app, {
+      WORKTREE: true,
+      MAX_ITER: 2,
+      ESCALATE_AFTER: 2,
+      NOTIFY_CMD: sq(notifier),
+      VERIFY_CMD: `printf 'ok\\n\\033[31m(fail) one\\tthing\\033[0m\\n\\033[0m\\n'; exit 1`,
+    });
+    await fx.runLoop(loop, S);
+    results = fx.cli(fx.p("loops"), ["results", "colour"]).out;
+  });
+
+  test("both iterations failed verify", () => {
+    expect(statuses(loop)).toBe("revert:verify revert:verify");
+  });
+  test("results.tsv holds the failing line, not its colour codes or the reset after it", () => {
+    expect(rows(loop).map((r) => r[6])).toEqual([why, why]);
+  });
+  test("ralph results prints no escape codes", () => {
+    expect(results).toContain(why);
+    expect(results).not.toContain("\x1b");
+  });
+  test("the stuck notification carries it without escapes or a tab", () => {
+    const stuck = read(said)
+      .split("\n")
+      .filter((l) => l.startsWith("stuck="));
+    expect(stuck).toHaveLength(1);
+    expect(stuck[0]).toEndWith(`— ${why}`);
+  });
+  test("the log's own lines carry it without escapes or a tab", () => {
+    const lines = read(join(loop, "ralph.log"))
+      .split("\n")
+      .filter((l) => l.includes("reverted to"));
+    expect(lines).toHaveLength(2);
+    for (const l of lines) expect(l).toEndWith(`: revert:verify — ${why}`);
+  });
+  test("the next prompt holds no escape codes, and the output's own tab is kept", () => {
+    const prompt = read(join(S, "prompt.agent.2"));
+    expect(prompt).toContain(`\trevert:verify\t`);
+    expect(prompt).toContain(why);
+    expect(prompt).toContain("(fail) one\tthing");
+    expect(prompt).not.toContain("\x1b");
   });
 });

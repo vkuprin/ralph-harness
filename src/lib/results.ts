@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { stamp } from "./clock.ts";
-import { splitLines } from "./text.ts";
+import { plain, splitLines } from "./text.ts";
 
 // results.tsv: one row per iteration, written by the harness. The cost columns
 // come after reason, so every reader that counts columns from the left reads
@@ -20,7 +20,7 @@ export interface Row {
 
 export function record(file: string, iter: number, r: Row): void {
   if (!existsSync(file)) writeFileSync(file, `${HEADER}\n`);
-  const reason = [...r.reason.replace(/[\t\n\r]/g, " ")].slice(0, 300).join("");
+  const reason = [...plain(r.reason)].slice(0, 300).join("");
   const cells = [
     stamp(),
     String(iter),

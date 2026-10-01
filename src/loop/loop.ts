@@ -6,7 +6,7 @@ import type { Log } from "../lib/log.ts";
 import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
 import { shq } from "../lib/shq.ts";
-import { chomp, headBytes, lastNonBlank, section, splitLines, tailLines } from "../lib/text.ts";
+import { chomp, headBytes, lastNonBlank, section, splitLines, stripEscapes, tailLines } from "../lib/text.ts";
 import { APPROVE_PLAN, STEER_HOOK } from "../paths.ts";
 import { type Window, inWindow, parseHours } from "./active-hours.ts";
 import { addCost, addTokens, claudeText } from "./cost.ts";
@@ -906,9 +906,9 @@ export class Loop {
     return false;
   }
 
-  /** The last 40 lines of a command's output, at most its last 4000 bytes: what a prompt can carry. */
+  /** The last 40 lines of a command's output, at most its last 4000 bytes, without escape codes: what a prompt can carry. */
   private lastLines(file: string): string {
-    const tail = tailLines(this.read(file), 40)
+    const tail = tailLines(stripEscapes(this.read(file)), 40)
       .map((l) => `${l}\n`)
       .join("");
     return chomp(

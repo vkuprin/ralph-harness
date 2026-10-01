@@ -18,9 +18,39 @@ export function chomp(text: string): string {
   return text.replace(/\n+$/, "");
 }
 
-/** The last line holding something other than whitespace, or "". */
+// CSI (colours, cursor moves), OSC (titles, links) and the short ESC sequences.
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const ESCAPES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b\n]*(?:\x07|\x1b\\)?|[ -/]*[0-~])/g;
+
+/**
+ * A command's output without its terminal escape codes. A test runner colours
+ * what it prints, and the codes are noise to every reader the harness hands
+ * that output to: a prompt, a notification, a table.
+ */
+export function stripEscapes(text: string): string {
+  return text.replace(ESCAPES, "");
+}
+
+/**
+ * One line of a command's output as plain text: escape codes gone, and every
+ * other control character (a tab, a carriage return) a space, so it can sit in
+ * a column of results.tsv or a notification and read as what it says.
+ */
+export function plain(line: string): string {
+  // eslint-disable-next-line no-control-regex -- matching control characters is the point
+  return stripEscapes(line).replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+}
+
+/**
+ * The last line holding something other than whitespace, as plain text, or "".
+ * Judged after the escapes are gone: a line that only resets the colour says
+ * nothing, and the reason is the line before it.
+ */
 export function lastNonBlank(lines: string[]): string {
-  for (let i = lines.length - 1; i >= 0; i--) if (/\S/.test(lines[i]!)) return lines[i]!;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = plain(lines[i]!);
+    if (/\S/.test(line)) return line;
+  }
   return "";
 }
 
