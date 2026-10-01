@@ -506,3 +506,50 @@ describe("a timeout of 0 or less is the default, not a kill on the spot", () => 
     expect(read(join(vt0, "ralph.log"))).toContain("VERIFY_TIMEOUT -1 is not a timeout; using the default 1800s");
   });
 });
+
+describe.skipIf(IS_WIN)("a backslash in REPO does not make any checkout this loop's own", () => {
+  // The harness resets and cleans WORKTREE_DIR after every iteration, so it
+  // checks first that the checkout there belongs to REPO, by the repository
+  // each one's git lives in. Bun's realpath cannot open a path holding a
+  // backslash on macOS and Linux; both sides came back unknown, unknown
+  // matched unknown, and a stranger's checkout was taken as the loop's own.
+  const bs = fx.p("loops/bs");
+  const ok = fx.p("loops/bs-ok");
+  const stranger = fx.p("else\\where");
+
+  setup(async () => {
+    fx.makeRepo(fx.p("app\\bs"), fx.p("remote-bs.git"));
+    fx.fresh(stranger);
+    fx.sh(["git", "init", "-q", "-b", "main", stranger]);
+    writeFileSync(join(stranger, "precious.txt"), "keep\n");
+    fx.gitOk(stranger, "add", "-A");
+    fx.gitOk(stranger, "commit", "-qm", "not ralph's work");
+    writeFileSync(join(stranger, "untracked.txt"), "scratch\n");
+    const S = fx.stub("stub-bs", ["commit"]);
+    fx.makeLoop(bs, fx.p("app\\bs"), { WORKTREE: true, MAX_ITER: 1, WORKTREE_DIR: stranger });
+    await fx.runLoop(bs, S);
+
+    // The same REPO with a worktree of its own still runs, at the start and
+    // again after a restart, which finds the worktree already there.
+    fx.makeRepo(fx.p("app\\ok"), fx.p("remote-bs-ok.git"));
+    const So = fx.stub("stub-bs-ok", ["commit", "commit"]);
+    fx.makeLoop(ok, fx.p("app\\ok"), { WORKTREE: true, MAX_ITER: 1 });
+    await fx.runLoop(ok, So);
+    await fx.runLoop(ok, So);
+  });
+
+  test("a stranger's checkout at WORKTREE_DIR is refused", () => {
+    expect(read(join(bs, "ralph.log"))).toContain("not a worktree of");
+    expect(existsSync(join(bs, "results.tsv"))).toBe(false);
+  });
+  test("its uncommitted file is still there", () => {
+    expect(existsSync(join(stranger, "untracked.txt"))).toBe(true);
+  });
+  test("and nothing was committed into it", () => {
+    expect(fx.git(stranger, "rev-list", "--count", "HEAD")).toBe("1");
+  });
+  test("REPO's own worktree is used, and found again after a restart", () => {
+    expect(statuses(ok)).toBe("keep keep");
+    expect(read(join(ok, "ralph.log"))).not.toContain("not a worktree of");
+  });
+});

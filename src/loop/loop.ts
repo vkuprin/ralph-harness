@@ -1,8 +1,8 @@
-import { accessSync, constants, existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { hour, nowSec, stampMinutes } from "../lib/clock.ts";
 import { type Config, defaults, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
-import { rewrite } from "../lib/files.ts";
+import { rewrite, sameDir } from "../lib/files.ts";
 import type { Log } from "../lib/log.ts";
 import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
@@ -302,20 +302,21 @@ export class Loop {
     for (const ref of refs.slice(this.cfg.REF_KEEP)) await this.git(["update-ref", "-d", ref]);
   }
 
-  /** The repository a checkout belongs to, as a physical path, or "". */
-  private async gitHome(path: string): Promise<string> {
-    const r = await this.git(["-C", path, "rev-parse", "--git-common-dir"], { quiet: true });
-    const common = r.stdout.trim();
-    if (r.code !== 0 || !common) return "";
-    try {
-      // .native: on Windows the JS realpath leaves an 8.3 short name as it is,
-      // and git names the same directory by its long name, so C:\Users\RUNNER~1
-      // and C:\Users\runneradmin read as two repositories and the worktree was
-      // refused as one this loop does not own.
-      return realpathSync.native(resolve(path, common));
-    } catch {
-      return "";
-    }
+  /**
+   * Whether two checkouts belong to one repository: the directory each one's
+   * git keeps its objects in is the same. A repository git cannot name belongs
+   * to nobody. When both came back unknown and unknown matched unknown, which
+   * bun's realpath made of every path holding a backslash, a stranger's
+   * checkout passed as this loop's worktree and was reset and cleaned.
+   */
+  private async sameRepo(a: string, b: string): Promise<boolean> {
+    const common = async (path: string) => {
+      const r = await this.git(["-C", path, "rev-parse", "--git-common-dir"], { quiet: true });
+      const dir = r.stdout.trim();
+      return r.code === 0 && dir ? resolve(path, dir) : "";
+    };
+    const [x, y] = [await common(a), await common(b)];
+    return x !== "" && y !== "" && sameDir(x, y);
   }
 
   private async setupWorktree(): Promise<void> {
@@ -327,7 +328,7 @@ export class Loop {
       // Everything the harness does in WORK resets and cleans it, so WORK has
       // to be this REPO's own worktree and not merely some checkout that
       // happens to sit where WORKTREE_DIR points.
-      if ((await this.gitHome(WORK)) === (await this.gitHome(REPO))) return;
+      if (await this.sameRepo(WORK, REPO)) return;
       await this.refuse(`${WORK} is not a worktree of ${REPO} — refusing to reset a checkout this loop does not own`);
     }
     await this.git(["-C", REPO, "worktree", "prune"]);
@@ -356,7 +357,7 @@ export class Loop {
         }
       }
     }
-    if ((await this.gitHome(WORK)) !== (await this.gitHome(REPO))) await this.refuse(`worktree ${WORK} is not usable`);
+    if (!(await this.sameRepo(WORK, REPO))) await this.refuse(`worktree ${WORK} is not usable`);
     this.log.line(`worktree ${WORK} on ${branch}`);
   }
 

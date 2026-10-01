@@ -1,4 +1,4 @@
-import { lstatSync, readlinkSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 /**
@@ -29,4 +29,28 @@ function linkEnd(file: string): string {
     p = resolve(dirname(p), readlinkSync(p));
   }
   return p;
+}
+
+/**
+ * Whether two paths name one existing directory. By physical path first, with
+ * `.native`: on Windows the JS realpath leaves an 8.3 short name as it is, and
+ * git names the same directory by its long name, so C:\Users\RUNNER~1 and
+ * C:\Users\runneradmin read as two. Bun's realpath (every one of them) throws
+ * ENOENT for a path holding a backslash on macOS and Linux, where a backslash
+ * is a letter like any other; there the two are compared by device and inode,
+ * which no spelling of a path changes. A path that names nothing matches
+ * nothing.
+ */
+export function sameDir(a: string, b: string): boolean {
+  try {
+    return realpathSync.native(a) === realpathSync.native(b);
+  } catch {
+    try {
+      const x = statSync(a, { bigint: true });
+      const y = statSync(b, { bigint: true });
+      return x.ino !== 0n && x.dev === y.dev && x.ino === y.ino;
+    } catch {
+      return false;
+    }
+  }
 }

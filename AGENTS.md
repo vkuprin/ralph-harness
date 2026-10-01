@@ -11,7 +11,8 @@ is one class on purpose, so an iteration reads in order.
 - `src/loop/{cost,limits,progress,active-hours,merge}.ts`: pure pieces with unit tests.
 - `src/lib/`: `proc` (bounded runs, process groups, the freeze on a signal),
   `clock` (the one test seam into time), `config`, `files` (rewriting a file a
-  human owns, through its symlink), `log`, `results`, `shq`, `text`.
+  human owns, through its symlink; whether two paths are one directory), `log`,
+  `results`, `shq`, `text`.
 - `src/cli/main.ts`: the CLI (`setup`, `new`, `start`, `stop`, `status`, `results`,
   `steer`, …). `ralph setup` (and bare `ralph new`) opens Claude Code with
   `skills/ralph-new/SKILL.md` from the harness as system prompt. `src/cli/migrate.ts`: `ralph migrate`, config.sh to config.json.
