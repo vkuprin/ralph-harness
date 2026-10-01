@@ -1,0 +1,30 @@
+.changeset/plugin-marketplace.md
+  s_83375383eea428::t_1ada4c1402cf24 1-5
+.claude-plugin/marketplace.json
+  s_83375383eea428::t_eaa5cba44d8bdc 3-7
+  s_83375383eea428::t_904a6fb1bd1315 1-2,8-15
+README.md
+  s_83375383eea428::t_d20e9f33ef9d1f 18,330-332
+  s_83375383eea428::t_17b03b831b784b 79-87
+  s_83375383eea428::t_8742903ffbfd0f 48-49,56
+  s_83375383eea428::t_14e8bf8d22a07d 50-55
+  s_83375383eea428::t_6f5c33467bc86f 318-329,333
+.claude-plugin/plugin.json
+  s_83375383eea428::t_904a6fb1bd1315 1-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "34d0da598db679660e3321d4436a4761a8931f2c",
+  "prompts": {},
+  "sessions": {
+    "s_83375383eea428": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7ac5795-5178-4b29-a780-b6e7b805edcc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}
