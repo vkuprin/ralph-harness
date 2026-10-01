@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,13 +24,17 @@ describe("sameDir: one directory, however it is spelled", () => {
 
   // Bun's realpath throws ENOENT for these, so they are where "nothing matches
   // nothing" is decided: both sides unknown once read as one repository.
+  // A skipped describe still runs its body, so the directories are made in
+  // beforeAll: on Windows a backslash is a separator and "a\\b" has no parent.
   describe.skipIf(IS_WIN)("with a backslash in the path", () => {
     const a = join(T, "a\\b");
     const c = join(T, "c\\d");
     const link = join(T, "to-a");
-    mkdirSync(a);
-    mkdirSync(c);
-    symlinkSync(a, link);
+    beforeAll(() => {
+      mkdirSync(a);
+      mkdirSync(c);
+      symlinkSync(a, link);
+    });
 
     test("two directories are two", () => {
       expect(sameDir(a, c)).toBe(false);
