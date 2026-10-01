@@ -31,15 +31,15 @@ export function claudeText(raw: string): RunText {
   const tin = usage.input_tokens;
   const tout = usage.output_tokens;
   const tokens =
-    tin !== undefined && tin !== null || tout !== undefined && tout !== null ? String((Number(tin) || 0) + (Number(tout) || 0)) : "-";
+    (tin !== undefined && tin !== null) || (tout !== undefined && tout !== null) ? String((Number(tin) || 0) + (Number(tout) || 0)) : "-";
   const cost = typeof o.total_cost_usd === "number" ? o.total_cost_usd.toFixed(4) : "-";
-  const result = o.result;
-  const hasResult = result !== undefined && result !== null && String(result).length > 0;
+  // A result that is not a string is written as JSON, as errors are.
+  const result = o.result === undefined || o.result === null ? "" : typeof o.result === "string" ? o.result : canonicalJson(o.result);
   let text: string;
-  if (Array.isArray(o.errors) && o.errors.length && !hasResult) {
+  if (Array.isArray(o.errors) && o.errors.length && !result) {
     text = o.errors.map((e) => (typeof e === "string" ? e : canonicalJson(e))).join("\n");
   } else if ("result" in o) {
-    text = result === null || result === undefined ? "" : String(result);
+    text = result;
   } else {
     text = raw;
   }

@@ -58,8 +58,17 @@ if (line === "auth status") {
   rmSync(join(d, "gh-draft"), { force: true });
   process.stdout.write(`✓ Pull request ${cat("gh-open").trim()} is marked as "ready for review"\n`);
 } else if (args[0] === "pr" && args[1] === "view") {
-  const lines = cat("gh-checks").split("\n").filter((l) => l !== "");
-  if (lines.length > 1) writeFileSync(join(d, "gh-checks"), lines.slice(1).map((l) => `${l}\n`).join(""));
+  const lines = cat("gh-checks")
+    .split("\n")
+    .filter((l) => l !== "");
+  if (lines.length > 1)
+    writeFileSync(
+      join(d, "gh-checks"),
+      lines
+        .slice(1)
+        .map((l) => `${l}\n`)
+        .join(""),
+    );
   process.stdout.write(
     `${JSON.stringify({
       url: cat("gh-open").trim(),

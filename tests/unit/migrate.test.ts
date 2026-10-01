@@ -27,7 +27,9 @@ type Seen = Record<string, string | string[]>;
 function sourced(text: string, keys: string[]): Seen {
   const f = join(T, `config.${Math.random().toString(36).slice(2)}.sh`);
   writeFileSync(f, text);
-  const r = Bun.spawnSync(["bash", "-c", ORACLE, "_", f, ...keys], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", DEFAULT_RE: DEFAULT_RATE_LIMIT_RE } });
+  const r = Bun.spawnSync(["bash", "-c", ORACLE, "_", f, ...keys], {
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", DEFAULT_RE: DEFAULT_RATE_LIMIT_RE },
+  });
   const parts = r.stdout.toString().split("\0");
   const out: Seen = {};
   let i = 0;
@@ -60,7 +62,7 @@ function agrees(text: string): void {
   const extends_ = "RATE_LIMIT_EXTRA_RE" in m.config;
   const want = sourced(text, extends_ ? [...keys, "RATE_LIMIT_RE"] : keys);
   for (const k of keys) expect([k, asBash(m.config[k])]).toEqual([k, want[k]!]);
-  if (extends_) expect(`${DEFAULT_RATE_LIMIT_RE}|${m.config.RATE_LIMIT_EXTRA_RE}`).toBe(want.RATE_LIMIT_RE as string);
+  if (extends_) expect(`${DEFAULT_RATE_LIMIT_RE}|${m.config.RATE_LIMIT_EXTRA_RE as string}`).toBe(want.RATE_LIMIT_RE as string);
 }
 
 describe("ralph migrate reads config.sh the way bash did", () => {
@@ -112,7 +114,7 @@ HEALTH_CMD="echo \\"quoted\\" and a \\\\ backslash and a \\$ sign"
     expect(m.ok && m.config).toEqual({ RATE_LIMIT_EXTRA_RE: "quota window closed" });
   });
   test("a line continued with a backslash", () => {
-    agrees("VERIFY_CMD=\"npm test \\\n  --silent\"\n");
+    agrees('VERIFY_CMD="npm test \\\n  --silent"\n');
   });
   test("a scalar in a list setting is a list of one", () => {
     const m = migrate("FROZEN=measure.sh\n", "x");
@@ -122,7 +124,7 @@ HEALTH_CMD="echo \\"quoted\\" and a \\\\ backslash and a \\$ sign"
     const m = migrate('REPO="/r"\nMAX_ITER=7\n', "demo");
     expect(m.ok).toBe(true);
     if (!m.ok) return;
-    expect(m.json).toContain("converted by \"ralph migrate\" from config.sh.old");
+    expect(m.json).toContain('converted by "ralph migrate" from config.sh.old');
     expect(Bun.JSONC.parse(m.json)).toMatchObject({ REPO: "/r", MAX_ITER: 7 });
     expect((Bun.JSONC.parse(m.json) as { $schema: string }).$schema).toMatch(/^file:\/\/.*template\/config\.schema\.json$/);
   });

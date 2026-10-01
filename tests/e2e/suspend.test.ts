@@ -4,7 +4,6 @@ import { Fx, basename, join, read, rows, setup, sleeperGone, sq, statuses } from
 
 const fx = new Fx("suspend");
 
-
 describe("time asleep is not time worked", () => {
   // Every timeout was wall clock, so a laptop suspended mid-iteration killed a
   // healthy agent on the first poll after the wake. A suspend cannot be waited

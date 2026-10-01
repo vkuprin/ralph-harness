@@ -62,12 +62,14 @@ function handle(m: Msg): void {
     case "tools/call": {
       const args = (m.params?.arguments ?? {}) as { tool_name?: unknown; input?: unknown };
       const input = args.input && typeof args.input === "object" ? (args.input as Record<string, unknown>) : {};
-      const text = JSON.stringify(decide(String(args.tool_name ?? ""), input));
+      const text = JSON.stringify(decide(typeof args.tool_name === "string" ? args.tool_name : "", input));
       reply(m.id, { content: [{ type: "text", text }] });
       return;
     }
     default:
-      process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: `unknown method ${m.method}` } })}\n`);
+      process.stdout.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: `unknown method ${m.method}` } })}\n`,
+      );
   }
 }
 

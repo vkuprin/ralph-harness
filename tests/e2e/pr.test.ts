@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { count, Fx, join, lines, mkNotifier, read, setup, sq, statuses } from "../helpers/index.ts";
 
 const fx = new Fx("pr");
-
 
 /** The notifier log's rows for one event. */
 function rowsOf(log: string, event: string): string[] {

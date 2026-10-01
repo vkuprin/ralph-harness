@@ -5,7 +5,6 @@ import {
   field,
   Fx,
   join,
-  lines,
   mkNotifier,
   read,
   readConfigValue,
@@ -19,10 +18,6 @@ import {
 } from "../helpers/index.ts";
 
 const fx = new Fx("notify");
-
-
-
-
 
 /** A question that was already in PROGRESS.md when the loop started. */
 function seedOldQuestion(loop: string): void {

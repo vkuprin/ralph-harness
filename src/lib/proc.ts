@@ -237,8 +237,8 @@ export function claudeProblem(path = process.env.PATH): string | null {
 // processes (Git's is MSYS's own), so it asks CIM, with the PID in the
 // environment rather than in the script.
 const CIM =
-  "$p = Get-CimInstance Win32_Process -Filter \"ProcessId=$([int]$env:RALPH_PID)\"; " +
-  "if ($p) { [Console]::Out.Write([string][int64](([DateTimeOffset]$p.CreationDate).ToUnixTimeSeconds()) + \"`n\" + $p.CommandLine) }";
+  '$p = Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$env:RALPH_PID)"; ' +
+  'if ($p) { [Console]::Out.Write([string][int64](([DateTimeOffset]$p.CreationDate).ToUnixTimeSeconds()) + "`n" + $p.CommandLine) }';
 
 function cimArgv(): string[] {
   return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", CIM];

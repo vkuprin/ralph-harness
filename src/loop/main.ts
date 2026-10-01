@@ -50,7 +50,9 @@ const name = basename(dir);
 // Settings from before this harness are in config.sh, which is bash and which
 // nothing here will source. Say how to convert them rather than "missing".
 if (!existsSync(join(dir, "config.json")) && existsSync(join(dir, "config.sh"))) {
-  log.line(`ralph: ${dir} keeps its settings in config.sh, which this harness does not read — convert them: ${hint("ralph", "migrate", name)}`);
+  log.line(
+    `ralph: ${dir} keeps its settings in config.sh, which this harness does not read — convert them: ${hint("ralph", "migrate", name)}`,
+  );
   process.exit(2);
 }
 
@@ -75,7 +77,7 @@ const LOCK = join(dir, "ralph.lock");
  * replaced — or the lock is stale.
  */
 async function lockHolder(): Promise<string | null> {
-  let pid = "";
+  let pid: string;
   try {
     pid = readFileSync(LOCK, "utf8").trim();
   } catch {

@@ -32,10 +32,11 @@ if (process.platform === "win32") {
     let built = false;
     let why = "";
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const r = Bun.spawnSync(
-        [process.execPath, "build", "--compile", join(src, `${name}.ts`), "--outfile", join(bin, `${name}.exe`)],
-        { stdout: "ignore", stderr: "pipe", timeout: 120_000 },
-      );
+      const r = Bun.spawnSync([process.execPath, "build", "--compile", join(src, `${name}.ts`), "--outfile", join(bin, `${name}.exe`)], {
+        stdout: "ignore",
+        stderr: "pipe",
+        timeout: 120_000,
+      });
       if (r.exitCode === 0) {
         built = true;
         break;

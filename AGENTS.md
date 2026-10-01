@@ -30,12 +30,25 @@ is one class on purpose, so an iteration reads in order.
 
 ## Before you commit
 
-    bun run check        # tsc --noEmit, then every test
+    bun run format       # prettier --write
+    bun run check        # tsc, eslint, prettier --check, then every test
     bunx changeset       # when a user would notice the change: patch, minor or major
 
 CI runs the same on Linux, on Windows (in Git Bash), and on macOS once the
-repository is public. Bun is pinned there (`oven-sh/setup-bun`, `bun-version`);
-raise it deliberately.
+repository is public; lint and formatting only on Linux. Bun is pinned there
+(`oven-sh/setup-bun`, `bun-version`); raise it deliberately.
+
+Two TypeScripts are installed. `@typescript/native` is TypeScript 7 and is what
+`bun run typecheck` runs. `typescript` is TypeScript 6 under the name tools
+import, because typescript-eslint needs the compiler API that TypeScript 7.0
+does not ship. Once typescript-eslint supports 7, make `typescript` 7 again and
+drop the alias. The 6 is installed directly, not as `@typescript/typescript6`:
+Bun resolves that wrapper's own `typescript@^6` back to the wrapper, and the
+API comes out empty.
+
+ESLint runs on Bun (`bun --bun eslint`), which reads `eslint.config.ts`
+without a loader. Prettier skips `template/` and `skills/` (read at runtime,
+byte for byte) and Markdown.
 
 ## Releasing
 

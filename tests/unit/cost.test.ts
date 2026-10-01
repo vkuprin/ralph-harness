@@ -3,7 +3,9 @@ import { addCost, addTokens, claudeText } from "../../src/loop/cost.ts";
 
 describe("claudeText reads what a run said and what it cost", () => {
   test("one result object", () => {
-    const r = claudeText(JSON.stringify({ type: "result", result: "done", total_cost_usd: 0.01234, usage: { input_tokens: 100, output_tokens: 50 } }));
+    const r = claudeText(
+      JSON.stringify({ type: "result", result: "done", total_cost_usd: 0.01234, usage: { input_tokens: 100, output_tokens: 50 } }),
+    );
     expect(r).toEqual({ text: "done\n", cost: "0.0123", tokens: "150" });
   });
   test("a failed run carries its text in errors[]", () => {
@@ -14,6 +16,9 @@ describe("claudeText reads what a run said and what it cost", () => {
   });
   test("errors that are not strings are written as JSON with sorted keys", () => {
     expect(claudeText(JSON.stringify({ errors: [{ b: 1, a: 2 }, "x"] })).text).toBe('{"a":2,"b":1}\nx\n');
+  });
+  test("a result that is not a string is written as JSON, not as [object Object]", () => {
+    expect(claudeText(JSON.stringify({ result: { b: 1, a: [2] } })).text).toBe('{"a":[2],"b":1}\n');
   });
   test("a result wins over errors", () => {
     expect(claudeText(JSON.stringify({ result: "ok", errors: ["no"] })).text).toBe("ok\n");

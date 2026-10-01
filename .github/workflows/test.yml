@@ -27,6 +27,11 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: typecheck
         run: bun run typecheck
+      # Lint and formatting read the same on every platform, so they run here only.
+      - name: lint
+        run: bun run lint
+      - name: format
+        run: bun run format:check
       - name: unit tests
         run: bun test --timeout 600000 tests/unit
       - name: end-to-end tests

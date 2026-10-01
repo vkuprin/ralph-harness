@@ -24,7 +24,8 @@ describe("gates, verdicts and pushes (WORKTREE=1 PUSH=1 REVIEW=1)", () => {
     );
     fx.makeLoop(loop, app, {
       WORKTREE: true,
-      PUSH: true, PUSH_CONFIRM: "main",
+      PUSH: true,
+      PUSH_CONFIRM: "main",
       REVIEW: true,
       // Long enough for an agent that runs git eight times, which on a Windows
       // runner, at a few hundred ms a process, took more than 3s.
@@ -140,9 +141,7 @@ describe("escalation and the PROGRESS.md cap", () => {
   });
 
   test("six rejected commits in a row then quiet", () => {
-    expect(statuses(loop)).toBe(
-      "revert:verify revert:verify revert:verify revert:verify revert:verify revert:verify quiet",
-    );
+    expect(statuses(loop)).toBe("revert:verify revert:verify revert:verify revert:verify revert:verify revert:verify quiet");
   });
   test("after 3 in a row: pivot", () => {
     expect(read(join(S, "prompt.agent.4"))).toContain("Do not retry that approach");
@@ -289,4 +288,3 @@ describe("the reviewer and the agent are told what the gate already checked", ()
     expect(read(join(S, "prompt.agent.5"))).not.toContain("VERIFY_CMD failed");
   });
 });
-

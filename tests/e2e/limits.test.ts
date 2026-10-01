@@ -1,22 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, writeFileSync } from "node:fs";
-import {
-  count,
-  Fx,
-  join,
-  patchConfig,
-  read,
-  rows,
-  setup,
-  sq,
-  statuses,
-  type LoopRun,
-  term,
-  until,
-} from "../helpers/index.ts";
+import { count, Fx, join, patchConfig, read, rows, setup, sq, statuses, type LoopRun, term, until } from "../helpers/index.ts";
 
 const fx = new Fx("limits");
-
 
 /** The verdict column of a snapshot of results.tsv rows. */
 const verdicts = (rs: string[][]) => rs.map((r) => r[4]).join(" ");
@@ -38,7 +24,8 @@ describe("limits heal themselves; interrupted iterations are set aside", () => {
     S = fx.stub("stub-f", ["limit", "weekly", "credit", "custom-limit", "fail429", "commit"], ["LIMIT", "ACCEPT"]);
     fx.makeLoop(loop, app, {
       WORKTREE: true,
-      PUSH: true, PUSH_CONFIRM: "main",
+      PUSH: true,
+      PUSH_CONFIRM: "main",
       REVIEW: true,
       MAX_ITER: 2,
       VERIFY_CMD: "./measure.sh",

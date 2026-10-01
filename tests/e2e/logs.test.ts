@@ -175,9 +175,7 @@ describe("refs/ralph/ is a safety net, not a leak", () => {
     revAll = fx.git(W, "rev-list", "--all").split("\n");
     // Unreachable from every ref is the whole point: until then no amount of
     // `git gc` could shrink the repository back.
-    gcOk =
-      fx.gitOk(W, "reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all") &&
-      fx.gitOk(W, "gc", "--prune=now", "-q");
+    gcOk = fx.gitOk(W, "reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all") && fx.gitOk(W, "gc", "--prune=now", "-q");
     stillThere = fx.gitOk(W, "cat-file", "-e", `${refsGone}^{commit}`);
 
     fx.makeRepo(mixed, fx.p("remote-mixed.git"));
@@ -221,7 +219,7 @@ describe("refs/ralph/ is a safety net, not a leak", () => {
     const all = review.split("\n");
     const from = all.findIndex((l) => l.includes("Reverted or dropped"));
     expect(from).toBeGreaterThanOrEqual(0);
-    expect((all[from + 2] ?? "").replace(/.*  /, "")).toBe("(ralph/reverted/1758400012-12)");
+    expect((all[from + 2] ?? "").replace(/.* {2}/, "")).toBe("(ralph/reverted/1758400012-12)");
   });
 });
 

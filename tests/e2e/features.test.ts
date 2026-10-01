@@ -1,23 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
-import {
-  count,
-  events,
-  Fx,
-  join,
-  lines,
-  mkNotifier,
-  read,
-  rows,
-  setup,
-  sq,
-  statuses,
-  type LoopRun,
-} from "../helpers/index.ts";
+import { existsSync, writeFileSync } from "node:fs";
+import { count, events, Fx, join, mkNotifier, read, rows, setup, sq, statuses, type LoopRun } from "../helpers/index.ts";
 
 const fx = new Fx("features");
-
-
 
 /** The line after each line that is exactly `flag`, as `grep -A1 -x -- flag` finds them. */
 function after(file: string, flag: string): string[] {
@@ -72,7 +57,8 @@ describe("the reviewer sees what done looks like; the loop sees what it shipped"
     S = fx.stub("stub-done", ["commit", "commit", "commit"]);
     fx.makeLoop(loop, fx.p("app-done"), {
       WORKTREE: true,
-      PUSH: true, PUSH_CONFIRM: "main",
+      PUSH: true,
+      PUSH_CONFIRM: "main",
       REVIEW: true,
       MAX_ITER: 3,
       VERIFY_CMD: "./measure.sh",
@@ -95,7 +81,14 @@ describe("the reviewer sees what done looks like; the loop sees what it shipped"
     // The template's own placeholder is not a picture of anything.
     fx.makeRepo(fx.p("app-done2"), fx.p("remote-done2.git"));
     S2 = fx.stub("stub-done2", ["commit"]);
-    fx.makeLoop(loop2, fx.p("app-done2"), { WORKTREE: true, PUSH: true, PUSH_CONFIRM: "main", REVIEW: true, MAX_ITER: 1, VERIFY_CMD: "./measure.sh" });
+    fx.makeLoop(loop2, fx.p("app-done2"), {
+      WORKTREE: true,
+      PUSH: true,
+      PUSH_CONFIRM: "main",
+      REVIEW: true,
+      MAX_ITER: 1,
+      VERIFY_CMD: "./measure.sh",
+    });
     await fx.runLoop(loop2, S2, { remote: fx.p("remote-done2.git") });
   });
 
@@ -112,9 +105,7 @@ describe("the reviewer sees what done looks like; the loop sees what it shipped"
     expect(read(join(S, "argv.agent.1"))).not.toContain("haiku-for-review");
   });
   test("the third prompt lists what the loop shipped, from git", () => {
-    expect(sedRange(read(join(S, "prompt.agent.3")), /^# What this loop shipped recently/)).toContain(
-      "stub: work (agent call 2)",
-    );
+    expect(sedRange(read(join(S, "prompt.agent.3")), /^# What this loop shipped recently/)).toContain("stub: work (agent call 2)");
   });
   test("and the first prompt, with nothing shipped yet, has no such list", () => {
     expect(read(join(S, "prompt.agent.1"))).not.toMatch(/^# What this loop shipped recently/m);
@@ -144,7 +135,8 @@ describe("DONE_CMD: a finished job stops the loop", () => {
     const S2 = fx.stub("stub-fin2", ["commit", "commit"]);
     fx.makeLoop(loop2, fx.p("app-fin2"), {
       WORKTREE: true,
-      PUSH: true, PUSH_CONFIRM: "main",
+      PUSH: true,
+      PUSH_CONFIRM: "main",
       MAX_ITER: 2,
       DONE_CMD: 'test -f BACKLOG.md && ! grep -q "^- \\[ \\]" BACKLOG.md',
     });
@@ -268,7 +260,14 @@ describe("what an iteration costs", () => {
   setup(async () => {
     fx.makeRepo(fx.p("app-cost"), fx.p("remote-cost.git"));
     S = fx.stub("stub-cost", ["commit", "limit", "commit"]);
-    fx.makeLoop(loop, fx.p("app-cost"), { WORKTREE: true, PUSH: true, PUSH_CONFIRM: "main", REVIEW: true, MAX_ITER: 2, VERIFY_CMD: "./measure.sh" });
+    fx.makeLoop(loop, fx.p("app-cost"), {
+      WORKTREE: true,
+      PUSH: true,
+      PUSH_CONFIRM: "main",
+      REVIEW: true,
+      MAX_ITER: 2,
+      VERIFY_CMD: "./measure.sh",
+    });
     await fx.runLoop(loop, S, { remote: fx.p("remote-cost.git") });
     review = fx.cli(fx.p("loops"), ["review", "cost"]).out;
   });

@@ -231,9 +231,7 @@ describe("the overflow path is a path, not an awk escape sequence", () => {
     expect(read(join(drop, "ralph.log"))).not.toContain("progress-overflow");
   });
   test("no Log entry is lost: all twelve are in PROGRESS.md or the archive", () => {
-    expect(entries(join(steal, "PROGRESS.md"), join(steal, "PROGRESS-archive.md"))).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
-    ]);
+    expect(entries(join(steal, "PROGRESS.md"), join(steal, "PROGRESS-archive.md"))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
   });
   test("the log does not claim to have archived entries it destroyed", () => {
     expect(read(join(steal, "ralph.log"))).toContain("moved 4 old Log entries");
@@ -253,7 +251,12 @@ describe("the overflow path is a path, not an awk escape sequence", () => {
 function seedLog(dir: string): void {
   const tpl = readFileSync(join(ROOT, "template/PROGRESS.md"), "utf8");
   const head = tpl.split("\n");
-  let out = `${head.slice(0, head.findIndex((l) => l.startsWith("## Log"))).join("\n")}\n## Log\n\n`;
+  let out = `${head
+    .slice(
+      0,
+      head.findIndex((l) => l.startsWith("## Log")),
+    )
+    .join("\n")}\n## Log\n\n`;
   for (let i = 12; i >= 1; i--) {
     out += `### 2026-01-${String(i).padStart(2, "0")} 10:00 — iteration ${i}\n\nentry ${i}\n\n`;
   }
