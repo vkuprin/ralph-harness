@@ -354,7 +354,11 @@ export class Loop {
 
   /** The last HEAD the harness judged. */
   private async markGated(): Promise<void> {
-    writeFileSync(this.p(".gated-head"), `${await this.gitOut(["rev-parse", "HEAD"])}\n`);
+    this.gated(await this.gitOut(["rev-parse", "HEAD"]));
+  }
+
+  private gated(sha: string): void {
+    writeFileSync(this.p(".gated-head"), `${sha}\n`);
   }
 
   /**
@@ -676,6 +680,14 @@ export class Loop {
       }
     }
     record(this.results, this.iter, { before, after, status, secs: took, reason, cost, tokens });
+    // Judged, and remembered as judged in the same tick as the row, before
+    // anything below awaits. A stop during the notifications once left
+    // .gated-head at `before`, and the next start set aside a commit its own
+    // keep row called kept, as never judged, and the log never said shipped.
+    if (status.startsWith("keep")) {
+      if (c.WORKTREE) this.gated(after);
+      this.log.line(`iteration ${this.iter} shipped ${after} in ${took}s${reason ? ` (${reason})` : ""}`);
+    }
 
     // A limit streak clears the moment claude answers again, whatever the
     // verdict of that iteration is. Said once, at the end of the streak.
@@ -690,8 +702,6 @@ export class Loop {
       this.quiet = 0;
       this.trouble = 0;
       this.errors = 0;
-      if (c.WORKTREE) await this.markGated();
-      this.log.line(`iteration ${this.iter} shipped ${after} in ${took}s${reason ? ` (${reason})` : ""}`);
       if (this.harnessPushes()) await this.sync();
     } else if (status === "quiet") {
       this.quiet++;

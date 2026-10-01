@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import { count, Fx, join, patchConfig, read, rows, setup, sq, statuses, type LoopRun, term, until } from "../helpers/index.ts";
 
 const fx = new Fx("limits");
@@ -75,6 +75,64 @@ describe("limits heal themselves; interrupted iterations are set aside", () => {
       .filter((l) => l !== "");
     expect(refs.length).toBeGreaterThan(0);
     expect(fx.git(W, "log", "--format=%s", ...refs)).toContain("interrupted");
+  });
+});
+
+describe("a stop after the verdict: the commit was judged, and a restart keeps it", () => {
+  // Between the keep row and the next iteration the loop notifies (limit-clear,
+  // decision), and a notifier can take its NOTIFY_TIMEOUT. A stop there once
+  // left .gated-head at the iteration's first HEAD, so the next start set the
+  // kept commit aside as "never judged", against its own keep row.
+  const app = fx.p("app-j");
+  const remote = fx.p("remote-j.git");
+  const loop = fx.p("loops/j");
+  const W = fx.p("app-j-ralph-j");
+  let code = -1;
+  let atStop: string[][] = [];
+  let kept = "";
+
+  setup(async () => {
+    fx.makeRepo(app, remote);
+    const S = fx.stub("stub-j", ["limit", "commit"]);
+    const flag = fx.p("notify-j.busy");
+    const notify = fx.p("notify-j.sh");
+    writeFileSync(notify, `#!/bin/sh\n[ "$RALPH_EVENT" = limit-clear ] || exit 0\ntouch ${sq(flag)}\nsleep 600\n`);
+    chmodSync(notify, 0o755);
+    fx.makeLoop(loop, app, {
+      WORKTREE: true,
+      PUSH: true,
+      PUSH_CONFIRM: "main",
+      MAX_ITER: 2,
+      VERIFY_CMD: "./measure.sh",
+      LIMIT_RESET: false,
+      NOTIFY_CMD: sq(notify),
+      NOTIFY_TIMEOUT: 600,
+    });
+    const run = fx.startLoop(loop, S, { remote });
+    await until(() => existsSync(flag), 60);
+    term(loop, run.proc);
+    code = await run.done;
+    atStop = rows(loop);
+    kept = fx.git(W, "rev-parse", "HEAD");
+    // The stub's queue is empty now, so the restart's agent finds nothing.
+    patchConfig(loop, { MAX_ITER: 1 });
+    await fx.runLoop(loop, S, { remote });
+  });
+
+  test("the stop came while the notifier ran, after the keep row", () => {
+    expect(code).toBe(130);
+    expect(verdicts(atStop)).toBe("ratelimit keep");
+  });
+  test("the restart does not set the kept commit aside", () => {
+    expect(verdicts(rows(loop))).toBe("ratelimit keep quiet");
+    expect(fx.git(W, "for-each-ref", "refs/ralph/dropped/")).toBe("");
+  });
+  test("the kept commit is still on the loop's branch, and the restart pushes it", () => {
+    expect(fx.gitOk(W, "merge-base", "--is-ancestor", kept, "HEAD")).toBe(true);
+    expect(fx.git(remote, "log", "--format=%H", "main").split("\n")).toContain(kept);
+  });
+  test("the log calls it shipped, once, so ralph status counts it", () => {
+    expect(count(read(join(loop, "ralph.log")), new RegExp(`shipped ${kept}`))).toBe(1);
   });
 });
 
