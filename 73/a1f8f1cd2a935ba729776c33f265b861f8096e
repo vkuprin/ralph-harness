@@ -1,0 +1,35 @@
+tests/e2e/cli.test.ts
+  s_9f66b629065378::t_ffe0a24a0441b8 2,817,828-923,925-972,974-991
+  s_9f66b629065378::t_b105b0589822af 16,818-827,924,973
+src/cli/main.ts
+  s_9f66b629065378::t_e829bdf8e1a684 26,142-147,150-158,491-512,521,527-530,532-536
+tests/e2e/edges.test.ts
+  s_9f66b629065378::t_c66501d6ecb0c1 499-524,526-547
+  s_9f66b629065378::t_3120db2672127b 15,525
+.changeset/start-says-refused.md
+  s_9f66b629065378::t_0f19ae49e9db43 1-7
+src/paths.ts
+  s_9f66b629065378::t_eb6d2089d856dc 39-43
+  s_9f66b629065378::t_94707047e6f0bb 38,44-46
+src/loop/main.ts
+  s_9f66b629065378::t_9e9ac1523d27ef 135-148
+  s_9f66b629065378::t_702c20fc5f8a92 14,31,40,56,65,68-76,116-127,129-133,150-160,180-181
+src/loop/loop.ts
+  s_9f66b629065378::t_b82cf55797345c 10,154-159,211,400-406,409-410,413,434,439,444,447,449-451
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "73a1f8f1cd2a935ba729776c33f265b861f8096e",
+  "prompts": {},
+  "sessions": {
+    "s_9f66b629065378": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5391213e-8d29-4889-94a2-a275f6c957a3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
