@@ -600,12 +600,25 @@ function cmdStatus(name?: string): void {
   if (!found) dim(`no loops in ${HOME} — ralph new <name> <repo>`);
 }
 
-function cmdLog(name?: string, n = "40"): void {
+/**
+ * The [n] of `log`, `results` and `review`: a whole number of 1 or more, or
+ * the command refuses. parseInt read `-50` (tail's habit) as -50, so the
+ * command printed nothing and review said "nothing yet" over shipped commits;
+ * `1e3` as 1; `0` and `abc` as the default. Every one of them exited 0.
+ */
+function count(cmd: string, arg: string | undefined, fallback: number): number {
+  if (arg === undefined) return fallback;
+  if (!/^\d+$/.test(arg) || Number(arg) < 1)
+    die(`n is how many to show, a whole number of 1 or more, not ${JSON.stringify(arg)} — usage: ralph ${cmd} <name> [n]`);
+  return Number(arg);
+}
+
+function cmdLog(name?: string, nArg?: string): void {
+  const k = count("log", nArg, 40);
   const dir = loopDir(name);
   const files = logFiles(dir);
   if (!files.length) die(`no log yet for ${name}`);
   const all = splitLines(files.map(read).join(""));
-  const k = Number.parseInt(n, 10) || 40;
   out(
     all
       .slice(Math.max(0, all.length - k))
@@ -675,9 +688,9 @@ async function follow(file: string): Promise<never> {
  * commits it shipped, the ones the gates threw away (kept under refs/ralph/),
  * and, when it does not push, what is waiting on ralph/<name> to be merged.
  */
-function cmdReview(name?: string, nArg = "10"): void {
+function cmdReview(name?: string, nArg?: string): void {
+  const n = count("review", nArg, 10);
   const dir = loopDir(name);
-  const n = Number.parseInt(nArg, 10) || 10;
   if (!existsSync(join(dir, "config.json"))) {
     if (existsSync(join(dir, "config.sh")))
       die(`${name} keeps its settings in config.sh — convert them first: ${hint("ralph", "migrate", name!)}`);
@@ -753,11 +766,11 @@ function cmdReview(name?: string, nArg = "10"): void {
   dim(`look closer: ${hint("git", "-C", c.work)} show <sha>     every verdict: ${hint("ralph", "results", name!)}`);
 }
 
-function cmdResults(name?: string, nArg = "20"): void {
+function cmdResults(name?: string, nArg?: string): void {
+  const n = count("results", nArg, 20);
   const dir = loopDir(name);
   const file = join(dir, "results.tsv");
   if (!existsSync(file)) die(`no results yet for ${name}`);
-  const n = Number.parseInt(nArg, 10) || 20;
   const { header, rows } = readResults(file);
   const table = [header.split("\t"), ...rows.slice(Math.max(0, rows.length - n))];
   const widths: number[] = [];

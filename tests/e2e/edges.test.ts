@@ -684,4 +684,20 @@ describe("CLI edges", () => {
     expect(count(shippedSection, /stub: work/)).toBe(1);
     expect(shippedSection).toContain("agent call 3");
   });
+  test("log N shows the last N lines", () => {
+    const r = fx.cli(home, ["log", "shipped", "2"]);
+    expect(r.code).toBe(0);
+    expect(r.out.trimEnd().split("\n").length).toBe(2);
+  });
+  // parseInt read `-1` (tail's habit) as -1, so log and results printed nothing
+  // and review said "nothing yet" over three shipped commits; `1e3` as 1; `0`,
+  // `abc` and an empty word as the default. All with exit 0.
+  test("an n that is not a whole number of 1 or more is refused, not guessed at", () => {
+    for (const cmd of ["log", "results", "review"])
+      for (const n of ["-1", "0", "abc", "1e3", "2x", "+2", " 2", ""]) {
+        const r = fx.cli(home, [cmd, "shipped", n]);
+        expect({ cmd, n, code: r.code, out: r.out }).toEqual({ cmd, n, code: 1, out: "" });
+        expect(r.err).toContain(`usage: ralph ${cmd} <name> [n]`);
+      }
+  });
 });
