@@ -41,7 +41,9 @@ describe("runBounded", () => {
     });
     expect(r.timedOut).toBe(true);
     const grandchild = Number(readFileSync(pidFile, "utf8").trim());
-    await Bun.sleep(200);
+    // On Windows `taskkill /T /F` can return before the tree is torn down, so
+    // one look 200ms later sometimes still found the grandchild. Look for up to 5s.
+    for (let i = 0; i < 50 && alive(grandchild); i++) await Bun.sleep(100);
     expect(alive(grandchild)).toBe(false);
   });
 

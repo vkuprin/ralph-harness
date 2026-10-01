@@ -1,0 +1,15 @@
+{
+  "name": "ralph-harness",
+  "description": "ralph-harness: a Claude Code loop that runs for days, gated by git and your own checks.",
+  "owner": {
+    "name": "Vitaly Kuprin",
+    "url": "https://github.com/vkuprin"
+  },
+  "plugins": [
+    {
+      "name": "ralph-harness",
+      "source": "./",
+      "description": "The ralph-new skill: asks how a ralph loop should run, then scaffolds it with the ralph CLI."
+    }
+  ]
+}

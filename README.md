@@ -15,6 +15,7 @@
   <a href="#install">Install</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-it-works">How it works</a> ·
+  <a href="#real-runs">Real runs</a> ·
   <a href="#commands">Commands</a> ·
   <a href="#options">Options</a> ·
   <a href="#safety">Safety</a>
@@ -44,6 +45,15 @@ No npm dependencies.
 - `ralph stop` stops the loop right away, together with any tests or servers
   the agent started.
 
+## Real runs
+
+ralph worked on this repository in a loop for 18 hours on September 21: 24
+iterations, 22 commits kept, 2 reset. `VERIFY_CMD` reset one that broke the
+tests. The reviewer reset the other: it added a rule to `AGENTS.md` saying every
+printed hint is now quoted, while the same unquoted hint was still live in the
+script. The next iteration shipped the whole fix
+([c423e1e](https://github.com/vkuprin/ralph-harness/commit/c423e1e)).
+
 ## Install
 
 **[Homebrew](https://github.com/vkuprin/homebrew-tap)**
@@ -66,8 +76,15 @@ git clone https://github.com/vkuprin/ralph-harness && cd ralph-harness
 ln -s "$PWD/bin/ralph" ~/.local/bin/ralph
 ```
 
-Optional: link the skill for `/ralph-new` in any Claude session (`ralph setup`
-doesn't need it):
+Optional: the `ralph-new` skill in any Claude session (`ralph setup` doesn't
+need it). As a Claude Code plugin, where it's `/ralph-harness:ralph-new`:
+
+```
+/plugin marketplace add vkuprin/ralph-harness
+/plugin install ralph-harness@ralph-harness
+```
+
+Or link it from the install for `/ralph-new`:
 
 ```bash
 ln -s "$(brew --prefix)/opt/ralph/libexec/skills/ralph-new" ~/.claude/skills/ralph-new                   # Homebrew
@@ -297,6 +314,22 @@ to `.exe` on the fly, and no other `claude` on PATH is ever reached.
 
 A change users would notice comes with a changeset (`bunx changeset`). Merging
 the release PR it produces publishes the new version.
+
+## How it differs
+
+There are many Ralph loops. What this one does on purpose:
+
+- The gate is outside the model. Git, your `VERIFY_CMD`, `FROZEN` and a
+  reviewer that can't write decide what ships. The agent's account of its own
+  work never does.
+- One worktree and branch per loop, and one pull request for the whole run, not
+  one per iteration.
+- Every iteration is a new `claude -p` process, so a run lasts days without a
+  context window filling up. Claude Code's `/loop` and the `ralph-loop` plugin
+  repeat inside one session.
+- A usage limit is waited out for as long as it takes. A rate-limited reviewer
+  is retried only up to a ceiling, because the commit it holds is ungated. Time
+  the machine spent asleep doesn't count against a timeout.
 
 ## Credits
 

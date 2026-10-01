@@ -1,0 +1,9 @@
+{
+  "name": "ralph-harness",
+  "description": "Set up a ralph loop: a Claude Code loop that runs for days, where git and your own checks decide which commits ship. Needs the ralph CLI.",
+  "author": { "name": "Vitaly Kuprin", "url": "https://github.com/vkuprin" },
+  "homepage": "https://github.com/vkuprin/ralph-harness",
+  "repository": "https://github.com/vkuprin/ralph-harness",
+  "license": "MIT",
+  "keywords": ["ralph", "loop", "long-running", "worktree", "autonomous"]
+}
