@@ -1,0 +1,24 @@
+src/cli/main.ts
+  s_2b39339e66871c::t_e980652acbff44 73-85
+tests/e2e/cli.test.ts
+  s_2b39339e66871c::t_dc96824ba68738 218-272,274-280
+  s_2b39339e66871c::t_45a49b58f75906 273
+.changeset/broken-pipe.md
+  s_2b39339e66871c::t_138cb3b025eedb 1-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "49ae57ab7861116a828fbfc16b7ff61638aea0d0",
+  "prompts": {},
+  "sessions": {
+    "s_2b39339e66871c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56d46661-2395-4425-8ce2-707edbfd849f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
