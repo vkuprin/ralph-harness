@@ -35,6 +35,15 @@ export const STOP_FILE = "ralph.stop";
 /** Where the loop names the bounded command it is running, for the next start if it dies first. */
 export const CHILD_FILE = ".child";
 
+/**
+ * The loop's exit status for a start it refused before taking ralph.lock: a
+ * setting or a file it could not read, or another loop holding the lock.
+ * Nothing after the lock exits with it (a worktree it cannot use exits 1, as a
+ * loop that ran and stopped does), so `ralph start` reads it as "did not
+ * start" whenever it comes.
+ */
+export const REFUSED = 2;
+
 export function ralphHome(): string {
   return process.env.RALPH_HOME || join(homedir(), ".claude/ralph");
 }

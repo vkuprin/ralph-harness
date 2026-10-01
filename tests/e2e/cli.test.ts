@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import {
   Fx,
   IS_WIN,
@@ -13,6 +13,7 @@ import {
   setup,
   sleeperGone,
   statuses,
+  term,
   TEMPLATE_CONFIG,
   until,
   writeConfig,
@@ -811,5 +812,180 @@ describe("ralph start does not believe a loop that never finished starting", () 
     const q = read(join(quick, "ralph.log"));
     expect(q).toContain("=== iteration 1");
     expect(q).not.toContain("had not started");
+  });
+});
+
+/**
+ * A loop `ralph stop` did not stop, stopped as the handler would: TERM first, so
+ * the agent's process group goes with it, and KILL only if TERM was not heard.
+ */
+async function stopFor(dir: string, pid: number): Promise<void> {
+  if (!pid || !alive(pid)) return;
+  term(dir, null, pid);
+  if (!(await until(() => !alive(pid), 20))) process.kill(pid, "SIGKILL");
+}
+
+describe("ralph start says so when the loop did not start", () => {
+  // The loop refuses a setting it cannot read by exiting before it runs. `ralph
+  // start` printed "started <name> as PID n" in green and exited 0 for every
+  // refusal there is, and the loop was gone before the human read the line.
+  const home = fx.p("home-refused");
+  const app = fx.p("app-refused");
+  const cases: { name: string; spoil: (dir: string) => void; why: string }[] = [
+    { name: "unknown", spoil: (d) => patchConfig(d, { NOPE_KEY: 1 }), why: "NOPE_KEY is not a setting this harness knows" },
+    { name: "badjson", spoil: (d) => writeFileSync(join(d, "config.json"), "{not json\n"), why: "does not parse" },
+    { name: "noprompt", spoil: (d) => rmSync(join(d, "PROMPT.md")), why: "loop is missing PROMPT.md" },
+    { name: "nogit", spoil: (d) => patchConfig(d, { REPO: fx.p("not-a-repo") }), why: "REPO is not a git checkout" },
+    { name: "push", spoil: (d) => patchConfig(d, { WORKTREE: true, PUSH: true }), why: '"PUSH_CONFIRM": "main"' },
+    { name: "hours", spoil: (d) => patchConfig(d, { ACTIVE_HOURS: "25-99" }), why: "ACTIVE_HOURS=25-99" },
+  ];
+  const ran: Record<string, { code: number; out: string; err: string; pidLeft: boolean; agent: boolean }> = {};
+  let ok = { code: -1, out: "", err: "" };
+  let okFinished = false;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-refused.git"));
+    mkdirSync(fx.p("not-a-repo"));
+    for (const c of cases) {
+      const S = fx.stub(`stub-refused-${c.name}`, ["commit"]);
+      fx.cli(home, ["new", c.name, app]);
+      patchConfig(join(home, c.name), TAME);
+      c.spoil(join(home, c.name));
+      const r = fx.cli(home, ["start", c.name], { STUB_DIR: S });
+      // The refusal is the loop's first second; one that started anyway runs an
+      // iteration, which is time enough to see it.
+      await Bun.sleep(300);
+      ran[c.name] = { ...r, pidLeft: existsSync(join(home, c.name, "ralph.pid")), agent: existsSync(join(S, "agent_calls")) };
+    }
+    const S = fx.stub("stub-refused-ok", ["nothing"]);
+    fx.cli(home, ["new", "fine", app]);
+    patchConfig(join(home, "fine"), TAME);
+    ok = fx.cli(home, ["start", "fine"], { STUB_DIR: S });
+    okFinished = await until(() => read(join(home, "fine", "ralph.log")).includes("ralph finished"), 30);
+  });
+
+  for (const c of cases) {
+    test(`${c.name}: the start fails, and says why in the loop's words`, () => {
+      const r = ran[c.name]!;
+      expect(r.out).not.toContain("started");
+      expect(r.err).toContain(`${c.name} did not start`);
+      expect(r.err).toContain(c.why);
+      expect(r.code).not.toBe(0);
+    });
+    test(`${c.name}: no agent ran, and no ralph.pid is left naming the process that refused`, () => {
+      expect(ran[c.name]!.agent).toBe(false);
+      expect(ran[c.name]!.pidLeft).toBe(false);
+    });
+  }
+  test("a loop that starts still says started, and exits 0", () => {
+    expect(ok.code).toBe(0);
+    expect(ok.out).toContain("started fine as PID");
+    expect(ok.err).toBe("");
+    expect(okFinished).toBe(true);
+  });
+});
+
+describe("a running loop whose ralph.pid names somebody else is still the running loop", () => {
+  // Two `ralph start` at once both pass the "already running" check, both spawn
+  // a loop and both write ralph.pid; the lock lets one run. Measured five times:
+  // both printed "started", and once ralph.pid named the one the lock refused,
+  // so `ralph status` said stopped and `ralph stop` "not running" about a loop
+  // that ran on. The loop's own ralph.lock names it all along.
+  const home = fx.p("home-lostpid");
+  const app = fx.p("app-lostpid");
+  const loop = join(home, "lost");
+  let S = "";
+  let lock = 0;
+  let status = "";
+  let again = { code: -1, out: "", err: "" };
+  let stop = { code: -1, out: "", err: "" };
+  let loopGone = false;
+  let agentGone = false;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-lostpid.git"));
+    S = fx.stub("stub-lostpid", ["sleep"]);
+    fx.cli(home, ["new", "lost", app]);
+    patchConfig(loop, { ...TAME, ITER_TIMEOUT: 600 });
+    fx.cli(home, ["start", "lost"], { STUB_DIR: S });
+    try {
+      await until(() => read(join(S, "sleeper.pid")).trim() !== "", 20);
+      lock = Number(read(join(loop, "ralph.lock")).trim());
+      // A PID that was a process a moment ago and is not one now.
+      const gone = Bun.spawn(["true"]);
+      await gone.exited;
+      writeFileSync(join(loop, "ralph.pid"), `${gone.pid}\n`);
+      status = fx.cli(home, ["status", "lost"]).out;
+      again = fx.cli(home, ["start", "lost"], { STUB_DIR: S });
+      stop = fx.cli(home, ["stop", "lost"]);
+      loopGone = await until(() => !alive(lock), 20);
+      agentGone = sleeperGone(join(S, "sleeper.pid"));
+    } finally {
+      await stopFor(loop, lock);
+    }
+  });
+
+  test("ralph status calls it running, under the PID that holds the lock", () => {
+    expect(lock).toBeGreaterThan(0);
+    expect(status).toContain("running");
+    expect(status).toContain(`PID ${lock}`);
+  });
+  test("ralph start refuses it as already running, and starts nothing", () => {
+    expect(again.out).not.toContain("started");
+    expect(again.err).toContain(`already running as PID ${lock}`);
+    expect(again.code).not.toBe(0);
+    expect(read(join(S, "agent_calls")).trim()).toBe("1");
+  });
+  test("ralph stop stops it, and the agent with it", () => {
+    expect(stop.code).toBe(0);
+    expect(stop.out).toContain(`stopped lost (PID ${lock})`);
+    expect(loopGone).toBe(true);
+    expect(agentGone).toBe(true);
+  });
+});
+
+describe("two ralph start at once: one loop runs, and one start says so", () => {
+  const home = fx.p("home-twice");
+  const app = fx.p("app-twice");
+  const loop = join(home, "twice");
+  let S = "";
+  let starts: { code: number; out: string; err: string }[] = [];
+  let lock = 0;
+  let status = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-twice.git"));
+    S = fx.stub("stub-twice", ["sleep", "sleep"]);
+    fx.cli(home, ["new", "twice", app]);
+    patchConfig(loop, { ...TAME, ITER_TIMEOUT: 600 });
+    const argv = IS_WIN ? [process.execPath, cliPath(), "start", "twice"] : [cliPath(), "start", "twice"];
+    const one = () => {
+      const p = Bun.spawn(argv, { env: fx.env({ RALPH_HOME: home, STUB_DIR: S }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      return (async () => ({ code: await p.exited, out: await new Response(p.stdout).text(), err: await new Response(p.stderr).text() }))();
+    };
+    try {
+      starts = await Promise.all([one(), one()]);
+      await until(() => read(join(S, "sleeper.pid")).trim() !== "", 20);
+      lock = Number(read(join(loop, "ralph.lock")).trim());
+      status = fx.cli(home, ["status", "twice"]).out;
+    } finally {
+      fx.cli(home, ["stop", "twice"]);
+      await stopFor(loop, lock);
+    }
+  });
+
+  test("exactly one says started, under the PID that holds the lock", () => {
+    const started = starts.filter((s) => s.out.includes("started twice as PID"));
+    expect(started.length).toBe(1);
+    expect(started[0]!.code).toBe(0);
+    expect(started[0]!.out).toContain(`as PID ${lock}`);
+  });
+  test("the other fails, saying it is already running", () => {
+    const other = starts.find((s) => !s.out.includes("started"));
+    expect(other?.err).toContain(`already running as PID ${lock}`);
+    expect(other?.code).not.toBe(0);
+  });
+  test("ralph status shows the loop that runs", () => {
+    expect(status).toContain(`PID ${lock}`);
   });
 });

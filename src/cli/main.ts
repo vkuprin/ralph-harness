@@ -23,7 +23,7 @@ import { Log } from "../lib/log.ts";
 import { hint } from "../lib/shq.ts";
 import { splitLines } from "../lib/text.ts";
 import { IS_WIN, claudeProblem, commandLineSync, killTree, upTimeSync } from "../lib/proc.ts";
-import { HARNESS, LOOP_ENTRY, LOOP_MARK, STOP_FILE, TEMPLATE, endsWithArg, markThen, ralphHome } from "../paths.ts";
+import { HARNESS, LOOP_ENTRY, LOOP_MARK, REFUSED, STOP_FILE, TEMPLATE, endsWithArg, markThen, ralphHome } from "../paths.ts";
 import { migrate } from "./migrate.ts";
 
 const USAGE = `ralph — long-running Claude Code loops: a fresh \`claude -p\` every iteration,
@@ -139,15 +139,23 @@ function alive(pid: number): boolean {
  * this loop's directory at the end of the loop's command line, so the loop is
  * the process whose command line ends with it, and nothing else counts. A
  * literal match: a path is not a pattern.
+ *
+ * ralph.pid is the PID `ralph start` spawned, and ralph.lock the one the loop
+ * wrote itself once it had passed its checks. Two starts at once both write
+ * ralph.pid, and the last one written can be the loop the lock refused, so the
+ * loop that runs was once "stopped" to `ralph status` and "not running" to
+ * `ralph stop`. Either file can name the loop.
  */
 function pidOf(dir: string, bashToo = false): string | null {
-  const pid = read(join(dir, "ralph.pid")).trim();
-  if (!/^\d+$/.test(pid) || !alive(Number(pid))) return null;
-  const cmd = commandLineSync(pid);
-  if (!endsWithArg(cmd, dir)) return null;
-  if (markThen(cmd, LOOP_MARK)) return pid;
-  // The bash harness this replaced ran `bash <harness>/ralph.sh <dir>`.
-  if (bashToo && cmd.includes("ralph") && cmd.includes(".sh ")) return pid;
+  for (const file of ["ralph.pid", "ralph.lock"]) {
+    const pid = read(join(dir, file)).trim();
+    if (!/^\d+$/.test(pid) || !alive(Number(pid))) continue;
+    const cmd = commandLineSync(pid);
+    if (!endsWithArg(cmd, dir)) continue;
+    if (markThen(cmd, LOOP_MARK)) return pid;
+    // The bash harness this replaced ran `bash <harness>/ralph.sh <dir>`.
+    if (bashToo && cmd.includes("ralph") && cmd.includes(".sh ")) return pid;
+  }
   return null;
 }
 
@@ -480,6 +488,28 @@ function booted(dir: string, pid: number, exited: () => boolean): boolean {
 const BOOT_WAIT = Number(process.env.RALPH_TEST_BOOT_WAIT) || 30;
 const BOOT_TRIES = 3;
 
+/**
+ * The loop exited REFUSED: a setting it could not read, a file missing, or
+ * another loop holding the lock. It says why in ralph.log, in its own lines
+ * since `from` (bytes), and a loop that runs is the reason when there is one.
+ * "started <name>" in green, exit status 0, is what this printed for every
+ * refusal there is, and the loop was gone before the human read it.
+ */
+function notStarted(dir: string, name: string, pid: number, from: number): never {
+  if (read(join(dir, "ralph.pid")).trim() === String(pid)) rmSync(join(dir, "ralph.pid"), { force: true });
+  const other = pidOf(dir);
+  if (other) die(`already running as PID ${other}`);
+  let text = "";
+  try {
+    const all = readFileSync(join(dir, "ralph.log"));
+    text = all.subarray(all.length >= from ? from : 0).toString("utf8");
+  } catch {}
+  const said = splitLines(text)
+    .filter((l) => /^\[[^\]]*\] /.test(l))
+    .map((l) => `\n  ${l.slice(l.indexOf("] ") + 2)}`);
+  die(`${name} did not start:${said.join("") || ` see ${join(dir, "ralph.log")}`}`);
+}
+
 async function cmdStart(name?: string): Promise<void> {
   const dir = loopDir(name);
   if (!isDir(dir)) die(`no such loop: ${name}`);
@@ -488,18 +518,22 @@ async function cmdStart(name?: string): Promise<void> {
   if (running) die(`already running as PID ${running}`);
   const log = new Log(join(dir, "ralph.log"));
   for (let attempt = 1; ; attempt++) {
+    const from = log.size();
     const fd = openSync(join(dir, "ralph.out"), "a");
     const child = spawn(process.execPath, [LOOP_ENTRY, dir], { detached: true, windowsHide: true, stdio: ["ignore", fd, fd] });
     closeSync(fd);
     child.unref();
     const pid = child.pid!;
-    let exited = false;
-    child.once("exit", () => {
-      exited = true;
-    });
+    let status: number | null | undefined;
+    const ended = new Promise<number | null>((r) => child.once("exit", (code) => r(code)));
+    void ended.then((code) => (status = code));
+    const exited = () => status !== undefined;
     writeFileSync(join(dir, "ralph.pid"), `${pid}\n`);
-    for (let waited = 0; waited < BOOT_WAIT * 10 && !booted(dir, pid, () => exited); waited++) await Bun.sleep(100);
-    if (booted(dir, pid, () => exited)) {
+    for (let waited = 0; waited < BOOT_WAIT * 10 && !booted(dir, pid, exited); waited++) await Bun.sleep(100);
+    if (booted(dir, pid, exited)) {
+      // Gone and reaped, so its exit status is on its way.
+      if (!exited() && !alive(pid)) status = await ended;
+      if (status === REFUSED) notStarted(dir, name!, pid, from);
       green(`started ${name} as PID ${pid}`);
       dim(`  ${hint("ralph", "status", name!)}   ${hint("ralph", "tail", name!)}   ${hint("ralph", "stop", name!)}`);
       return;

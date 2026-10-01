@@ -12,6 +12,7 @@ import {
   loopArgv,
   mkNotifier,
   noProc,
+  patchConfig,
   read,
   rows,
   setup,
@@ -492,6 +493,55 @@ describe.skipIf(IS_WIN)("a loop killed without its handler: the next start stops
     expect(strangerRunning).toBe(true);
     expect(read(join(odd, "ralph.log"))).not.toContain("stopped it and its process group");
     expect(existsSync(join(odd, ".child"))).toBe(false);
+  });
+});
+
+describe("a start refused before the lock leaves the running loop's mark alone", () => {
+  // The loop judges its settings before it takes ralph.lock, so a second start
+  // can refuse while the first runs, and a refusal notifies. Its notifier is a
+  // bounded command, which marks .child, and the mark there is the running
+  // loop's agent: the one its next start stops if this loop is killed outright.
+  const app = fx.p("app-premark");
+  const loop = fx.p("loops/premark");
+  const notes = fx.p("premark-notify.log");
+  let S = "";
+  let before = "";
+  let after = "";
+  let second = -1;
+  let gone = false;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-premark.git"));
+    const notifier = fx.p("premark-notify.sh");
+    mkNotifier(notes, notifier);
+    fx.makeLoop(loop, app, { MAX_ITER: 1, ITER_TIMEOUT: 600, NOTIFY_CMD: sq(notifier) });
+    S = fx.stub("stub-premark", ["sleep"]);
+    const first = fx.startLoop(loop, S);
+    try {
+      await until(() => read(join(S, "sleeper.pid")).trim() !== "", 30);
+      before = read(join(loop, ".child"));
+      // A setting the running loop never read (config.json is read once), and
+      // one the second start refuses after reading it.
+      patchConfig(loop, { PR_MERGE: true });
+      second = await fx.runLoop(loop, S);
+      after = read(join(loop, ".child"));
+    } finally {
+      term(loop, first.proc);
+      await first.done;
+      gone = sleeperGone(join(S, "sleeper.pid"));
+    }
+  });
+
+  test("the second start was refused, and said so through the notifier", () => {
+    expect(second).toBe(2);
+    expect(events(notes)).toContain("refused");
+  });
+  test("the mark still names the running loop's agent", () => {
+    expect(before).toMatch(/^\d+ \d+\n$/);
+    expect(after).toBe(before);
+  });
+  test("and the running loop, stopped, takes its agent with it", () => {
+    expect(gone).toBe(true);
   });
 });
 

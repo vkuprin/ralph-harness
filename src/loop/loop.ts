@@ -7,7 +7,7 @@ import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runB
 import { keepRows, readResults, record } from "../lib/results.ts";
 import { shq } from "../lib/shq.ts";
 import { chomp, headBytes, lastNonBlank, section, splitLines, stripEscapes, tailLines } from "../lib/text.ts";
-import { APPROVE_PLAN, CHILD_FILE, STEER_HOOK } from "../paths.ts";
+import { APPROVE_PLAN, CHILD_FILE, REFUSED, STEER_HOOK } from "../paths.ts";
 import { type Window, inWindow, parseHours } from "./active-hours.ts";
 import { addCost, addTokens, claudeText } from "./cost.ts";
 import { resetAt, limitLine, type Reset } from "./limits.ts";
@@ -151,6 +151,12 @@ export class Loop {
   private landWaiting = false;
   /** The loop has ended by itself: a pull request opened from here on is not a draft. */
   private ended = false;
+  /**
+   * This process holds ralph.lock. Before it does, .child may name the command
+   * of a loop that is running, so a command run before then (a refusal's
+   * notifier) does not write it.
+   */
+  holdsLock = false;
   /** The last iteration's commits that VERIFY_CMD failed, for the next prompt. */
   private verifyFailed: { before: string; after: string; tail: string } | null = null;
 
@@ -202,7 +208,7 @@ export class Loop {
       ...opts,
       env: opts.env ? { ...process.env, ...opts.env } : undefined,
       pollGapMax: this.cfg.POLL_GAP_MAX,
-      mark: this.p(CHILD_FILE),
+      mark: this.holdsLock ? this.p(CHILD_FILE) : undefined,
     });
   }
 
@@ -391,14 +397,20 @@ export class Loop {
 
   // ------------------------------------------------------------ start
 
-  async start(): Promise<void> {
+  /**
+   * Every refusal a config can earn, before the loop takes ralph.lock: a loop
+   * that holds the lock has passed them, which is what `ralph start` waits for.
+   * `ralph start` used to wait for the lock and then print "started" for a loop
+   * about to refuse its settings. Nothing here may need the lock.
+   */
+  async check(): Promise<void> {
     const c = this.cfg;
     const file = "config.json";
-    if (!c.REPO) await this.refuse(`ralph: ${file} must set REPO`, 2);
-    if (!existsSync(join(c.REPO, ".git"))) await this.refuse(`ralph: REPO is not a git checkout: ${c.REPO}`, 2);
+    if (!c.REPO) await this.refuse(`ralph: ${file} must set REPO`, REFUSED);
+    if (!existsSync(join(c.REPO, ".git"))) await this.refuse(`ralph: REPO is not a git checkout: ${c.REPO}`, REFUSED);
     if (c.ACTIVE_HOURS) {
       const w = parseHours(c.ACTIVE_HOURS);
-      if (typeof w === "string") await this.refuse(w, 2);
+      if (typeof w === "string") await this.refuse(w, REFUSED);
       else this.window = w;
     }
     if (!(c.ACTIVE_POLL >= 1)) c.ACTIVE_POLL = 300;
@@ -419,20 +431,24 @@ export class Loop {
     if (c.PR_MERGE && !(c.WORKTREE && c.PUSH === "pr")) {
       await this.refuse(
         `ralph: PR_MERGE merges the pull request that PUSH "pr" opens, so it needs WORKTREE true and PUSH "pr" (this config has WORKTREE ${c.WORKTREE}, PUSH ${JSON.stringify(c.PUSH)})`,
-        2,
+        REFUSED,
       );
     }
     // Every iteration would exit 127 and back off, for ever, with no word about why.
     const claude = claudeProblem();
-    if (claude) await this.refuse(`ralph: ${claude}`, 2);
+    if (claude) await this.refuse(`ralph: ${claude}`, REFUSED);
     const push = pushProblem(c);
     if (push) {
       await this.refuse(
         `ralph: ${push} — set "PUSH_CONFIRM": ${JSON.stringify(c.BRANCH)} in config.json to mean it, or PUSH "pr" to land through a pull request`,
-        2,
+        REFUSED,
       );
     }
+  }
 
+  /** What a start does once the lock is this process's: the remote, gh, the worktree. */
+  async start(): Promise<void> {
+    const c = this.cfg;
     // PUSH with nowhere to push: every sync would fetch, fail and copy git's
     // complaint into the log. Say it once and keep the commits local.
     if (this.harnessPushes() && !(await this.gitOk(["-C", c.REPO, "remote", "get-url", "origin"], { quiet: true }))) {

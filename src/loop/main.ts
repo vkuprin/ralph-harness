@@ -11,7 +11,7 @@ import { loadConfig } from "../lib/config.ts";
 import { Log } from "../lib/log.ts";
 import { IS_WIN, commandLine, current, freeze, killGroup, plainChildren, reapOrphan } from "../lib/proc.ts";
 import { hint } from "../lib/shq.ts";
-import { CHILD_FILE, LOOP_MARK, STOP_FILE } from "../paths.ts";
+import { CHILD_FILE, LOOP_MARK, REFUSED, STOP_FILE } from "../paths.ts";
 import { Loop, Stop, missingFile } from "./loop.ts";
 
 // The suite's stand-in for bun never finishing loading this file, which
@@ -28,7 +28,7 @@ if (bootHang && existsSync(bootHang)) {
 const arg = process.argv[2] || process.env.RALPH_LOOP || "";
 if (!arg) {
   process.stderr.write("usage: bun src/loop/main.ts <loop-dir>\n");
-  process.exit(2);
+  process.exit(REFUSED);
 }
 const dir = resolve(arg);
 let isDir = false;
@@ -37,7 +37,7 @@ try {
 } catch {}
 if (!isDir) {
   process.stderr.write(`ralph: no such loop directory: ${arg}\n`);
-  process.exit(2);
+  process.exit(REFUSED);
 }
 
 // The harness's own errors belong in ralph.log, which is where `ralph log`,
@@ -53,7 +53,7 @@ if (!existsSync(join(dir, "config.json")) && existsSync(join(dir, "config.sh")))
   log.line(
     `ralph: ${dir} keeps its settings in config.sh, which this harness does not read — convert them: ${hint("ralph", "migrate", name)}`,
   );
-  process.exit(2);
+  process.exit(REFUSED);
 }
 
 // Every one of them is a regular file this process can read. Called again
@@ -62,8 +62,17 @@ if (!existsSync(join(dir, "config.json")) && existsSync(join(dir, "config.sh")))
 const gone = missingFile(dir, "config.json", "PROMPT.md", "PROGRESS.md");
 if (gone) {
   log.line(`ralph: loop is missing ${gone}: ${join(dir, gone)}`);
-  process.exit(2);
+  process.exit(REFUSED);
 }
+
+const loaded = loadConfig(join(dir, "config.json"), dir);
+if (!loaded.ok) {
+  // Half a config is not a config. NOTIFY_CMD is in the file that could not be
+  // read, so this refusal cannot notify anyone; the log is all there is.
+  log.line(loaded.error);
+  process.exit(REFUSED);
+}
+const loop = new Loop(dir, loaded.config, log);
 
 // One loop process per loop directory. Two would share PROGRESS.md, the log and
 // the worktree, and each would take the other's commits for its own. The lock
@@ -104,39 +113,52 @@ function takeLock(): boolean {
   }
 }
 
-if (!takeLock()) {
-  const holder = await lockHolder();
-  if (holder === null) rmSync(LOCK, { force: true });
-  if (holder !== null || !takeLock()) {
-    log.line(`ralph: this loop is already running as PID ${holder ?? (await lockHolder()) ?? "?"}: ${dir}`);
-    process.exit(2);
+/**
+ * Take the lock, or refuse: called once the loop has passed every check, so a
+ * loop holding ralph.lock is one that runs.
+ */
+async function lock(): Promise<void> {
+  if (!takeLock()) {
+    const holder = await lockHolder();
+    if (holder === null) rmSync(LOCK, { force: true });
+    if (holder !== null || !takeLock()) {
+      log.line(`ralph: this loop is already running as PID ${holder ?? (await lockHolder()) ?? "?"}: ${dir}`);
+      process.exit(REFUSED);
+    }
   }
-}
-process.on("exit", () => {
-  try {
-    if (readFileSync(LOCK, "utf8").trim() === String(process.pid)) rmSync(LOCK, { force: true });
-  } catch {}
-});
+  process.on("exit", () => {
+    try {
+      if (readFileSync(LOCK, "utf8").trim() === String(process.pid)) rmSync(LOCK, { force: true });
+    } catch {}
+  });
 
-// What the last run of this loop was running when it died without its handler
-// is still running, an agent in this loop's checkout, say. With the lock held
-// it can only be that run's, so it goes as the handler would have sent it,
-// before anything here starts beside it.
-const orphan = await reapOrphan(join(dir, CHILD_FILE));
-if (orphan !== null) {
-  log.line(
-    `start: PID ${orphan}, which the last run of this loop left running when it died, was still running; stopped it and its process group`,
-  );
-}
+  // Windows has no TERM to send: process.kill there ends a process on the spot,
+  // with no handler run and the agent under it left running on its own. So
+  // `ralph stop` asks through a file, and the loop answers it exactly as it
+  // answers a signal. One left behind by a loop that was killed means nothing.
+  // Only once the lock is ours: before that the file is the running loop's.
+  if (IS_WIN) {
+    const stopFile = join(dir, STOP_FILE);
+    rmSync(stopFile, { force: true });
+    setInterval(() => {
+      if (!existsSync(stopFile)) return;
+      rmSync(stopFile, { force: true });
+      void onSignal();
+    }, 250).unref();
+  }
 
-const loaded = loadConfig(join(dir, "config.json"), dir);
-if (!loaded.ok) {
-  // Half a config is not a config. NOTIFY_CMD is in the file that could not be
-  // read, so this refusal cannot notify anyone; the log is all there is.
-  log.line(loaded.error);
-  process.exit(2);
+  // What the last run of this loop was running when it died without its handler
+  // is still running, an agent in this loop's checkout, say. With the lock held
+  // it can only be that run's, so it goes as the handler would have sent it,
+  // before anything here starts beside it.
+  const orphan = await reapOrphan(join(dir, CHILD_FILE));
+  if (orphan !== null) {
+    log.line(
+      `start: PID ${orphan}, which the last run of this loop left running when it died, was still running; stopped it and its process group`,
+    );
+  }
+  loop.holdsLock = true;
 }
-const loop = new Loop(dir, loaded.config, log);
 
 // The CLI writes ralph.pid; clearing it here keeps `ralph status` honest.
 let stopping = false;
@@ -154,21 +176,9 @@ process.on("SIGTERM", () => void onSignal());
 process.on("SIGINT", () => void onSignal());
 process.on("SIGHUP", () => {});
 
-// Windows has no TERM to send: process.kill there ends a process on the spot,
-// with no handler run and the agent under it left running on its own. So
-// `ralph stop` asks through a file, and the loop answers it exactly as it
-// answers a signal. One left behind by a loop that was killed means nothing.
-if (IS_WIN) {
-  const stopFile = join(dir, STOP_FILE);
-  rmSync(stopFile, { force: true });
-  setInterval(() => {
-    if (!existsSync(stopFile)) return;
-    rmSync(stopFile, { force: true });
-    void onSignal();
-  }, 250).unref();
-}
-
 try {
+  await loop.check();
+  await lock();
   await loop.start();
   await loop.run();
 } catch (e) {
