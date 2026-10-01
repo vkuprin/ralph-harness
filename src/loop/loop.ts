@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { hour, nowSec, stampMinutes } from "../lib/clock.ts";
-import { type Config, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
+import { type Config, defaults, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
 import type { Log } from "../lib/log.ts";
 import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
@@ -402,6 +402,17 @@ export class Loop {
       else this.window = w;
     }
     if (!(c.ACTIVE_POLL >= 1)) c.ACTIVE_POLL = 300;
+    // 0 turns QUIET_STOP, ERROR_STOP and CHURN_AT off, so ITER_TIMEOUT 0 reads
+    // as no timeout; it was a kill on the spot instead, of every agent before it
+    // ran and of every VERIFY_CMD before it judged a commit already paid for. No
+    // bound is not on offer either: below 1 is the default, as for every other
+    // timeout here, and set before the prompt tells the agent what it is.
+    for (const key of ["ITER_TIMEOUT", "VERIFY_TIMEOUT"] as const) {
+      if (c[key] >= 1) continue;
+      const d = defaults(this.dir)[key];
+      this.log.line(`${key} ${c[key]} is not a timeout; using the default ${d}s`);
+      c[key] = d;
+    }
     // PR_MERGE merges the pull request PUSH="pr" opens from the worktree's
     // branch. Without both there is no such pull request, and a loop that was
     // meant to land its work would quietly leave it wherever it ends up.

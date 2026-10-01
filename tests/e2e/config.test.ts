@@ -465,3 +465,44 @@ describe("PUSH true lands only on a branch the config names twice", () => {
     expect(readConfigValue(join(home, "plain", "config.json"), "PR_DRAFT")).toBe("true");
   });
 });
+
+describe("a timeout of 0 or less is the default, not a kill on the spot", () => {
+  // 0 turns off QUIET_STOP, ERROR_STOP, CHURN_AT and PROGRESS_MAX_BYTES, so a
+  // reader takes ITER_TIMEOUT 0 for "no timeout". It killed every agent before
+  // it had run, and VERIFY_TIMEOUT 0 reverted every commit the agent was paid
+  // for as "verify timed out after 0s", iteration after iteration.
+  const it0 = fx.p("loops/it0");
+  const vt0 = fx.p("loops/vt0");
+  let Si = "";
+  let Sv = "";
+
+  setup(async () => {
+    fx.makeRepo(fx.p("app-it0"), fx.p("remote-it0.git"));
+    Si = fx.stub("stub-it0", ["commit"], ["ACCEPT"]);
+    fx.makeLoop(it0, fx.p("app-it0"), { WORKTREE: true, REVIEW: true, MAX_ITER: 1, ITER_TIMEOUT: 0 });
+    await fx.runLoop(it0, Si);
+
+    fx.makeRepo(fx.p("app-vt0"), fx.p("remote-vt0.git"));
+    Sv = fx.stub("stub-vt0", ["commit"]);
+    fx.makeLoop(vt0, fx.p("app-vt0"), { WORKTREE: true, MAX_ITER: 1, VERIFY_TIMEOUT: -1, VERIFY_CMD: "./measure.sh" });
+    await fx.runLoop(vt0, Sv);
+  });
+
+  test("ITER_TIMEOUT 0 lets the agent run and its commit is kept", () => {
+    expect(statuses(it0)).toBe("keep");
+  });
+  test("the agent and the reviewer each ran once", () => {
+    expect(read(join(Si, "agent_calls")).trim()).toBe("1");
+    expect(read(join(Si, "review_calls")).trim()).toBe("1");
+  });
+  test("the log says which timeout it runs with instead", () => {
+    expect(read(join(it0, "ralph.log"))).toContain("ITER_TIMEOUT 0 is not a timeout; using the default 7200s");
+  });
+  test("a VERIFY_TIMEOUT below 0 lets VERIFY_CMD run, and the commit is kept", () => {
+    expect(statuses(vt0)).toBe("keep");
+  });
+  test("and the agent is told the timeout VERIFY_CMD really has", () => {
+    expect(read(join(Sv, "prompt.agent.1"))).toContain("for up to 1800s");
+    expect(read(join(vt0, "ralph.log"))).toContain("VERIFY_TIMEOUT -1 is not a timeout; using the default 1800s");
+  });
+});
