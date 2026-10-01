@@ -14,5 +14,5 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src", "tests", "hooks", "bin", "eslint.config.ts"]
+  "include": ["src", "tests", "hooks", "bin", "scripts", "eslint.config.ts"]
 }

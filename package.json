@@ -47,7 +47,8 @@
     "format:check": "prettier --check .",
     "test": "bun test --timeout 600000",
     "check": "bun run typecheck && bun run lint && bun run format:check && bun test --timeout 600000",
-    "changeset": "changeset"
+    "changeset": "changeset",
+    "version-packages": "changeset version && bun scripts/sync-plugin-version.ts && prettier --write plugin/.claude-plugin/plugin.json"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",
