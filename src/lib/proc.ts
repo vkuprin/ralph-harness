@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, openSync, realpathSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { constants, devNull } from "node:os";
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
@@ -309,6 +309,13 @@ export function etime(secs: number): string {
   return `${lead}${two(m)}:${two(secs % 60)}`;
 }
 
+/** Seconds from what ps prints as etime, or null when it is not one. */
+export function parseEtime(text: string): number | null {
+  const m = /^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/.exec(text.trim());
+  if (!m) return null;
+  return Number(m[1] ?? 0) * 86400 + Number(m[2] ?? 0) * 3600 + Number(m[3]) * 60 + Number(m[4]);
+}
+
 export interface Bounded {
   rc: number;
   timedOut: boolean;
@@ -325,6 +332,8 @@ export interface BoundedOptions {
   cwd?: string;
   /** The longest gap between two polls that counts as time the command had. */
   pollGapMax: number;
+  /** A file that names the command while it runs, for `reapOrphan`. */
+  mark?: string;
 }
 
 /**
@@ -373,6 +382,14 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
     return settle({ rc, timedOut: false });
   }
   current = { pid, done };
+  // The wall clock, which is what ps's etime is read against, and not the
+  // loop's clock. A mark that cannot be written costs only the cleanup after a
+  // kill -9, so it does not stop the command.
+  if (opts.mark) {
+    try {
+      writeFileSync(opts.mark, `${pid} ${Math.floor(Date.now() / 1000)}\n`);
+    } catch {}
+  }
   let finished = false;
   void done.then(() => {
     finished = true;
@@ -401,7 +418,41 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
   const rc = await done;
   await drained(child, pumps);
   current = null;
+  if (opts.mark) rmSync(opts.mark, { force: true });
   return settle({ rc, timedOut });
+}
+
+/**
+ * Stop the command a mark names, if it is still running, and say which PID
+ * that was. A loop killed with no chance to run its handler (kill -9, the OOM
+ * killer, bun crashing) leaves its bounded command running in a group of its
+ * own, and nothing reaches it after that: `ralph status` and `ralph stop` find
+ * no loop, and the next start ran a second agent beside it in the same
+ * checkout. Only the loop holding the lock may call this, which is what makes
+ * the command a dead loop's and nobody else's.
+ *
+ * A PID is not an identity, so the start the mark recorded has to match the
+ * one ps gives now, to within the second etime is rounded to. Not on Windows
+ * yet: nothing here has been run there.
+ */
+export async function reapOrphan(mark: string): Promise<number | null> {
+  if (IS_WIN) return null;
+  let text: string;
+  try {
+    text = readFileSync(mark, "utf8");
+  } catch {
+    return null;
+  }
+  const m = /^(\d+) (\d+)\n$/.exec(text);
+  let pid = 0;
+  if (m && alive(Number(m[1]))) {
+    const up = parseEtime((await run(["ps", "-p", m[1]!, "-o", "etime="])).stdout);
+    const started = up === null ? NaN : Math.floor(Date.now() / 1000) - up;
+    if (Math.abs(started - Number(m[2])) <= 2) pid = Number(m[1]);
+  }
+  if (pid) await killGroup(pid);
+  rmSync(mark, { force: true });
+  return pid || null;
 }
 
 export interface Ran {

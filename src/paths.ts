@@ -32,6 +32,9 @@ export function endsWithArg(cmd: string, word: string): boolean {
 /** Where the loop answers `ralph stop` on Windows, which has no TERM to send it. */
 export const STOP_FILE = "ralph.stop";
 
+/** Where the loop names the bounded command it is running, for the next start if it dies first. */
+export const CHILD_FILE = ".child";
+
 export function ralphHome(): string {
   return process.env.RALPH_HOME || join(homedir(), ".claude/ralph");
 }

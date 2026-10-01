@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import {
   Fx,
   type HookAnswer,
+  IS_WIN,
   count,
   events,
   field,
@@ -10,6 +11,7 @@ import {
   lines,
   loopArgv,
   mkNotifier,
+  noProc,
   read,
   rows,
   setup,
@@ -416,6 +418,80 @@ describe("state that outlives a restart", () => {
     expect(statuses(pr)).toBe("keep keep");
     expect(fx.git(remotePr, "rev-parse", "ralph/rs-pr")).toBe(fx.git(fx.p("app-rs-pr-ralph-rs-pr"), "rev-parse", "HEAD"));
     expect(events(prNote)).not.toContain("pr-blocked");
+  });
+});
+
+// A loop killed with no chance to run its handler (kill -9, the OOM killer,
+// bun crashing) left its agent running in a group of its own: `ralph status`
+// called the loop stopped, `ralph stop` found nothing to stop, and the next
+// start ran a second agent beside it in the same checkout. Windows reaps
+// nothing yet (see reapOrphan).
+describe.skipIf(IS_WIN)("a loop killed without its handler: the next start stops what it left running", () => {
+  const app = fx.p("app-k9");
+  const loop = fx.p("loops/k9");
+  const odd = fx.p("loops/k9-odd");
+  let S = "";
+  let agent = 0;
+  let outlived = false;
+  let stranger: Bun.Subprocess | null = null;
+  let strangerRunning = false;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-k9.git"));
+    fx.makeLoop(loop, app, { WORKTREE: true, MAX_ITER: 1, VERIFY_CMD: "./measure.sh" });
+    S = fx.stub("stub-k9", ["sleep", "commit"]);
+    const first = fx.startLoop(loop, S);
+    await until(() => read(join(S, "sleeper.pid")).trim() !== "", 30);
+    agent = Number(fx.sh(["ps", "-o", "ppid=", "-p", read(join(S, "sleeper.pid")).trim()]).out.trim());
+    first.proc.kill("SIGKILL");
+    await first.done;
+    outlived = !sleeperGone(join(S, "sleeper.pid"));
+    await fx.runLoop(loop, S);
+
+    // A mark naming a PID that is now somebody else's: a process this test
+    // started, whose start is not the one recorded.
+    fx.makeLoop(odd, app, { MAX_ITER: 1 });
+    stranger = Bun.spawn(["sleep", "999"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    writeFileSync(join(odd, ".child"), `${stranger.pid} 1000000000\n`);
+    await fx.runLoop(odd, fx.stub("stub-k9-odd", ["nothing"]));
+    await Bun.sleep(200);
+    strangerRunning = stranger.exitCode === null && stranger.signalCode === null;
+    stranger.kill("SIGKILL");
+  });
+  afterAll(() => {
+    // Against a loop that reaps nothing the agent is still running, and a
+    // failed check leaves nothing behind for the next test to trip on.
+    if (agent > 1 && !noProc(`--add-dir ${loop} `)) {
+      try {
+        process.kill(-agent, "SIGKILL");
+      } catch {}
+    }
+  });
+
+  test("the agent outlived the loop that started it", () => {
+    expect(agent).toBeGreaterThan(1);
+    expect(outlived).toBe(true);
+  });
+  test("the next start stopped it and its whole group", () => {
+    expect(sleeperGone(join(S, "sleeper.pid"))).toBe(true);
+    expect(noProc(`--add-dir ${loop} `)).toBe(true);
+  });
+  test("and said so, before its own iteration began", () => {
+    const log = read(join(loop, "ralph.log"));
+    const said = log.indexOf(`start: PID ${agent}, which the last run of this loop left running`);
+    expect(said).toBeGreaterThan(-1);
+    expect(log.indexOf("=== iteration", said)).toBeGreaterThan(said);
+    expect(count(log, /was still running; stopped it/)).toBe(1);
+  });
+  test("the restarted iteration was judged, and leaves no mark behind", () => {
+    expect(read(join(S, "agent_calls")).trim()).toBe("2");
+    expect(statuses(loop)).toBe("keep");
+    expect(existsSync(join(loop, ".child"))).toBe(false);
+  });
+  test("a mark whose PID is now somebody else's kills nothing", () => {
+    expect(strangerRunning).toBe(true);
+    expect(read(join(odd, "ralph.log"))).not.toContain("stopped it and its process group");
+    expect(existsSync(join(odd, ".child"))).toBe(false);
   });
 });
 

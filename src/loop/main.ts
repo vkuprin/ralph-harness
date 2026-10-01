@@ -9,9 +9,9 @@ import { existsSync, openSync, readFileSync, rmSync, statSync, writeFileSync, cl
 import { basename, join, resolve } from "node:path";
 import { loadConfig } from "../lib/config.ts";
 import { Log } from "../lib/log.ts";
-import { IS_WIN, commandLine, current, freeze, killGroup, plainChildren } from "../lib/proc.ts";
+import { IS_WIN, commandLine, current, freeze, killGroup, plainChildren, reapOrphan } from "../lib/proc.ts";
 import { hint } from "../lib/shq.ts";
-import { LOOP_MARK, STOP_FILE } from "../paths.ts";
+import { CHILD_FILE, LOOP_MARK, STOP_FILE } from "../paths.ts";
 import { Loop, Stop, missingFile } from "./loop.ts";
 
 // The suite's stand-in for bun never finishing loading this file, which
@@ -117,6 +117,17 @@ process.on("exit", () => {
     if (readFileSync(LOCK, "utf8").trim() === String(process.pid)) rmSync(LOCK, { force: true });
   } catch {}
 });
+
+// What the last run of this loop was running when it died without its handler
+// is still running, an agent in this loop's checkout, say. With the lock held
+// it can only be that run's, so it goes as the handler would have sent it,
+// before anything here starts beside it.
+const orphan = await reapOrphan(join(dir, CHILD_FILE));
+if (orphan !== null) {
+  log.line(
+    `start: PID ${orphan}, which the last run of this loop left running when it died, was still running; stopped it and its process group`,
+  );
+}
 
 const loaded = loadConfig(join(dir, "config.json"), dir);
 if (!loaded.ok) {

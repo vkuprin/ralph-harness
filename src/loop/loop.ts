@@ -7,7 +7,7 @@ import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runB
 import { keepRows, readResults, record } from "../lib/results.ts";
 import { shq } from "../lib/shq.ts";
 import { chomp, headBytes, lastNonBlank, section, splitLines, stripEscapes, tailLines } from "../lib/text.ts";
-import { APPROVE_PLAN, STEER_HOOK } from "../paths.ts";
+import { APPROVE_PLAN, CHILD_FILE, STEER_HOOK } from "../paths.ts";
 import { type Window, inWindow, parseHours } from "./active-hours.ts";
 import { addCost, addTokens, claudeText } from "./cost.ts";
 import { resetAt, limitLine, type Reset } from "./limits.ts";
@@ -202,6 +202,7 @@ export class Loop {
       ...opts,
       env: opts.env ? { ...process.env, ...opts.env } : undefined,
       pollGapMax: this.cfg.POLL_GAP_MAX,
+      mark: this.p(CHILD_FILE),
     });
   }
 
