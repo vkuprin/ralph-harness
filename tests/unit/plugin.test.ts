@@ -22,6 +22,14 @@ describe("the Claude Code plugin", () => {
     expect(market.plugins.map((p) => [p.name, p.source])).toEqual([[plugin.name, "./plugin"]]);
   });
 
+  // Claude Code updates an installed plugin only when its version goes up, so
+  // it is the package's: the release job's version-script writes it.
+  test("its version is the package's", () => {
+    const pkg = JSON.parse(read("package.json")) as { version: string };
+    const plugin = JSON.parse(read("plugin/.claude-plugin/plugin.json")) as { version?: string };
+    expect(plugin.version).toBe(pkg.version);
+  });
+
   test("the plugin folder holds no package manifest, lockfile or package config", () => {
     for (const f of ["package.json", "bun.lock", "bun.lockb", "package-lock.json", "bunfig.toml", ".npmrc"]) {
       expect(existsSync(join(ROOT, "plugin", f))).toBe(false);

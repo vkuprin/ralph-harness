@@ -28,6 +28,11 @@ is one class on purpose, so an iteration reads in order.
   lockfile and the repository root has one. Its `skills/ralph-new/SKILL.md` is a
   copy of the one above, since a plugin loads no symlinks: change both in the
   same commit, and `tests/unit/plugin.test.ts` fails until they match.
+  Its `version` is the package's: the release job's `version-script`
+  (`bun run version-packages`) runs `scripts/sync-plugin-version.ts` after
+  `changeset version`, because Claude Code updates an installed plugin only when
+  its version goes up. `scripts/` is build tooling, not read at runtime, so it
+  stays out of `files`.
 - `tests/e2e/`: end-to-end tests that drive the loop and the CLI as processes;
   `tests/unit/`: the pure parts; `tests/contract/`: the real `claude` CLI, only
   with `RALPH_REAL_CLAUDE=1`; `tests/stub/{claude,gh}` stand in for the CLIs.
