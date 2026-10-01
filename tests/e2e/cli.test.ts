@@ -16,6 +16,8 @@ import {
   TEMPLATE_CONFIG,
   until,
   writeConfig,
+  waitProc,
+  sq,
   ROOT,
 } from "../helpers/index.ts";
 
@@ -588,6 +590,112 @@ describe("the commands ralph prints back are ones a shell will run", () => {
   test("a name holding a single quote is quoted so the shell hands it back whole", () => {
     expect(pasted(printed(quoteHint, "ralph start"))).toBe("2|start a'b ");
   });
+});
+
+describe("every command the harness prints reads back as the argv it names", () => {
+  // Every hint the CLI and the loop print, collected in one place, for a loop
+  // name holding what a shell reads as syntax and git still takes in a branch,
+  // in a repo whose path holds a space. Each is handed to a shell the way a
+  // paste would be, and what the shell passes on must be the argv the hint
+  // names. zsh as well where it is installed: it is macOS's login shell, and it
+  // reads a word starting with `=` as the path of a command (`=x` is
+  // `command -v x`, or "x not found"), which bash does not. Windows refuses
+  // `|` and `"` in a file name, and the loop name is a directory.
+  const shells = ["bash", ...(Bun.which("zsh") ? ["zsh"] : [])];
+  const names = [IS_WIN ? "n&b;c$e`f'g" : "n&b;c|d$e`f'g\"h", "=x"];
+  const BRANCH = "rel&x'y";
+  const found: { where: string; text: string; argv: string[] }[][] = [];
+
+  /** On the first line holding `before`, the text after it, up to the last `upTo` or the end of the line. */
+  const cut = (output: string, before: string, upTo?: string): string => {
+    // eslint-disable-next-line no-control-regex -- the escape that starts a colour
+    for (const line of output.replace(/\x1b\[[0-9;]*m/g, "").split("\n")) {
+      const at = line.indexOf(before);
+      if (at < 0) continue;
+      const rest = line.slice(at + before.length);
+      const end = upTo === undefined ? -1 : rest.lastIndexOf(upTo);
+      return end < 0 ? rest : rest.slice(0, end);
+    }
+    return "";
+  };
+  /** The words `shell` passes on when `text` is pasted after a command. */
+  const readBack = (shell: string, text: string): string[] =>
+    fx
+      .sh([shell, "-c", `printf '%s\\0' ${text}\nwait`])
+      .out.split("\0")
+      .slice(0, -1);
+
+  setup(async () => {
+    for (const [i, name] of names.entries()) {
+      const hints: { where: string; text: string; argv: string[] }[] = [];
+      found.push(hints);
+      const add = (where: string, text: string, argv: string[]) => hints.push({ where, text, argv });
+      const app = fx.p(`hints-${i}`, "my app");
+      const home = fx.p(`home-hints-${i}`);
+      mkdirSync(fx.p(`hints-${i}`));
+      fx.makeRepo(app, fx.p(`remote-hints-${i}.git`));
+
+      add("ralph new", cut(fx.cli(home, ["new", name, app]).out, "3. "), ["ralph", "start", name]);
+      const push = fx.cli(home, ["new", `${name}-push`, app, "--set", "PUSH=true", "--set", `BRANCH=${BRANCH}`]).err;
+      add("ralph new, refusing PUSH true", cut(push, " — add ", " to mean it"), ["--set", `PUSH_CONFIRM=${BRANCH}`]);
+      add("ralph new, offering a pull request", cut(push, " to mean it, or ", " to land"), ["--set", "PUSH=pr"]);
+
+      patchConfig(join(home, name), TAME);
+      const started = fx.cli(home, ["start", name], { STUB_DIR: fx.stub(`stub-hints-${i}`, ["commit"]) }).out;
+      const verbs = `ralph status${cut(started, "  ralph status")}`.split("   ");
+      add("ralph start: status", verbs[0] ?? "", ["ralph", "status", name]);
+      add("ralph start: tail", verbs[1] ?? "", ["ralph", "tail", name]);
+      add("ralph start: stop", verbs[2] ?? "", ["ralph", "stop", name]);
+      await waitStopped(home, name);
+
+      const review = fx.cli(home, ["review", name]).out;
+      add("ralph review: merge them", cut(review, "merge them: "), ["git", "-C", app, "merge", `ralph/${name}`]);
+      add("ralph review: look closer", cut(review, "look closer: ", " show <sha>"), [
+        "git",
+        "-C",
+        fx.p(`hints-${i}`, `my app-ralph-${name}`),
+      ]);
+      add("ralph review: every verdict", cut(review, "every verdict: "), ["ralph", "results", name]);
+
+      // The same name, as a loop the bash harness wrote.
+      const shHome = fx.p(`home-hints-sh-${i}`);
+      const legacy = join(shHome, name);
+      mkdirSync(legacy, { recursive: true });
+      writeFileSync(join(legacy, "config.sh"), `REPO=${sq(app)}\nMAX_ITER=1\n`);
+      await fx.runLoop(legacy, fx.stub(`stub-hints-sh-${i}`, ["commit"]));
+      add("the loop, on config.sh", cut(read(join(legacy, "ralph.log")), "convert them: "), ["ralph", "migrate", name]);
+      add("ralph start, on config.sh", cut(fx.cli(shHome, ["start", name]).err, "convert them first: "), ["ralph", "migrate", name]);
+      add("ralph status, on config.sh", cut(fx.cli(shHome, ["status"]).out, "convert them: ", ")"), ["ralph", "migrate", name]);
+      add("ralph review, on config.sh", cut(fx.cli(shHome, ["review", name]).err, "convert them first: "), ["ralph", "migrate", name]);
+      // A bash-era loop still running on it: its command line names ralph.sh
+      // and ends with the loop directory.
+      const busy = Bun.spawn(["bash", "-c", "while :; do sleep 0.2; done", join(fx.T, "ralph.sh"), legacy], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      await waitProc(busy.pid, legacy);
+      writeFileSync(join(legacy, "ralph.pid"), `${busy.pid}\n`);
+      add("ralph migrate, refusing a running loop", cut(fx.cli(shHome, ["migrate", name]).err, "stop it first: "), ["ralph", "stop", name]);
+      busy.kill("SIGKILL");
+      await busy.exited;
+      add("ralph migrate", cut(fx.cli(shHome, ["migrate", name]).out, "check it, then: "), ["ralph", "start", name]);
+    }
+  });
+
+  test("every place that prints a command was reached", () => {
+    for (const hints of found) {
+      expect(hints.length).toBe(15);
+      for (const h of hints) expect(`${h.where}: ${h.text}`).not.toBe(`${h.where}: `);
+    }
+  });
+  for (const [i, name] of names.entries()) {
+    for (const shell of shells) {
+      test(`for a loop named ${name}, ${shell} reads every hint back as the argv it names`, () => {
+        const want = found[i]!.map((h) => ({ where: h.where, argv: h.argv }));
+        expect(found[i]!.map((h) => ({ where: h.where, argv: readBack(shell, h.text) }))).toEqual(want);
+      });
+    }
+  }
 });
 
 describe("ralph start does not believe a loop that never finished starting", () => {
