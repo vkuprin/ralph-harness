@@ -1,0 +1,38 @@
+src/lib/results.ts
+  s_256b6d9df83d7b::t_3d857b2c0f1c16 3,23
+src/loop/loop.ts
+  s_256b6d9df83d7b::t_8e4ba2977b91ea 9,909,911
+src/loop/limits.ts
+  s_256b6d9df83d7b::t_8e4ba2977b91ea 2,123
+  s_256b6d9df83d7b::t_3d857b2c0f1c16 127
+tests/e2e/gates.test.ts
+  s_256b6d9df83d7b::t_6c1972bd7e8738 2-3,291-349
+  s_256b6d9df83d7b::t_bd0f8307579787 350
+src/lib/text.ts
+  s_256b6d9df83d7b::t_d9b16c51b86791 22,40
+  s_256b6d9df83d7b::t_66e5560405b8df 21,24-39,41-48,50-53
+  s_256b6d9df83d7b::t_0953fcfdb37267 23
+tests/unit/text.test.ts
+  s_256b6d9df83d7b::t_f9256b04d80931 1-48
+.changeset/plain-verdict-reasons.md
+  s_256b6d9df83d7b::t_9e430e7d47e5c1 1-4
+  s_256b6d9df83d7b::t_a69b9f36dafc0d 5
+tests/unit/limits.test.ts
+  s_256b6d9df83d7b::t_6e66f6e02d5c8a 81-83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b894b591eb03a8f7ebe01b1db837e2ddfed53432",
+  "prompts": {},
+  "sessions": {
+    "s_256b6d9df83d7b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "616aa895-9353-4bda-a26e-d65e4220cd30",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
