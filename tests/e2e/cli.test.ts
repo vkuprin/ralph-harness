@@ -215,6 +215,69 @@ describe("CLI: usage, and a status with nothing to show", () => {
   });
 });
 
+// A reader that has read enough closes the pipe: `head -1`, `grep -q`, a pager
+// the human quits. That once ended the CLI with a stack trace and exit status 1,
+// after it had done its work, so `ralph status | grep -q running` under
+// pipefail called a running loop not running. Here the reader has closed the
+// pipe before the CLI starts, so every write meets a broken pipe and none can
+// slip into the pipe's buffer first. Not on Windows, where nobody has watched
+// what a broken pipe from Git Bash looks like to bun.
+describe.skipIf(IS_WIN)("a reader that stops reading ends the CLI quietly, with its own exit status", () => {
+  const home = fx.p("home-pipe");
+  const app = fx.p("app-pipe");
+  const ran = new Map<string, { code: number; err: string }>();
+  const cases = [
+    ["status"],
+    ["status", "piped"],
+    ["results", "piped"],
+    ["review", "piped"],
+    ["log", "piped"],
+    ["help"],
+    ["new", "fresh", app],
+    ["results", "nosuch"],
+  ];
+
+  /** The CLI writing into a pipe its reader has already closed: its exit status and stderr. */
+  const closedReader = (args: string[]) => {
+    const flag = fx.p(`pipe-closed-${ran.size}`);
+    const err = fx.p(`pipe-err-${ran.size}`);
+    const script = `{ while [ ! -e "$1" ]; do sleep 0.05; done; shift 2; "$@"; } 2>"$2" | { exec 0<&-; : >"$1"; }
+echo "\${PIPESTATUS[0]}"`;
+    const r = fx.sh(["bash", "-c", script, "_", flag, err, cliPath(), ...args], { env: { RALPH_HOME: home } });
+    return { code: Number(r.out.trim()), err: read(err) };
+  };
+
+  setup(() => {
+    fx.makeRepo(app, fx.p("remote-pipe.git"));
+    const loop = join(home, "piped");
+    mkdirSync(loop, { recursive: true });
+    writeConfig(loop, { REPO: app });
+    writeFileSync(join(loop, "ralph.log"), "[2026-01-01 10:00] === iteration 1 ===\n".repeat(100));
+    const head = fx.git(app, "rev-parse", "HEAD");
+    writeFileSync(
+      join(loop, "results.tsv"),
+      `time\titer\tbefore\tafter\tstatus\tsecs\treason\n${`2026-01-01 10:00:00\t1\t${head}\t${head}\tkeep\t3\t-\n`.repeat(100)}`,
+    );
+    for (const args of cases) ran.set(args.join(" "), closedReader(args));
+  });
+
+  for (const args of cases.slice(0, -1)) {
+    const label = args.slice(0, 2).join(" ");
+    test(`ralph ${label} exits 0 and prints no error`, () => {
+      expect(ran.get(args.join(" "))).toEqual({ code: 0, err: "" });
+    });
+  }
+  test("ralph new still made the loop nobody read about", () => {
+    expect(existsSync(join(home, "fresh/config.json"))).toBe(true);
+  });
+  // Guard: a fix that sets every exit status to 0 would pass all of the above.
+  test("a command that fails still says so, on stderr, with status 1", () => {
+    const r = ran.get("results nosuch")!;
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("no results yet for nosuch");
+  });
+});
+
 // Windows makes a symlink only with Developer Mode or as an administrator, and
 // installs the CLI as npm's ralph.cmd, which runs bin/ralph with bun, instead.
 describe.skipIf(IS_WIN)("CLI through a symlink on PATH", () => {

@@ -70,6 +70,19 @@ nothing you need is only in the ralph.out that \`start\` leaves beside it.
 
 const HOME = ralphHome();
 const out = (s: string) => process.stdout.write(s);
+// A reader that has read enough closes the pipe: `head -1`, `grep -q`, a pager
+// the human quits. Bun reports that as an error event on stdout, and with
+// nobody listening it was an uncaught error: a stack trace and exit status 1,
+// so `ralph status | grep -q running` under pipefail called a running loop not
+// running. The event comes on a later tick than the write, so a command that
+// runs to its end without waiting has finished by then, `die` included, and the
+// 0 here is the status it would have had. A command that waits is ended at its
+// next wait, so one that prints before its work is done would lose the rest:
+// print when the work is done, as `start` and `stop` do.
+process.stdout.on("error", (e: NodeJS.ErrnoException) => {
+  if (e.code === "EPIPE") process.exit(0);
+  throw e;
+});
 const red = (s: string) => `\x1b[31m${s}\x1b[0m\n`;
 const green = (s: string) => out(`\x1b[32m${s}\x1b[0m\n`);
 const dim = (s: string) => out(`\x1b[2m${s}\x1b[0m\n`);
