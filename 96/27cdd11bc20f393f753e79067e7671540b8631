@@ -1,0 +1,38 @@
+.changeset/orphan-agent-stopped.md
+  s_187aafc8bce3c0::t_deacff4f5a5395 1-5
+src/loop/main.ts
+  s_187aafc8bce3c0::t_386bcf13b55cde 12,14,121-126,130
+  s_187aafc8bce3c0::t_0a35c465d231c9 127-129
+  s_187aafc8bce3c0::t_dcbfff68936fc2 131
+src/loop/loop.ts
+  s_187aafc8bce3c0::t_386bcf13b55cde 10,205
+tests/e2e/edges.test.ts
+  s_187aafc8bce3c0::t_6679d752f5bc93 6,14,424-460,470-485,487-495
+  s_187aafc8bce3c0::t_4121635a653003 1,461-469,486
+  s_187aafc8bce3c0::t_c52ce8a13edf3a 496-497
+tests/unit/proc.test.ts
+  s_187aafc8bce3c0::t_0cb9facf9480ad 3,6,10,81-95,97-104,191-237
+  s_187aafc8bce3c0::t_0a86cf8fddcc03 2
+  s_187aafc8bce3c0::t_f37ea4f62073ed 96
+src/lib/proc.ts
+  s_187aafc8bce3c0::t_6baf177f8645a2 457
+  s_187aafc8bce3c0::t_386bcf13b55cde 2,312-318,335-336,385-392,421,425-456
+src/paths.ts
+  s_187aafc8bce3c0::t_386bcf13b55cde 35-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9627cdd11bc20f393f753e79067e7671540b8631",
+  "prompts": {},
+  "sessions": {
+    "s_187aafc8bce3c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d18e2910-6364-435b-8773-f8949cf8d89d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
