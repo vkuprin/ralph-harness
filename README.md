@@ -193,7 +193,7 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | `REPO` | your repo | the checkout to work on, absolute path. Required |
 | `MODEL` | `"opus"` | model for the agent and the reviewer |
 | `PLAN_FIRST` | `false` | start each iteration in Claude's plan mode; the harness approves the plan and the same run carries it out |
-| `MAX_ITER` | `500` | hard ceiling on iterations |
+| `MAX_ITER` | `500` | hard ceiling on iterations; the loop ends right after the last one, with no pause and no wait for `ACTIVE_HOURS` |
 | `QUIET_STOP` | `0` | stop after this many iterations in a row ship nothing; `0` never |
 | `QUIET_SLEEP` | `1200` | seconds to wait after an iteration that shipped nothing |
 | `STEP_SLEEP` | `30` | seconds between iterations that shipped |

@@ -502,13 +502,14 @@ export class Loop {
     writeFileSync(this.p(".decision-seen"), seen.map((l) => `${l}\n`).join(""));
 
     for (;;) {
-      await this.waitForActiveHours();
-      this.iter++;
-      if (this.iter > c.MAX_ITER) {
-        this.iter--; // this one never ran; do not count it
+      // Before the window: a loop whose last iteration ended as the window
+      // closed has nothing left to wait for.
+      if (this.iter >= c.MAX_ITER) {
         this.stop(`hit MAX_ITER=${c.MAX_ITER}`);
         break;
       }
+      await this.waitForActiveHours();
+      this.iter++;
       // Half a prompt is not a prompt, and an agent handed one under
       // --dangerously-skip-permissions does something with it.
       const gone = this.missing("PROMPT.md", "PROGRESS.md");
@@ -742,7 +743,7 @@ export class Loop {
         this.stop(`${c.QUIET_STOP} consecutive iterations shipped nothing`);
         return false;
       }
-      await nap(c.QUIET_SLEEP);
+      await this.pause(c.QUIET_SLEEP);
     } else if (status === "ratelimit") {
       this.limits++;
       const reset: Reset | null = c.LIMIT_RESET ? resetAt(reason, nowSec()) : null;
@@ -768,17 +769,17 @@ export class Loop {
         this.stop(`${c.ERROR_STOP} consecutive iterations failed`);
         return false;
       }
-      await nap(this.troubleSleep());
+      await this.pause(this.troubleSleep());
     } else if (status.startsWith("revert:")) {
       this.trouble++;
       this.errors = 0;
       this.log.line(`iteration ${this.iter} reverted to ${before}: ${status} — ${reason}`);
       await this.streakNotice(status, reason);
-      await nap(this.troubleSleep());
+      await this.pause(this.troubleSleep());
     }
 
     this.capProgress();
-    await nap(c.STEP_SLEEP);
+    await this.pause(c.STEP_SLEEP);
     return true;
   }
 
@@ -835,6 +836,17 @@ export class Loop {
       if (left > this.cfg.ACTIVE_POLL) left = this.cfg.ACTIVE_POLL;
       await nap(left);
     }
+  }
+
+  /**
+   * The pause between this iteration and the next. After the last there is no
+   * next, so nothing to space out: the loop ends at once, and PR_MERGE does not
+   * wait behind a backoff. A limit is not this: it gives back its iteration
+   * (`iter--`), so its wait comes before one that will run.
+   */
+  private async pause(s: number): Promise<void> {
+    if (this.iter >= this.cfg.MAX_ITER) return;
+    await nap(s);
   }
 
   /** Consecutive failures double the pause, up to an hour. */

@@ -102,6 +102,72 @@ describe("a signal during a nap ends the loop at once", () => {
   });
 });
 
+describe("after the last iteration the loop ends, it does not wait first", () => {
+  // Every pause exists to space one iteration from the next, and after
+  // MAX_ITER there is no next. The loop used to sleep its backoff, its quiet
+  // pause and STEP_SLEEP, and then wait for ACTIVE_HOURS to open again, before
+  // it looked at MAX_ITER: up to a day "running" with nothing pending, and
+  // PR_MERGE waited behind it. A limit is the exception: the same iteration
+  // runs again, so its wait still belongs.
+  const hour = fx.p("hour-last");
+  const cases: Record<string, { cfg: Record<string, string | number | boolean>; modes: string[]; status: string }> = {
+    revert: {
+      cfg: { WORKTREE: true, VERIFY_CMD: "false", ERROR_SLEEP: 600, STEP_SLEEP: 600 },
+      modes: ["commit"],
+      status: "revert:verify",
+    },
+    keep: { cfg: { STEP_SLEEP: 600 }, modes: ["commit"], status: "keep" },
+    quiet: { cfg: { QUIET_SLEEP: 600, STEP_SLEEP: 600 }, modes: ["nothing"], status: "quiet" },
+    error: { cfg: { ERROR_SLEEP: 600, STEP_SLEEP: 600 }, modes: ["fail"], status: "error" },
+    // The window closes during the last iteration's gate.
+    hours: {
+      cfg: { WORKTREE: true, ACTIVE_HOURS: "22-08", ACTIVE_POLL: 1, VERIFY_CMD: `printf '09\\n' > ${sq(hour)}` },
+      modes: ["commit"],
+      status: "keep",
+    },
+    limit: { cfg: { RATE_LIMIT_SLEEP: 2 }, modes: ["limit", "commit"], status: "ratelimit keep" },
+  };
+  const ended: Record<string, number | "timeout"> = {};
+  const took: Record<string, number> = {};
+
+  setup(async () => {
+    writeFileSync(hour, "23\n");
+    await Promise.all(
+      Object.entries(cases).map(async ([name, c]) => {
+        const app = fx.p(`app-last-${name}`);
+        fx.makeRepo(app, fx.p(`remote-last-${name}.git`));
+        fx.makeLoop(fx.p(`loops/last-${name}`), app, { MAX_ITER: 1, ...c.cfg });
+        const t0 = Date.now();
+        const run = fx.startLoop(fx.p(`loops/last-${name}`), fx.stub(`stub-last-${name}`, c.modes), {
+          env: { RALPH_TEST_HOUR: hour },
+        });
+        ended[name] = await Promise.race([run.done, Bun.sleep(60_000).then(() => "timeout" as const)]);
+        took[name] = Date.now() - t0;
+        if (ended[name] === "timeout") {
+          run.proc.kill("SIGKILL");
+          await run.done;
+        }
+      }),
+    );
+  });
+
+  for (const [name, c] of Object.entries(cases)) {
+    test(`${name}: the loop ends at MAX_ITER without the pause`, () => {
+      const loop = fx.p(`loops/last-${name}`);
+      expect(statuses(loop)).toBe(c.status);
+      expect(ended[name]).toBe(0);
+      expect(read(join(loop, "ralph.log"))).toContain("stopping: hit MAX_ITER=1");
+    });
+  }
+  test("a window that closed during the last iteration is not waited for", () => {
+    expect(read(fx.p("loops/last-hours", "ralph.log"))).not.toContain("outside ACTIVE_HOURS");
+  });
+  test("a limit on the last iteration is still waited out, and the iteration run again", () => {
+    expect(took.limit).toBeGreaterThanOrEqual(2000);
+    expect(read(fx.p("stub-last-limit", "agent_calls")).trim()).toBe("2");
+  });
+});
+
 describe("a BRANCH other than main", () => {
   const app = fx.p("app-br");
   const remote = fx.p("remote-br.git");
