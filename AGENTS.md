@@ -23,6 +23,11 @@ is one class on purpose, so an iteration reads in order.
 - `skills/ralph-new/`: the Claude Code skill that asks how a loop should run
   (AskUserQuestion) and scaffolds it with `ralph new --set`. It calls the CLI, so
   a flag it uses changes with the CLI in the same commit.
+- `plugin/`: the Claude Code plugin that `.claude-plugin/marketplace.json` lists.
+  It holds only what it loads, because Claude Code installs a plugin folder's
+  lockfile and the repository root has one. Its `skills/ralph-new/SKILL.md` is a
+  copy of the one above, since a plugin loads no symlinks: change both in the
+  same commit, and `tests/unit/plugin.test.ts` fails until they match.
 - `tests/e2e/`: end-to-end tests that drive the loop and the CLI as processes;
   `tests/unit/`: the pure parts; `tests/contract/`: the real `claude` CLI, only
   with `RALPH_REAL_CLAUDE=1`; `tests/stub/{claude,gh}` stand in for the CLIs.

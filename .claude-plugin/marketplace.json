@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "ralph-harness",
-      "source": "./",
+      "source": "./plugin",
       "description": "The ralph-new skill: asks how a ralph loop should run, then scaffolds it with the ralph CLI."
     }
   ]
