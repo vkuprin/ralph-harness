@@ -34,18 +34,37 @@ describe("runBounded", () => {
   });
 
   test("a timeout kills the whole process group, grandchildren included", async () => {
+    // The grandchild writes its own PID once it runs. `$!` from Git's sh is an
+    // MSYS PID, and a kill that lands while sh is still forking races the
+    // tree's creation: `taskkill /T` kills only the processes it listed, and a
+    // child born a moment later is orphaned. So the timeout fires (through the
+    // clock) only once the whole tree is there.
+    const clock = join(T, "clock-tree");
+    writeFileSync(clock, "0");
+    process.env.RALPH_TEST_CLOCK = clock;
     const pidFile = join(T, "grandchild.pid");
-    const r = await runBounded(1, ["sh", "-c", `sleep 30 & echo $! > '${pidFile}'; wait`], {
+    const script = join(T, "grandchild.js");
+    writeFileSync(script, `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 30000);`);
+    const slash = (p: string) => p.split("\\").join("/");
+    const bounded = runBounded(30, ["sh", "-c", `'${slash(process.execPath)}' '${slash(script)}' & wait`], {
       out: join(T, "c.out"),
       pollGapMax: 60,
     });
+    let grandchild = 0;
+    for (let i = 0; i < 100 && !grandchild; i++) {
+      await Bun.sleep(100);
+      try {
+        grandchild = Number(readFileSync(pidFile, "utf8").trim());
+      } catch {}
+    }
+    expect(grandchild).toBeGreaterThan(0);
+    writeFileSync(clock, "1000");
+    const r = await bounded;
     expect(r.timedOut).toBe(true);
-    const grandchild = Number(readFileSync(pidFile, "utf8").trim());
-    // On Windows `taskkill /T /F` can return before the tree is torn down, so
-    // one look 200ms later sometimes still found the grandchild. Look for up to 5s.
+    // The tree can take a moment to go after the kill returns.
     for (let i = 0; i < 50 && alive(grandchild); i++) await Bun.sleep(100);
     expect(alive(grandchild)).toBe(false);
-  });
+  }, 30_000);
 
   test("time asleep is not time worked: a clock jump costs one gap", async () => {
     const clock = join(T, "clock");
