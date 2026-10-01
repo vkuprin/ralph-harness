@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { hour, nowSec, stampMinutes } from "../lib/clock.ts";
 import { type Config, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
 import type { Log } from "../lib/log.ts";
-import { DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
+import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
 import { shq } from "../lib/shq.ts";
 import { chomp, headBytes, lastNonBlank, section, splitLines, tailLines } from "../lib/text.ts";
@@ -427,7 +427,10 @@ export class Loop {
     // in the branch is still pushed, and the human opens the pull request.
     if (this.harnessPushes() && c.PUSH === "pr") {
       if (await this.ghRun(30, ["auth", "status"])) this.ghOk = true;
-      else this.log.line(`PUSH=pr: gh is missing or not logged in — ralph/${this.name} is still pushed to origin; open its pull request by hand`);
+      else
+        this.log.line(
+          `PUSH=pr: gh is missing or not logged in — ralph/${this.name} is still pushed to origin; open its pull request by hand`,
+        );
     }
     if (c.LAND_OK_CMD && !(this.harnessPushes() && (c.PUSH === true || c.PR_MERGE))) {
       const pr = this.harnessPushes() && c.PUSH === "pr";
@@ -623,7 +626,9 @@ export class Loop {
       }
     } else if (!status && c.WORKTREE) {
       const touched = c.FROZEN.length
-        ? splitLines(await this.gitOut(["diff", "--name-only", before, "HEAD", "--", ...c.FROZEN])).map((f) => `${f} `).join("")
+        ? splitLines(await this.gitOut(["diff", "--name-only", before, "HEAD", "--", ...c.FROZEN]))
+            .map((f) => `${f} `)
+            .join("")
         : "";
       const v = touched ? null : await this.verify();
       if (touched) {
@@ -903,8 +908,14 @@ export class Loop {
 
   /** The last 40 lines of a command's output, at most its last 4000 bytes: what a prompt can carry. */
   private lastLines(file: string): string {
-    const tail = tailLines(this.read(file), 40).map((l) => `${l}\n`).join("");
-    return chomp(Buffer.from(tail).subarray(Math.max(0, Buffer.byteLength(tail) - 4000)).toString("utf8"));
+    const tail = tailLines(this.read(file), 40)
+      .map((l) => `${l}\n`)
+      .join("");
+    return chomp(
+      Buffer.from(tail)
+        .subarray(Math.max(0, Buffer.byteLength(tail) - 4000))
+        .toString("utf8"),
+    );
   }
 
   /**
@@ -1218,12 +1229,12 @@ VERDICT: REJECT: <one sentence saying why>
     const args = reviewerArgs(c, this.dir);
     const reviewOut = this.p("review.out");
     const reviewJson = this.p(".review.json");
-    let verdict = "";
+    let verdict: string;
     let tries = 0;
     let waited = 0;
     let triedOut = 0;
     let pastCeiling = "";
-    let last = { rc: 0, timedOut: false };
+    let last: Bounded;
     for (;;) {
       writeFileSync(reviewOut, "");
       writeFileSync(reviewJson, "");
@@ -1234,7 +1245,10 @@ VERDICT: REJECT: <one sentence saying why>
       tokens = addTokens(tokens, r.tokens);
       const text = this.read(reviewOut);
       this.log.raw(text);
-      verdict = splitLines(text).filter((l) => l.startsWith("VERDICT:")).at(-1) ?? "";
+      verdict =
+        splitLines(text)
+          .filter((l) => l.startsWith("VERDICT:"))
+          .at(-1) ?? "";
       // A limit is not an answer: wait it out and ask again. But bounded,
       // unlike the agent's limit: the reviewer waits holding a commit that
       // passed verify and that no gate has judged.
@@ -1384,8 +1398,20 @@ VERDICT: REJECT: <one sentence saying why>
   private async prMergedHead(): Promise<string> {
     if (!this.ghOk) return "";
     const ok = await this.ghRun(60, [
-      "pr", "list", "--head", `ralph/${this.name}`, "--base", this.cfg.BRANCH, "--state", "merged",
-      "--limit", "1", "--json", "headRefOid", "--jq", ".[0].headRefOid // empty",
+      "pr",
+      "list",
+      "--head",
+      `ralph/${this.name}`,
+      "--base",
+      this.cfg.BRANCH,
+      "--state",
+      "merged",
+      "--limit",
+      "1",
+      "--json",
+      "headRefOid",
+      "--jq",
+      ".[0].headRefOid // empty",
     ]);
     if (!ok) return "";
     const sha = this.read(this.p(".gh.out")).replace(/\s/g, "");
@@ -1496,8 +1522,20 @@ VERDICT: REJECT: <one sentence saying why>
     if (!this.ghOk) return;
     const c = this.cfg;
     const listed = await this.ghRun(60, [
-      "pr", "list", "--head", `ralph/${this.name}`, "--base", c.BRANCH, "--state", "open",
-      "--limit", "1", "--json", "url", "--jq", ".[0].url // empty",
+      "pr",
+      "list",
+      "--head",
+      `ralph/${this.name}`,
+      "--base",
+      c.BRANCH,
+      "--state",
+      "open",
+      "--limit",
+      "1",
+      "--json",
+      "url",
+      "--jq",
+      ".[0].url // empty",
     ]);
     if (!listed) {
       this.log.line(`sync: gh pr list failed (exit ${this.lastGhRc}); asking again next sync`);
@@ -1523,7 +1561,17 @@ VERDICT: REJECT: <one sentence saying why>
     );
     const draft = c.PR_DRAFT && !this.ended ? ["--draft"] : [];
     const created = await this.ghRun(120, [
-      "pr", "create", "--base", c.BRANCH, "--head", `ralph/${this.name}`, "--title", `ralph: ${this.name}`, "--body-file", this.p(".pr-body"), ...draft,
+      "pr",
+      "create",
+      "--base",
+      c.BRANCH,
+      "--head",
+      `ralph/${this.name}`,
+      "--title",
+      `ralph: ${this.name}`,
+      "--body-file",
+      this.p(".pr-body"),
+      ...draft,
     ]);
     const out = this.read(this.p(".gh.out"));
     if (created) {
@@ -1636,7 +1684,9 @@ VERDICT: REJECT: <one sentence saying why>
     if (!c.PR_DRAFT || c.PUSH !== "pr" || !this.harnessPushes() || !this.ghOk) return;
     const branch = `ralph/${this.name}`;
     if (!(await this.ghRun(60, ["pr", "ready", branch]))) {
-      this.log.line(`PR_DRAFT: gh pr ready ${branch} failed (exit ${this.lastGhRc}): ${lastNonBlank(splitLines(this.read(this.p(".gh.out"))))}`);
+      this.log.line(
+        `PR_DRAFT: gh pr ready ${branch} failed (exit ${this.lastGhRc}): ${lastNonBlank(splitLines(this.read(this.p(".gh.out"))))}`,
+      );
       return;
     }
     this.log.line(`PR_DRAFT: the loop ended; marked the pull request from ${branch} ready`);

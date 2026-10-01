@@ -264,7 +264,10 @@ export function parseConfig(text: string, file: string, dir: string): Loaded {
   try {
     raw = Bun.JSONC.parse(text);
   } catch (e) {
-    return { ok: false, error: `ralph: ${file} does not parse: ${(e as Error).message} — refusing to start with a config the harness could not read` };
+    return {
+      ok: false,
+      error: `ralph: ${file} does not parse: ${(e as Error).message} — refusing to start with a config the harness could not read`,
+    };
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return { ok: false, error: `ralph: ${file} does not parse: it must hold one object of settings` };
@@ -340,7 +343,8 @@ export function limitPattern(c: Config): RegExp {
 export function pushProblem(c: Config): string | null {
   if (!c.WORKTREE || c.PUSH !== true || c.PUSH_CONFIRM === c.BRANCH) return null;
   const straight = `PUSH true pushes every kept commit straight to origin/${c.BRANCH}`;
-  if (c.PUSH_CONFIRM) return `${straight}, but PUSH_CONFIRM names ${JSON.stringify(c.PUSH_CONFIRM)}, not BRANCH ${JSON.stringify(c.BRANCH)}`;
+  if (c.PUSH_CONFIRM)
+    return `${straight}, but PUSH_CONFIRM names ${JSON.stringify(c.PUSH_CONFIRM)}, not BRANCH ${JSON.stringify(c.BRANCH)}`;
   return `${straight}, and whatever deploys ${c.BRANCH} deploys it; PUSH_CONFIRM has to name that branch`;
 }
 

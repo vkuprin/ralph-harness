@@ -166,7 +166,7 @@ function loopConf(dir: string): Conf {
     const j = Bun.JSONC.parse(read(join(dir, "config.json")));
     if (j && typeof j === "object" && !Array.isArray(j)) raw = j as Record<string, unknown>;
   } catch {}
-  const str = (k: string, d: string) => (typeof raw[k] === "string" ? (raw[k] as string) : d);
+  const str = (k: string, d: string) => (typeof raw[k] === "string" ? raw[k] : d);
   const bool = (v: unknown) => v === true || v === 1;
   const repo = str("REPO", "");
   const worktree = bool(raw.WORKTREE);
@@ -189,7 +189,7 @@ function stateLine(dir: string): string {
  * first — numerically, because ralph.log.10 sorts under ralph.log.2 by name.
  */
 function logFiles(dir: string): string[] {
-  let names: string[] = [];
+  let names: string[];
   try {
     names = readdirSync(dir);
   } catch {
@@ -423,12 +423,15 @@ function cmdNew(args: string[]): void {
   if (!back.ok) die(`the config ralph new wrote does not read back: ${back.error}`);
   for (const [key, value] of sets) {
     const got = (back.config as unknown as Record<string, unknown>)[key];
-    if (JSON.stringify(got) !== JSON.stringify(value)) die(`--set ${key} did not reach config.json: it reads back as ${JSON.stringify(got)}`);
+    if (JSON.stringify(got) !== JSON.stringify(value))
+      die(`--set ${key} did not reach config.json: it reads back as ${JSON.stringify(got)}`);
   }
   // The loop would refuse to start on it, so it is not a scaffold either.
   const push = pushProblem(back.config);
   if (push) {
-    die(`${push} — add ${hint("--set", `PUSH_CONFIRM=${back.config.BRANCH}`)} to mean it, or ${hint("--set", "PUSH=pr")} to land through a pull request; nothing was created`);
+    die(
+      `${push} — add ${hint("--set", `PUSH_CONFIRM=${back.config.BRANCH}`)} to mean it, or ${hint("--set", "PUSH=pr")} to land through a pull request; nothing was created`,
+    );
   }
   // A scaffold the harness could not write is not a scaffold, and the exit
   // status is the only part a script can read.
@@ -555,7 +558,12 @@ function cmdLog(name?: string, n = "40"): void {
   if (!files.length) die(`no log yet for ${name}`);
   const all = splitLines(files.map(read).join(""));
   const k = Number.parseInt(n, 10) || 40;
-  out(all.slice(Math.max(0, all.length - k)).map((l) => `${l}\n`).join(""));
+  out(
+    all
+      .slice(Math.max(0, all.length - k))
+      .map((l) => `${l}\n`)
+      .join(""),
+  );
 }
 
 async function cmdTail(name?: string): Promise<void> {
@@ -584,7 +592,12 @@ async function follow(file: string): Promise<never> {
   };
   let ino = id();
   const text = read(file);
-  out(splitLines(text).slice(-10).map((l) => `${l}\n`).join(""));
+  out(
+    splitLines(text)
+      .slice(-10)
+      .map((l) => `${l}\n`)
+      .join(""),
+  );
   let pos = Buffer.byteLength(text);
   for (;;) {
     await Bun.sleep(500);
@@ -618,7 +631,8 @@ function cmdReview(name?: string, nArg = "10"): void {
   const dir = loopDir(name);
   const n = Number.parseInt(nArg, 10) || 10;
   if (!existsSync(join(dir, "config.json"))) {
-    if (existsSync(join(dir, "config.sh"))) die(`${name} keeps its settings in config.sh — convert them first: ${hint("ralph", "migrate", name!)}`);
+    if (existsSync(join(dir, "config.sh")))
+      die(`${name} keeps its settings in config.sh — convert them first: ${hint("ralph", "migrate", name!)}`);
     die(`no loop called ${name} in ${HOME}`);
   }
   const c = loopConf(dir);
@@ -627,7 +641,8 @@ function cmdReview(name?: string, nArg = "10"): void {
   if (c.worktree) {
     where = `works on ralph/${name} in ${c.work}`;
     if (c.push === true) where += `, pushes to origin/${c.branch}`;
-    else if (c.push === "pr") where += `, pushes it for a pull request into ${c.branch}${c.merge ? ", and merges that when the loop ends if its checks pass" : ""}`;
+    else if (c.push === "pr")
+      where += `, pushes it for a pull request into ${c.branch}${c.merge ? ", and merges that when the loop ends if its checks pass" : ""}`;
     else where += ", you merge";
   }
   out(`${name} — ${where}\n`);
@@ -720,7 +735,10 @@ function cmdSteer(name?: string, ...words: string[]): void {
   // The marker is what makes this repeatable: entries always land directly
   // under it, newest first, without re-parsing the prose around them.
   if (!read(promptFile).includes(MARK)) {
-    appendFileSync(promptFile, `\n## Steering\n\nAdded while the loop was running, newest first. These outrank the backlog below.\n\n${MARK}\n`);
+    appendFileSync(
+      promptFile,
+      `\n## Steering\n\nAdded while the loop was running, newest first. These outrank the backlog below.\n\n${MARK}\n`,
+    );
   }
   const lines: string[] = [];
   let seen = false;
@@ -838,7 +856,7 @@ switch (cmd) {
   case "-v":
   case "--version":
   case "version":
-    out(`ralph ${JSON.parse(readFileSync(join(HARNESS, "package.json"), "utf8")).version}\n`);
+    out(`ralph ${(JSON.parse(readFileSync(join(HARNESS, "package.json"), "utf8")) as { version: string }).version}\n`);
     break;
   default:
     die(`unknown command: ${cmd} (try: ralph help)`);

@@ -37,7 +37,7 @@ export function record(file: string, iter: number, r: Row): void {
 
 /** The header line and the data rows, each split into cells. */
 export function readResults(file: string): { header: string; rows: string[][] } {
-  let text = "";
+  let text: string;
   try {
     text = readFileSync(file, "utf8");
   } catch {

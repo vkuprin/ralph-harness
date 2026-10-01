@@ -99,7 +99,9 @@ describe("PR_MERGE: the harness merges the pull request when the loop ends", () 
     for (const c of [pass, slow, failing, bare, untested, refused, forever, behind]) expect(c.rc).toBe(0);
   });
   test("the agent is told the harness merges when the loop ends", () => {
-    expect(read(join(pass.stub, "prompt.agent.1"))).toContain("merges its pull request into main when the loop ends, if every check on it passes");
+    expect(read(join(pass.stub, "prompt.agent.1"))).toContain(
+      "merges its pull request into main when the loop ends, if every check on it passes",
+    );
   });
 
   test("checks that pass: the head the harness pushed is merged with a merge commit", () => {
@@ -198,7 +200,7 @@ describe("PR_MERGE refuses a config it cannot honour, and a signal never merges"
     gone = await until(() => !existsSync(join(loop, "ralph.pid")), 30);
   });
 
-  test("PR_MERGE without PUSH \"pr\" refuses the start", () => {
+  test('PR_MERGE without PUSH "pr" refuses the start', () => {
     expect(contradiction.rc).toBe(2);
     expect(read(join(contradiction.loop, "ralph.log"))).toContain('PR_MERGE merges the pull request that PUSH "pr" opens');
     expect(said(contradiction.notes, "refused").length).toBe(1);

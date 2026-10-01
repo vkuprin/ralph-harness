@@ -60,7 +60,8 @@ describe("PLAN_FIRST: plan mode, approved by the harness, carried out in the sam
   test("its approval prompts go to the harness's MCP tool", () => {
     expect(after(join(S, "argv.agent.1"), "--permission-prompt-tool")).toEqual(["mcp__ralph__approve"]);
     expect(after(join(S, "argv.agent.1"), "--mcp-config")).toEqual([join(loop, ".plan-mcp.json")]);
-    const cfg = JSON.parse(read(join(loop, ".plan-mcp.json"))).mcpServers.ralph;
+    type McpConfig = { mcpServers: { ralph: { args: string[]; env: Record<string, string> } } };
+    const cfg = (JSON.parse(read(join(loop, ".plan-mcp.json"))) as McpConfig).mcpServers.ralph;
     expect(cfg.args[0]).toBe(join(ROOT, "hooks/approve-plan.ts"));
     expect(cfg.env.RALPH_PLAN_FILE).toBe(join(loop, ".plan.md"));
   });
@@ -73,15 +74,21 @@ describe("PLAN_FIRST: plan mode, approved by the harness, carried out in the sam
     expect(p.endsWith("\n---\n\nClose with this.\n")).toBe(true);
   });
 
+  /** The approve server's JSON-RPC replies, one per line. */
+  type Reply = { id: number; result: { tools?: { name: string }[]; content?: { text: string }[] } };
   const answers = () =>
     read(join(S, "approve.1"))
       .trim()
       .split("\n")
-      .map((l) => JSON.parse(l));
-  const decision = (id: number) => JSON.parse(answers().find((m) => m.id === id).result.content[0].text);
+      .map((l) => JSON.parse(l) as Reply);
+  const decision = (id: number) => JSON.parse(answers().find((m) => m.id === id)!.result.content![0]!.text) as Record<string, unknown>;
 
   test("the server lists one tool, approve", () => {
-    expect(answers().find((m) => m.id === 2).result.tools.map((t: { name: string }) => t.name)).toEqual(["approve"]);
+    expect(
+      answers()
+        .find((m) => m.id === 2)
+        ?.result.tools?.map((t) => t.name),
+    ).toEqual(["approve"]);
   });
   test("ExitPlanMode is approved, with its input, and the session switches to bypass", () => {
     expect(decision(3)).toEqual({

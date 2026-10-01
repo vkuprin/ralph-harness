@@ -1,0 +1,4 @@
+{
+  "printWidth": 140,
+  "overrides": [{ "files": ["bin/ralph", "tests/stub/claude", "tests/stub/gh"], "options": { "parser": "typescript" } }]
+}

@@ -1,6 +1,5 @@
 import { afterAll, beforeAll } from "bun:test";
 import {
-  appendFileSync,
   chmodSync,
   closeSync,
   copyFileSync,
@@ -36,12 +35,18 @@ export function loopArgv(dir?: string): string[] {
 export function cliPath(): string {
   return join(ROOT, "bin/ralph");
 }
+/** A PreToolUse hook's answer, in either shape claude reads. */
+export interface HookAnswer {
+  decision?: string;
+  reason?: string;
+  hookSpecificOutput?: { hookEventName?: string; permissionDecision?: string; permissionDecisionReason?: string };
+}
 export function hookArgv(): string[] {
   return [process.execPath, join(ROOT, "hooks/steer.ts")];
 }
 /** beforeAll with room for a whole loop run: hooks do not get the default test timeout. */
 export function setup(fn: () => unknown): void {
-  beforeAll(fn as () => Promise<void>, 600_000);
+  beforeAll(fn, 600_000);
 }
 
 export const TEMPLATE_CONFIG = join(ROOT, "template/config.json");
@@ -95,8 +100,21 @@ function noClaude(): string {
 }
 
 const WIN_ENV = [
-  "SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT", "TEMP", "TMP", "ProgramFiles", "ProgramFiles(x86)",
-  "ProgramData", "APPDATA", "LOCALAPPDATA", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+  "SystemRoot",
+  "SystemDrive",
+  "windir",
+  "ComSpec",
+  "PATHEXT",
+  "TEMP",
+  "TMP",
+  "ProgramFiles",
+  "ProgramFiles(x86)",
+  "ProgramData",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "NUMBER_OF_PROCESSORS",
+  "PROCESSOR_ARCHITECTURE",
+  "OS",
 ];
 
 export interface Ran {
@@ -419,8 +437,7 @@ export async function until(cond: () => boolean, secs: number): Promise<boolean>
   return cond();
 }
 
-export const strangers = () =>
-  (globalThis as { ralphStrangers?: { sleep: number; soak: number; dir: string } }).ralphStrangers!;
+export const strangers = () => (globalThis as { ralphStrangers?: { sleep: number; soak: number; dir: string } }).ralphStrangers!;
 
 export { basename, dirname, join };
 

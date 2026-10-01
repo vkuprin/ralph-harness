@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import {
   Fx,
+  type HookAnswer,
   count,
   events,
   field,
@@ -158,9 +159,11 @@ describe("what the agent is started with", () => {
   });
   test("with LIVE_STEER the agent gets a settings file that registers the steer hook", () => {
     expect(after(join(S, "argv.agent.1"), "--settings")).toEqual([join(loop, ".agent-settings.json")]);
-    const s = JSON.parse(read(join(loop, ".agent-settings.json")));
-    expect(s.hooks.PreToolUse[0].matcher).toBe("*");
-    expect(s.hooks.PreToolUse[0].hooks[0].command).toContain("hooks/steer");
+    const s = JSON.parse(read(join(loop, ".agent-settings.json"))) as {
+      hooks: { PreToolUse: { matcher: string; hooks: { command: string }[] }[] };
+    };
+    expect(s.hooks.PreToolUse[0]?.matcher).toBe("*");
+    expect(s.hooks.PreToolUse[0]?.hooks[0]?.command).toContain("hooks/steer");
   });
   test("without LIVE_STEER there is no settings file and no --settings", () => {
     expect(lines(join(S2, "argv.agent.1"))).not.toContain("--settings");
@@ -182,7 +185,7 @@ describe("the steer hook, end to end", () => {
   });
 
   test("a steer sent mid-iteration blocks the agent's next tool call, with the steer as the reason", () => {
-    const j = JSON.parse(read(join(S, "hook.1")));
+    const j = JSON.parse(read(join(S, "hook.1"))) as HookAnswer;
     const blocked = j.decision === "block" || j.hookSpecificOutput?.permissionDecision === "deny";
     const reason = j.reason ?? j.hookSpecificOutput?.permissionDecisionReason;
     expect(blocked).toBe(true);
@@ -332,7 +335,7 @@ describe("how the loop is started", () => {
   let none = { code: -1, err: "" };
   let missing = { code: -1, err: "" };
 
-  setup(async () => {
+  setup(() => {
     fx.makeRepo(app, fx.p("remote-arg.git"));
     fx.makeLoop(loop, app, { MAX_ITER: 1 });
     const S = fx.stub("stub-arg", ["nothing"]);
@@ -443,7 +446,11 @@ describe("CLI edges", () => {
     const stubborn = join(home, "stubborn");
     fx.makeLoop(stubborn, app, { MAX_ITER: 1 });
     const mark = join(fx.T, "src/loop/main.ts");
-    const p = Bun.spawn(["bash", "-c", "trap '' TERM; while :; do sleep 0.2; done", mark, stubborn], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const p = Bun.spawn(["bash", "-c", "trap '' TERM; while :; do sleep 0.2; done", mark, stubborn], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
     await waitProc(p.pid, stubborn);
     writeFileSync(join(stubborn, "ralph.pid"), `${p.pid}\n`);
     const t0 = Date.now();

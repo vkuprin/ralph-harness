@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { Fx, ROOT, hookArgv, join, read, setup, sq, statuses, waitProc } from "../helpers/index.ts";
+import { Fx, type HookAnswer, ROOT, hookArgv, join, read, setup, sq, statuses, waitProc } from "../helpers/index.ts";
 
 // config.json, its refusals, `ralph migrate` from the bash harness's config.sh,
 // and the steer hook's answer.
 
 const fx = new Fx("typescript");
+// eslint-disable-next-line no-control-regex -- the escape that starts a colour
 const ESC = /\x1b\[[0-9;]*m/g;
 
 /** A loop directory with the template's PROMPT.md and PROGRESS.md and `config` as config.json. */
@@ -134,7 +135,10 @@ RATE_LIMIT_RE="$RATE_LIMIT_RE|quota window closed"
     // A bash-era loop still running on the directory: its command line names
     // ralph.sh and ends with the loop directory.
     loopWith(busy, `REPO=${app}\n`, "config.sh");
-    const p = Bun.spawn(["bash", "-c", "while :; do sleep 0.2; done", join(fx.T, "ralph.sh"), busy], { stdout: "ignore", stderr: "ignore" });
+    const p = Bun.spawn(["bash", "-c", "while :; do sleep 0.2; done", join(fx.T, "ralph.sh"), busy], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
     await waitProc(p.pid, busy);
     writeFileSync(join(busy, "ralph.pid"), `${p.pid}\n`);
     const r = fx.cli(home, ["migrate", "busy"]);
@@ -202,13 +206,13 @@ describe("the steer hook takes the file whole", () => {
   });
 
   test("it answers with PreToolUse's deny, the steer as the reason the model reads", () => {
-    const j = JSON.parse(first);
-    expect(j.hookSpecificOutput.hookEventName).toBe("PreToolUse");
-    expect(j.hookSpecificOutput.permissionDecision).toBe("deny");
-    expect(j.hookSpecificOutput.permissionDecisionReason).toContain("OPERATOR STEERING (from ralph steer): one");
+    const j = JSON.parse(first) as HookAnswer;
+    expect(j.hookSpecificOutput?.hookEventName).toBe("PreToolUse");
+    expect(j.hookSpecificOutput?.permissionDecision).toBe("deny");
+    expect(j.hookSpecificOutput?.permissionDecisionReason).toContain("OPERATOR STEERING (from ralph steer): one");
   });
   test("a steer sent after the first delivery is delivered at the next call, alone", () => {
-    const r = JSON.parse(second).hookSpecificOutput.permissionDecisionReason;
+    const r = (JSON.parse(second) as HookAnswer).hookSpecificOutput?.permissionDecisionReason;
     expect(r).toContain("two");
     expect(r).not.toContain("one");
   });

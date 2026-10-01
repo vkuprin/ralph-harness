@@ -101,7 +101,14 @@ describe("bad configuration and odd inputs", () => {
     // A repo path with a space in it, through every gate there is.
     fx.makeRepo(fx.p("my app"), fx.p("remote-n.git"));
     const Sn = fx.stub("stub-n", ["commit", "nothing"]);
-    fx.makeLoop(n, fx.p("my app"), { WORKTREE: true, PUSH: true, PUSH_CONFIRM: "main", REVIEW: true, MAX_ITER: 2, VERIFY_CMD: "./measure.sh" });
+    fx.makeLoop(n, fx.p("my app"), {
+      WORKTREE: true,
+      PUSH: true,
+      PUSH_CONFIRM: "main",
+      REVIEW: true,
+      MAX_ITER: 2,
+      VERIFY_CMD: "./measure.sh",
+    });
     await fx.runLoop(n, Sn, { remote: fx.p("remote-n.git") });
   });
 
@@ -440,7 +447,7 @@ describe("PUSH true lands only on a branch the config names twice", () => {
     expect(fx.git(R, "rev-parse", "main")).toBe(start);
     expect(existsSync(fx.p("app-confirm-ralph-bare"))).toBe(false);
   });
-  test("PUSH \"pr\" needs no confirmation", () => {
+  test('PUSH "pr" needs no confirmation', () => {
     expect(read(join(pr, "ralph.log"))).toContain("=== iteration 1");
   });
   test("ralph new will not scaffold PUSH true without it, and leaves nothing behind", () => {

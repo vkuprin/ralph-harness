@@ -20,7 +20,6 @@ import {
 } from "../helpers/index.ts";
 
 const fx = new Fx("cli");
-const T = fx.T;
 
 // What a scaffolded loop is patched with so it runs one quick iteration: no
 // sleeps, no push, no reviewer.
@@ -210,7 +209,7 @@ describe("CLI: usage, and a status with nothing to show", () => {
     expect(statusLogged).toContain("1 run, 0 shipped a commit");
   });
   test("--version prints the version package.json ships with", () => {
-    expect(version).toBe(`ralph ${JSON.parse(read(join(ROOT, "package.json"))).version}\n`);
+    expect(version).toBe(`ralph ${(JSON.parse(read(join(ROOT, "package.json"))) as { version: string }).version}\n`);
   });
 });
 
@@ -325,18 +324,27 @@ describe("ralph new --set writes settings into config.json", () => {
   let cfg: Record<string, unknown> = {};
   const refused: Record<string, { code: number; out: string; err: string }> = {};
 
-  setup(async () => {
+  setup(() => {
     fx.makeRepo(app, fx.p("remote-set.git"));
     made = fx.cli(home, [
-      "new", "set", app,
-      "--set", "PUSH=pr",
-      "--set", "PR_MERGE=true",
-      "--set", 'VERIFY_CMD=bun test && echo "$& \\ done"',
+      "new",
+      "set",
+      app,
+      "--set",
+      "PUSH=pr",
+      "--set",
+      "PR_MERGE=true",
+      "--set",
+      'VERIFY_CMD=bun test && echo "$& \\ done"',
       "--set=MAX_ITER=40",
-      "--set", "WORKTREE_DIR=/tmp/ralph-set-wt",
-      "--set", "PR_MERGE_POLL=5",
-      "--set", 'CLOSING="Go."',
-      "--set", 'FROZEN=["a b","c"]',
+      "--set",
+      "WORKTREE_DIR=/tmp/ralph-set-wt",
+      "--set",
+      "PR_MERGE_POLL=5",
+      "--set",
+      'CLOSING="Go."',
+      "--set",
+      'FROZEN=["a b","c"]',
     ]);
     text = read(join(home, "set", "config.json"));
     cfg = Bun.JSONC.parse(text) as Record<string, unknown>;
@@ -372,7 +380,7 @@ describe("ralph new --set writes settings into config.json", () => {
   });
   test("the documentation stays beside each setting", () => {
     expect(text).toContain("// The branch the worktree starts from");
-    expect(text).toContain("// With PUSH \"pr\": once the loop ends by itself");
+    expect(text).toContain('// With PUSH "pr": once the loop ends by itself');
   });
   test("a setting the template had commented out is set, once", () => {
     expect(text.split("\n").filter((l) => l.includes('"WORKTREE_DIR"'))).toEqual(['  "WORKTREE_DIR": "/tmp/ralph-set-wt",']);
@@ -495,6 +503,7 @@ describe("the commands ralph prints back are ones a shell will run", () => {
 
   /** That command as ralph printed it, colour escapes and the prose around it removed. */
   const printed = (output: string, prefix: string): string => {
+    // eslint-disable-next-line no-control-regex -- the escape that starts a colour
     const plain = output.replace(/\x1b\[[0-9;]*m/g, "");
     const at = plain.indexOf(`${prefix} `);
     if (at < 0) return "";
@@ -503,6 +512,7 @@ describe("the commands ralph prints back are ones a shell will run", () => {
   };
   /** The rest of the line after the prose in front of the command. */
   const after = (output: string, prose: string): string => {
+    // eslint-disable-next-line no-control-regex -- the escape that starts a colour
     const plain = output.replace(/\x1b\[[0-9;]*m/g, "");
     for (const line of plain.split("\n")) {
       const at = line.lastIndexOf(prose);

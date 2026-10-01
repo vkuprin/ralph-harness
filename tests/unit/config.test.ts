@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_RATE_LIMIT_RE, KEYS, checkSetting, defaults, limitPattern, parseConfig, pushProblem, schema } from "../../src/lib/config.ts";
+import {
+  DEFAULT_RATE_LIMIT_RE,
+  KEYS,
+  checkSetting,
+  defaults,
+  limitPattern,
+  parseConfig,
+  pushProblem,
+  schema,
+} from "../../src/lib/config.ts";
 
 const parse = (text: string) => parseConfig(text, "config.json", "/loops/x");
 const ok = (text: string) => {

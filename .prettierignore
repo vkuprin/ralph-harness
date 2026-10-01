@@ -1,0 +1,8 @@
+# Read at runtime: template/ is copied byte for byte into a loop, and the skill
+# is a system prompt.
+template/
+skills/
+assets/
+# Prose, formatted by hand; CHANGELOG.md and .changeset/ are written by changesets.
+*.md
+.changeset/
