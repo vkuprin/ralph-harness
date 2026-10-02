@@ -1,0 +1,29 @@
+tests/e2e/cli.test.ts
+  s_b021035ca9c378::t_2bef56b30003c3 583-587,603-604
+.changeset/worktree-dir-owned.md
+  s_b021035ca9c378::t_794fe5109843f2 1-5
+src/loop/loop.ts
+  s_b021035ca9c378::t_c4ad040b31f030 404,406-407
+  s_b021035ca9c378::t_ff327819a4fd29 361-389
+tests/e2e/config.test.ts
+  s_b021035ca9c378::t_61a287d9132b94 556-631,639,641-654
+  s_b021035ca9c378::t_8822703686495f 632-638,640
+template/config.json
+  s_b021035ca9c378::t_357cc3a3384628 41-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "814970ed1b97262b82655c399b5dbc81f36f6fb3",
+  "prompts": {},
+  "sessions": {
+    "s_b021035ca9c378": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c6d275b-9ee7-4ab2-b2b6-f19cdcb0d1de",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}
