@@ -1,0 +1,25 @@
+src/cli/main.ts
+  s_d38cf2f15695e4::t_d93e56573fb589 861-868
+  s_d38cf2f15695e4::t_cc3d3f643ee2cd 869
+  s_d38cf2f15695e4::t_5ef13fbeaf3322 887
+tests/e2e/steer.test.ts
+  s_d38cf2f15695e4::t_bb67054f39fbb9 112-185
+.changeset/steer-several-lines.md
+  s_d38cf2f15695e4::t_c4ee8c082cacf6 1-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "d84b8f26efbf9825111cee75d3660b8a0f0e40e6",
+  "prompts": {},
+  "sessions": {
+    "s_d38cf2f15695e4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d944eef8-53c6-4567-a5e8-02107d3fc690",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
