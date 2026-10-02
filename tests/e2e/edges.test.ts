@@ -593,7 +593,13 @@ describe("state that outlives a restart", () => {
     expect(p).toContain("stub: sicken");
   });
   test("a churning file the human heard about is not news again after a restart", () => {
-    expect(events(churnNote).filter((e: string) => e === "churn")).toEqual(["churn"]);
+    // Red once in a full local run and never in 88 runs of its own, with
+    // nothing to say why. The loop's own record of the two runs is the why.
+    const why = ["results.tsv", ".churn-seen", "ralph.log"].map((f) => `--- ${f}\n${read(join(churn, f))}`).join("\n");
+    expect(
+      events(churnNote).filter((e: string) => e === "churn"),
+      why,
+    ).toEqual(["churn"]);
   });
   test("what the harness pushed itself is remembered, so a restart pushes on top of it", () => {
     expect(statuses(pr)).toBe("keep keep");
