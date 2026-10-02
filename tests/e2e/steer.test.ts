@@ -109,3 +109,77 @@ describe("ralph steer keeps the text it was handed", () => {
     expect(read(join(S, "prompt.review.1"))).toContain(escText);
   });
 });
+
+describe("a steer of several lines stays one entry of the Steering section", () => {
+  // The text went into PROMPT.md as typed, so a line of it that starts with
+  // `## ` became a heading of PROMPT.md. The reviewer's brief takes the Steering
+  // section up to the next heading, and lost every line after it: the reviewer
+  // judged the commit against the first half of what the human asked.
+  const app = fx.p("app-ml");
+  const home = fx.p("home-ml");
+  const loop = join(home, "ml");
+  const text = [
+    "Stop the CSS work.",
+    "",
+    "## Why",
+    "The stylesheet is frozen until the redesign lands.",
+    "",
+    "## Instead",
+    "Fix the login timeout first.",
+  ].join("\n");
+  const said = text.split("\n").filter((l) => l !== "");
+  let S = "";
+  let prompt = "";
+  let steerFile = "";
+  let blank = { code: 0, out: "", err: "" };
+  let afterBlank = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-ml.git"));
+    S = fx.stub("stub-ml", ["commit"], ["ACCEPT"]);
+    fx.makeLoop(loop, app, { WORKTREE: true, PUSH: false, REVIEW: true, MAX_ITER: 1, ITER_TIMEOUT: 30 });
+    fx.cli(home, ["steer", "ml", text]);
+    steerFile = read(join(loop, "STEER.md"));
+    prompt = read(join(loop, "PROMPT.md"));
+    blank = fx.cli(home, ["steer", "ml", " \n\t\n"]);
+    afterBlank = read(join(loop, "PROMPT.md"));
+    await fx.runLoop(loop, S);
+  });
+
+  /** The lines the steer wrote under the marker. */
+  const entries = () => {
+    const lines = prompt.split("\n");
+    return lines.slice(lines.findIndex((l) => l.includes("<!-- ralph-steer -->")) + 1);
+  };
+  /** The Steering section of the reviewer's brief. */
+  const reviewed = () => {
+    const brief = read(join(S, "prompt.review.1"));
+    return brief.slice(brief.indexOf("## Steering from the human"), brief.indexOf("## What the harness already checked"));
+  };
+
+  test("no line of the steer is a heading of PROMPT.md", () => {
+    expect(entries().filter((l) => l.startsWith("#"))).toEqual([]);
+  });
+  test("every line of it sits inside its list item", () => {
+    expect(entries().filter((l) => l !== "" && !l.startsWith("- [") && !l.startsWith("  "))).toEqual([]);
+    expect(entries().filter((l) => l.startsWith("- [")).length).toBe(1);
+  });
+  test("the reviewer is handed every line the human typed", () => {
+    for (const line of said) expect(reviewed()).toContain(line);
+  });
+  test("the agent is handed every line too", () => {
+    const agent = read(join(S, "prompt.agent.1"));
+    for (const line of said) expect(agent).toContain(line);
+  });
+  test("STEER.md holds the text as typed, for the steer hook", () => {
+    expect(steerFile).toBe(`${text}\n`);
+  });
+  test("a steer of blank lines is no steer: usage, and PROMPT.md is left alone", () => {
+    expect(blank.code).not.toBe(0);
+    expect(blank.err).toContain("usage: ralph steer");
+    expect(afterBlank).toBe(prompt);
+  });
+  test("the steered iteration ran and its commit was kept", () => {
+    expect(statuses(loop)).toBe("keep");
+  });
+});

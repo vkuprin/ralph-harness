@@ -858,7 +858,15 @@ function cmdResults(name?: string, nArg?: string): void {
  */
 function cmdSteer(name?: string, ...words: string[]): void {
   const text = words.join(" ");
-  if (!text) die('usage: ralph steer <name> "what to do instead"');
+  if (!/\S/.test(text)) die('usage: ralph steer <name> "what to do instead"');
+  // One list item however many lines the text has: its later lines indented
+  // under the first, so none of them can be a heading of PROMPT.md. A `## Why`
+  // in the text once ended the Steering section, and the reviewer's brief,
+  // which takes that section up to the next heading, lost the rest of it.
+  const said = text.split(/\r?\n/);
+  while (!/\S/.test(said[0]!)) said.shift();
+  while (!/\S/.test(said.at(-1)!)) said.pop();
+  const entry = said.map((l, i) => (i === 0 ? l : /\S/.test(l) ? `  ${l}` : "")).join("\n");
   const dir = loopDir(name);
   const promptFile = join(dir, "PROMPT.md");
   if (!existsSync(promptFile)) die(`no such loop: ${name}`);
@@ -876,7 +884,7 @@ function cmdSteer(name?: string, ...words: string[]): void {
   for (const line of splitLines(read(promptFile))) {
     lines.push(line);
     if (!seen && line.includes(MARK)) {
-      lines.push("", `- [${stampMinutes()}] ${text}`);
+      lines.push("", `- [${stampMinutes()}] ${entry}`);
       seen = true;
     }
   }
