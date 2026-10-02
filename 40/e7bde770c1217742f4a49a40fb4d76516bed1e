@@ -1,0 +1,19 @@
+tests/e2e/logs.test.ts
+  s_aedfd3c7162598::t_21b2ad584c7512 256-265
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "40e7bde770c1217742f4a49a40fb4d76516bed1e",
+  "prompts": {},
+  "sessions": {
+    "s_aedfd3c7162598": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "abcfb3f2-09df-441f-bfd1-416936cd514e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
