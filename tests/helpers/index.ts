@@ -124,6 +124,14 @@ export interface Ran {
 }
 
 /**
+ * Seconds one `Fx.sh` command may run. The longest the suite makes on purpose
+ * took 15s on macOS (`ralph stop` waiting out a loop that ignores TERM), and
+ * `ralph start` can wait 3 × 30s for a loop that hangs at boot. A command that
+ * hangs now costs its test five minutes, instead of the whole job.
+ */
+const SH_TIMEOUT = 300;
+
+/**
  * A loop the suite started. `proc` is the process running now, and the boot
  * watch in `startLoop` may replace it, so a `proc` read earlier can be one that
  * is gone: a TERM sent to it once missed the replacement, whose agent then held
@@ -198,18 +206,32 @@ export class Fx {
     return out;
   }
 
-  /** Run a command to completion. */
-  sh(argv: string[], opts: { cwd?: string; env?: Record<string, string | undefined>; input?: string } = {}): Ran {
+  /**
+   * Run a command to completion, or throw once it has run `timeout` seconds
+   * (SH_TIMEOUT). A synchronous spawn blocks the event loop, so bun's own test
+   * timeout cannot end one that never returns, and on Windows one `fx.cli`
+   * call held its job until the 45-minute cap cancelled it.
+   */
+  sh(argv: string[], opts: { cwd?: string; env?: Record<string, string | undefined>; input?: string; timeout?: number } = {}): Ran {
     // Windows starts no script by its #! line; bun runs the CLI there.
     if (IS_WIN && argv[0] === cliPath()) argv = [process.execPath, ...argv];
+    const secs = opts.timeout ?? SH_TIMEOUT;
     const r = Bun.spawnSync(argv, {
       cwd: opts.cwd,
       env: this.env(opts.env),
       stdin: opts.input === undefined ? "ignore" : new TextEncoder().encode(opts.input),
       stdout: "pipe",
       stderr: "pipe",
+      timeout: secs * 1000,
+      // TERM is the default, and a command that ignores it ran on to its end.
+      killSignal: "SIGKILL",
     });
-    return { code: r.exitCode ?? 128, out: r.stdout.toString(), err: r.stderr.toString() };
+    const out = r.stdout.toString();
+    const err = r.stderr.toString();
+    if (r.exitedDueToTimeout) {
+      throw new Error(`${argv.join(" ")} did not return within ${secs}s and was killed\nstdout: ${out}\nstderr: ${err}`);
+    }
+    return { code: r.exitCode ?? 128, out, err };
   }
 
   /** `bash -c script`, with the arguments after it as $1, $2, … */

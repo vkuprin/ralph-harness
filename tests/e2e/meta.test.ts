@@ -160,6 +160,48 @@ describe("a check is about this run and nothing else", () => {
   });
 });
 
+describe("a command the suite runs that never returns fails one test, not the job", () => {
+  // Bun.spawnSync blocks the event loop, so bun's own test timeout cannot end
+  // a command that does not return. On Windows a `ralph steer` with no text,
+  // which prints its usage and starts nothing, sat in one fx.cli call until the
+  // job was cancelled at its 45-minute cap, and no test after it was reported.
+  // This one ignores TERM, as a bun that never finished may, and exits by
+  // itself after 20s, so the suite ends even without the timeout.
+  const marker = fx.p("hung-command");
+  let thrown: unknown;
+  let secs = 0;
+
+  setup(() => {
+    const started = performance.now();
+    try {
+      fx.sh(
+        [
+          process.execPath,
+          "-e",
+          "process.on('SIGTERM', () => {}); console.log('started'); setTimeout(() => process.exit(0), 20000)",
+          marker,
+        ],
+        { timeout: 1 },
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    secs = (performance.now() - started) / 1000;
+  });
+
+  test("the call ends at its timeout, as an error that names the command", () => {
+    expect(secs).toBeLessThan(10);
+    expect(String(thrown)).toContain("did not return within 1s");
+    expect(String(thrown)).toContain(marker);
+  });
+  test("and says what the command printed before it hung", () => {
+    expect(String(thrown)).toContain("started");
+  });
+  test("and the command is not left running", () => {
+    expect(noProc(marker)).toBe(true);
+  });
+});
+
 describe("a loop run that is stopped stays stopped, whatever its boot watch is doing", () => {
   // startLoop kills a loop that hangs at boot and starts another in its place.
   // A test that read `run.proc` and stopped it later could stop the one that
