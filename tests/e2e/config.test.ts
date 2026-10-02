@@ -553,3 +553,102 @@ describe.skipIf(IS_WIN)("a backslash in REPO does not make any checkout this loo
     expect(read(join(ok, "ralph.log"))).not.toContain("not a worktree of");
   });
 });
+
+describe("a WORKTREE_DIR that is a checkout of REPO but not this loop's worktree is refused", () => {
+  // Belonging to REPO's repository was the whole check. REPO itself passed,
+  // and so did a folder inside it and another loop's worktree; one iteration
+  // then wiped the edit nobody had committed there, left the checkout on
+  // ralph/<name>, and kept the agent's commit, never judged, on the branch
+  // that had been out.
+  const cases: { name: string; dir: string; loop: string }[] = [];
+  /** The state a refusal must leave alone: what is out, and the unsaved work. */
+  const snap = (dir: string) => ({
+    head: fx.git(dir, "rev-parse", "HEAD"),
+    ref: fx.git(dir, "symbolic-ref", "-q", "HEAD"),
+    edit: read(join(dir, "work.txt")),
+    untracked: existsSync(join(dir, "notes.txt")),
+    count: fx.git(dir, "rev-list", "--count", "--all"),
+  });
+  const before = new Map<string, ReturnType<typeof snap>>();
+  const own = fx.p("loops/wd-own");
+
+  /** Unsaved work in `dir`, the loop run once with WORKTREE_DIR at it. */
+  async function point(name: string, repo: string, dir: string): Promise<void> {
+    writeFileSync(join(dir, "work.txt"), "an edit nobody committed\n");
+    writeFileSync(join(dir, "notes.txt"), "untracked notes\n");
+    const loop = fx.p(`loops/${name}`);
+    fx.makeLoop(loop, repo, { WORKTREE: true, MAX_ITER: 1, WORKTREE_DIR: dir });
+    before.set(name, snap(dir));
+    cases.push({ name, dir, loop });
+    await fx.runLoop(loop, fx.stub(`stub-${name}`, ["commit"]));
+  }
+
+  setup(async () => {
+    // REPO itself.
+    fx.makeRepo(fx.p("app-wd-repo"), fx.p("remote-wd-repo.git"));
+    await point("wd-repo", fx.p("app-wd-repo"), fx.p("app-wd-repo"));
+
+    // A folder inside REPO: git resets the whole checkout from there.
+    const inside = fx.p("app-wd-inside");
+    fx.makeRepo(inside, fx.p("remote-wd-inside.git"));
+    mkdirSync(join(inside, "src"));
+    writeFileSync(join(inside, "src", "x.txt"), "x\n");
+    fx.gitOk(inside, "add", "-A");
+    fx.gitOk(inside, "commit", "-qm", "src");
+    await point("wd-inside", inside, join(inside, "src"));
+
+    // Another loop's worktree, with that loop's commit on ralph/wd-first.
+    const shared = fx.p("app-wd-other");
+    fx.makeRepo(shared, fx.p("remote-wd-other.git"));
+    const first = fx.p("loops/wd-first");
+    fx.makeLoop(first, shared, { WORKTREE: true, MAX_ITER: 1 });
+    await fx.runLoop(first, fx.stub("stub-wd-first", ["commit"]));
+    await point("wd-other", shared, fx.p("app-wd-other-ralph-wd-first"));
+
+    // REPO is a linked worktree; WORKTREE_DIR is the main checkout, on a
+    // detached HEAD, so no branch name gives it away.
+    const main = fx.p("app-wd-main");
+    fx.makeRepo(main, fx.p("remote-wd-main.git"));
+    fx.gitOk(main, "worktree", "add", "-q", "-b", "feature", fx.p("app-wd-main-linked"));
+    fx.gitOk(main, "checkout", "-q", "--detach");
+    await point("wd-main", fx.p("app-wd-main-linked"), main);
+
+    // REPO itself again, as a linked worktree on a detached HEAD.
+    const self = fx.p("app-wd-self");
+    fx.makeRepo(self, fx.p("remote-wd-self.git"));
+    fx.gitOk(self, "worktree", "add", "-q", "--detach", fx.p("app-wd-self-linked"));
+    await point("wd-self", fx.p("app-wd-self-linked"), fx.p("app-wd-self-linked"));
+
+    // The loop's own worktree, found on a detached HEAD at the next start,
+    // as sync's rebase leaves it when the loop is killed during it.
+    fx.makeRepo(fx.p("app-wd-own"), fx.p("remote-wd-own.git"));
+    fx.makeLoop(own, fx.p("app-wd-own"), { WORKTREE: true, MAX_ITER: 1 });
+    const So = fx.stub("stub-wd-own", ["commit", "commit"]);
+    await fx.runLoop(own, So);
+    fx.gitOk(fx.p("app-wd-own-ralph-wd-own"), "checkout", "-q", "--detach");
+    await fx.runLoop(own, So);
+  });
+
+  test.each([
+    ["wd-repo", "is REPO itself"],
+    ["wd-inside", "is a folder inside the checkout"],
+    ["wd-other", "has ralph/wd-first checked out, not ralph/wd-other"],
+    ["wd-main", "is the main checkout of"],
+    ["wd-self", "is REPO itself"],
+  ])("%s: the start is refused, says why, and runs no agent", (name, why) => {
+    const c = cases.find((x) => x.name === name)!;
+    expect(read(join(c.loop, "ralph.log"))).toContain(why);
+    expect(read(join(c.loop, "ralph.log"))).toContain("refusing to reset a checkout this loop does not own");
+    expect(existsSync(join(c.loop, "results.tsv"))).toBe(false);
+    expect(existsSync(join(fx.p(`stub-${name}`), "prompt.agent.1"))).toBe(false);
+  });
+  test.each(["wd-repo", "wd-inside", "wd-other", "wd-main", "wd-self"])("%s: the checkout there is as it was", (name) => {
+    const c = cases.find((x) => x.name === name)!;
+    expect(snap(c.dir)).toEqual(before.get(name)!);
+    expect(fx.gitOk(c.dir, "show-ref", "--verify", "--quiet", `refs/heads/ralph/${name}`)).toBe(false);
+  });
+  test("the loop's own worktree on a detached HEAD is still its own", () => {
+    expect(read(join(own, "ralph.log"))).not.toContain("refusing");
+    expect(statuses(own).split(" ")).toHaveLength(2);
+  });
+});

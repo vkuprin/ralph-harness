@@ -580,7 +580,11 @@ describe("ralph new takes every checkout git works in", () => {
       made[name] = { code: r.code, out: both(r) };
       if (r.code !== 0) continue;
       patchConfig(join(home, name), TAME);
-      await fx.runLoop(join(home, name), fx.stub(`stub-kinds-${name}`, ["commit"]));
+      // Twice: the restart finds the worktree there and has to take it as
+      // this loop's own.
+      const S = fx.stub(`stub-kinds-${name}`, ["commit", "commit"]);
+      await fx.runLoop(join(home, name), S);
+      await fx.runLoop(join(home, name), S);
     }
 
     // What is still not a checkout: a directory git knows nothing of, and a
@@ -596,8 +600,8 @@ describe("ralph new takes every checkout git works in", () => {
       expect(made[name]!.out).toContain("created");
       expect(made[name]!.code).toBe(0);
     });
-    test(`and the ${name} loop runs in a worktree of its own and keeps its commit`, () => {
-      expect(statuses(join(home, name))).toBe("keep");
+    test(`and the ${name} loop runs in a worktree of its own, keeps its commit, and runs there again after a restart`, () => {
+      expect(statuses(join(home, name))).toBe("keep keep");
       expect(read(join(home, name, "ralph.log"))).toContain(`on ralph/${name}`);
     });
   }

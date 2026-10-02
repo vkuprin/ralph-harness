@@ -358,6 +358,35 @@ export class Loop {
     return x !== "" && y !== "" && sameDir(x, y);
   }
 
+  /**
+   * Why the checkout already at WORK is not this loop's worktree, or "" when
+   * it is. One of the same repository is not enough: the harness resets and
+   * cleans WORK and checks ralph/<name> out there. Measured with WORKTREE_DIR
+   * set to REPO itself, to a folder inside REPO, and to another loop's
+   * worktree: each passed, and after one iteration the uncommitted edit and
+   * the untracked files there were gone, the checkout was left on
+   * ralph/<name>, and the agent's commit, never judged, stayed on the branch
+   * that had been out (main, or the other loop's ralph/c, which that loop
+   * pushes). A detached HEAD passes: a loop killed in sync's rebase leaves
+   * one, and so does an agent that checked out an old commit; the reset puts
+   * the branch back.
+   */
+  private async notOurs(WORK: string, branch: string): Promise<string> {
+    const { REPO } = this.cfg;
+    if (!(await this.sameRepo(WORK, REPO))) return `${WORK} is not a worktree of ${REPO}`;
+    const top = await this.gitOut(["-C", WORK, "rev-parse", "--show-toplevel"], { quiet: true });
+    if (!top || !sameDir(top, WORK)) return `${WORK} is a folder inside the checkout ${top}, not a worktree of its own`;
+    if (sameDir(WORK, REPO)) return `${WORK} is REPO itself, the checkout the worktree keeps the loop out of`;
+    const dir = async (flag: string) => resolve(WORK, await this.gitOut(["-C", WORK, "rev-parse", flag], { quiet: true }));
+    if (sameDir(await dir("--git-dir"), await dir("--git-common-dir"))) return `${WORK} is the main checkout of ${REPO}'s repository`;
+    const head = await this.git(["-C", WORK, "symbolic-ref", "-q", "HEAD"], { quiet: true });
+    const ref = head.stdout.trim();
+    if (head.code === 0 && ref !== `refs/heads/${branch}`) {
+      return `${WORK} has ${ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref} checked out, not ${branch}`;
+    }
+    return "";
+  }
+
   private async setupWorktree(): Promise<void> {
     const { REPO, WORKTREE_DIR, BRANCH, SETUP_CMD } = this.cfg;
     const branch = `ralph/${this.name}`;
@@ -372,11 +401,10 @@ export class Loop {
     let setup = again;
     if (await this.gitOk(["-C", WORK, "rev-parse", "--is-inside-work-tree"], { quiet: true })) {
       // Everything the harness does in WORK resets and cleans it, so WORK has
-      // to be this REPO's own worktree and not merely some checkout that
+      // to be this loop's own worktree and not merely some checkout that
       // happens to sit where WORKTREE_DIR points.
-      if (!(await this.sameRepo(WORK, REPO))) {
-        await this.refuse(`${WORK} is not a worktree of ${REPO} — refusing to reset a checkout this loop does not own`);
-      }
+      const theirs = await this.notOurs(WORK, branch);
+      if (theirs) await this.refuse(`${theirs} — refusing to reset a checkout this loop does not own`);
       if (!setup) {
         rmSync(pending, { force: true });
         return;

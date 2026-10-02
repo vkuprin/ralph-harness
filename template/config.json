@@ -38,9 +38,10 @@
   // below needs it. The worktree sits next to the repo by default, so build tools
   // that look at parent directories see the same layout.
   "WORKTREE": true,
-  // Somewhere other than next to the repo. It must be free, or already be a
-  // worktree of REPO: the harness resets and cleans whatever is there after every
-  // iteration, so it refuses to start on a checkout that is not this loop's.
+  // Somewhere other than next to the repo. It must be free, or already be this
+  // loop's worktree, with ralph/__NAME__ checked out: the harness resets and
+  // cleans whatever is there after every iteration, so it refuses to start on a
+  // checkout that is not this loop's, REPO and a folder inside it included.
   // "WORKTREE_DIR": "/somewhere/else",
 
   // The branch the worktree starts from, and the one kept commits are pushed to.
