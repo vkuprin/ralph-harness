@@ -25,6 +25,9 @@ import { ARCHIVE_HEADER, capProgress, decisions, injectProgress } from "./progre
 // files, VERIFY_CMD, an optional read-only reviewer), resets the ones that
 // fail, and pushes the rest itself. The agent commits; it never pushes.
 
+/** The most of a notification RALPH_MESSAGE carries, in bytes: a phone screen holds less. */
+const MESSAGE_MAX = 4000;
+
 /**
  * The first of `names` in `dir` that is not a regular file this process can
  * read, or null. `-f` as well as `-r`: a directory is readable and cannot be
@@ -275,7 +278,12 @@ export class Loop {
         RALPH_LOOP: this.name,
         RALPH_DIR: this.dir,
         RALPH_ITER: String(this.iter),
-        RALPH_MESSAGE: message,
+        // A variable holds no NUL byte, and the system refuses one past its
+        // size limit (128 KiB a variable on Linux, 1 MiB for the whole
+        // environment on macOS). A question the agent pasted binary output
+        // into, or a VERIFY_CMD whose last line is a report printed as one
+        // line of JSON, reached here whole and the notifier never ran.
+        RALPH_MESSAGE: headBytes(message.split("\0").join(" "), MESSAGE_MAX),
       },
     });
     if (r.timedOut) this.log.line(`notify: ${event} timed out after ${secs}s and its process group was killed`);

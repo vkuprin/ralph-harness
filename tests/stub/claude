@@ -270,6 +270,19 @@ switch (mode) {
     writeFileSync(progress(), out.join("\n"));
     break;
   }
+  case "decide-nul": {
+    // The same, with a NUL byte in the question: an agent that pasted output
+    // it read from a binary file. An environment variable cannot hold one.
+    const out: string[] = [];
+    for (const line of readFileSync(progress(), "utf8").split("\n")) {
+      out.push(line);
+      if (line.startsWith("## Needs a decision")) {
+        out.push("", "- the dump says PK\u0003\u0004\u0000\u0000 at offset 0: is this file ours?");
+      }
+    }
+    writeFileSync(progress(), out.join("\n"));
+    break;
+  }
   case "settle": {
     // The agent settles one question and moves another up, the way an agent
     // rewriting PROGRESS.md whole does: the section changes, nothing new is asked.

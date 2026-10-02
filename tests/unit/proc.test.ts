@@ -126,6 +126,61 @@ describe("run", () => {
   });
 });
 
+// spawn throws, rather than erroring later, when the system will not start a
+// command at all. Thrown from a notifier, that ended the loop.
+describe("a command the system refuses to start exits 127, and never throws", () => {
+  const nul = { ...process.env, RALPH_TEST_VALUE: "a\0b" };
+
+  test("runBounded, with a NUL byte in its environment, and says why where its output goes", async () => {
+    const out = join(T, "refused.out");
+    writeFileSync(out, "before\n");
+    const r = await runBounded(10, ["sh", "-c", "exit 0"], { out, env: nul, pollGapMax: 60 });
+    expect(r).toEqual({ rc: 127, timedOut: false });
+    const text = readFileSync(out, "utf8");
+    expect(text.startsWith("before\nsh: could not start: ")).toBe(true);
+    expect(text).not.toContain("\0");
+    expect(text.split("\n").length).toBe(3);
+  });
+
+  test("runBounded, with a NUL byte in an argument", async () => {
+    const r = await runBounded(10, ["sh", "-c", "exit 0", "a\0b"], { out: join(T, "refused-arg.out"), pollGapMax: 60 });
+    expect(r).toEqual({ rc: 127, timedOut: false });
+  });
+
+  test("runBounded, and the next command still runs", async () => {
+    await runBounded(10, ["sh", "-c", "exit 0"], { out: join(T, "refused-next.out"), env: nul, pollGapMax: 60 });
+    const r = await runBounded(10, ["sh", "-c", "exit 5"], { out: join(T, "refused-next.out"), pollGapMax: 60 });
+    expect(r).toEqual({ rc: 5, timedOut: false });
+  });
+
+  // E2BIG: 128 KiB a variable on Linux, 1 MiB for argv and environment
+  // together on macOS. Windows sets no limit on an environment block.
+  test.skipIf(IS_WIN)("runBounded, with an environment past the system's size limit", async () => {
+    const out = join(T, "refused-big.out");
+    const r = await runBounded(10, ["sh", "-c", "exit 0"], {
+      out,
+      env: { ...process.env, RALPH_TEST_VALUE: "x".repeat(2_000_000) },
+      pollGapMax: 60,
+    });
+    expect(r).toEqual({ rc: 127, timedOut: false });
+    expect(readFileSync(out, "utf8")).toContain("E2BIG");
+  });
+
+  test("run, with the reason in its stderr", async () => {
+    const r = await run(["sh", "-c", "exit 0"], { env: nul });
+    expect(r.code).toBe(127);
+    expect(r.stdout).toBe("");
+    expect(r.stderr.startsWith("sh: could not start: ")).toBe(true);
+  });
+
+  test("run, with the reason in the file its stderr goes to", async () => {
+    const log = join(T, "refused-run.log");
+    const r = await run(["sh", "-c", "exit 0"], { env: nul, errTo: log, outTo: join(T, "refused-run.out") });
+    expect(r.code).toBe(127);
+    expect(readFileSync(log, "utf8").startsWith("sh: could not start: ")).toBe(true);
+  });
+});
+
 describe("killGroup", () => {
   test("ends a group whose leader ignores TERM", async () => {
     // The leader and its child both ignore TERM, so only the KILL to the group

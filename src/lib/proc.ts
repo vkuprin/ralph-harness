@@ -362,18 +362,30 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
   const out = pumped ? "pipe" : openSync(opts.out, "a");
   const err = pumped ? "pipe" : errFile !== opts.out ? openSync(errFile, "a") : out;
   const [cmd, ...args] = argv;
-  const child = spawn(cmd!, args, {
-    // A group of its own, to kill whole. Windows has no groups, and there a
-    // detached child gets a console window of its own; the tree is killed.
-    detached: !IS_WIN,
-    windowsHide: true,
-    stdio: [input, out, err],
-    env: clean(opts.env ?? process.env),
-    cwd: opts.cwd,
-  });
+  let child: ChildProcess | null = null;
+  let refused = "";
+  try {
+    child = spawn(cmd!, args, {
+      // A group of its own, to kill whole. Windows has no groups, and there a
+      // detached child gets a console window of its own; the tree is killed.
+      detached: !IS_WIN,
+      windowsHide: true,
+      stdio: [input, out, err],
+      env: clean(opts.env ?? process.env),
+      cwd: opts.cwd,
+    });
+  } catch (e) {
+    refused = refusal(cmd!, e);
+  }
   closeSync(input);
   if (typeof out === "number") closeSync(out);
   if (typeof err === "number" && err !== out) closeSync(err);
+  if (!child) {
+    try {
+      appendFileSync(errFile, refused);
+    } catch {}
+    return settle({ rc: 127, timedOut: false });
+  }
   const pumps = pumped ? [pumpTo(child.stdout, opts.out), pumpTo(child.stderr, errFile)] : [];
   const done = exited(child);
   const pid = child.pid;
@@ -526,14 +538,28 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<Ran> {
   const [cmd, ...args] = argv;
   const errFd = opts.errTo && !pumped ? openSync(opts.errTo, "a") : null;
   const outFd = opts.outTo && !pumped ? openSync(opts.outTo, "a") : null;
-  const child = spawn(cmd!, args, {
-    stdio: [opts.input === undefined ? "ignore" : "pipe", outFd ?? "pipe", errFd ?? "pipe"],
-    env: clean(opts.env ?? process.env),
-    cwd: opts.cwd,
-    windowsHide: true,
-  });
+  let child: ChildProcess | null = null;
+  let refused = "";
+  try {
+    child = spawn(cmd!, args, {
+      stdio: [opts.input === undefined ? "ignore" : "pipe", outFd ?? "pipe", errFd ?? "pipe"],
+      env: clean(opts.env ?? process.env),
+      cwd: opts.cwd,
+      windowsHide: true,
+    });
+  } catch (e) {
+    refused = refusal(cmd!, e);
+  }
   if (errFd !== null) closeSync(errFd);
   if (outFd !== null) closeSync(outFd);
+  if (!child) {
+    if (opts.errTo) {
+      try {
+        appendFileSync(opts.errTo, refused);
+      } catch {}
+    }
+    return settle({ code: 127, stdout: "", stderr: opts.errTo ? "" : refused });
+  }
   plainChildren.add(child);
   const chunks: Buffer[] = [];
   const errChunks: Buffer[] = [];
@@ -580,6 +606,22 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<Ran> {
     stdout: Buffer.concat(chunks).toString("utf8"),
     stderr: Buffer.concat(errChunks).toString("utf8"),
   });
+}
+
+/**
+ * Why the system would not start a command, as a line for where its output
+ * goes. A start it refuses throws from `spawn` instead of erroring later: an
+ * environment past the system's size limit (E2BIG), or a NUL byte in a
+ * variable or an argument, which none can hold. Thrown, it ended the loop from
+ * inside a notifier, and the "stopped" notice after it threw the same way, so
+ * the human heard nothing. So it is a command that did not run, 127, as one
+ * that is not there.
+ */
+function refusal(cmd: string, e: unknown): string {
+  const why = (e instanceof Error ? e.message : String(e)).split("\n")[0]!;
+  // The message can quote the value that held the NUL.
+  // eslint-disable-next-line no-control-regex -- matching control characters is the point
+  return `${cmd}: could not start: ${[...why.replace(/[\x00-\x1f\x7f]/g, " ")].slice(0, 300).join("")}\n`;
 }
 
 function clean(env: Record<string, string | undefined>): Record<string, string> {
