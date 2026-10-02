@@ -139,6 +139,49 @@ describe("rotated logs past ralph.log.9", () => {
   });
 });
 
+describe("LOG_KEEP 0 throws away every older log, not only the one it rotates", () => {
+  // The template says "0 kept throws the old log away", and that lowering
+  // LOG_KEEP prunes the files above the new number at the next rotation. At 0
+  // the pruning was skipped: ralph.log.1 and up, left by a higher setting, stayed
+  // for good, `ralph log` and `ralph status` read their stale lines as this
+  // loop's, and every rotation said "the 0 before this one are ralph.log.1 and
+  // up" about files it had not kept.
+  const app = fx.p("app-log0");
+  const home = fx.p("home-log0");
+  const D = join(home, "zero");
+  let logOut = "";
+  let status = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-log0.git"));
+    const S = fx.stub("stub-log0", ["nothing"]);
+    fx.makeLoop(D, app, { MAX_ITER: 6, LOG_MAX_BYTES: 200, LOG_KEEP: 0 });
+    writeFileSync(join(D, "ralph.log.1"), "[2026-01-01 00:00:00] === iteration 1 ===\nSTALE-ONE from when LOG_KEEP was higher\n");
+    writeFileSync(join(D, "ralph.log.3"), "[2026-01-01 00:00:00] === iteration 2 ===\nSTALE-THREE from when LOG_KEEP was higher\n");
+    await fx.runLoop(D, S, { env: { RALPH_HOME: home } });
+    logOut = fx.cli(home, ["log", "zero", "1000"]).out;
+    status = fx.cli(home, ["status", "zero"]).out;
+  });
+
+  test("the run rotated at all, so the checks below mean something", () => {
+    expect(read(join(D, "ralph.log"))).toContain("log rotated at ");
+  });
+  test("no older log is left", () => {
+    expect(logFiles(D).map((f) => f.slice(D.length + 1))).toEqual(["ralph.log"]);
+  });
+  test("ralph log no longer shows lines from before", () => {
+    expect(logOut).not.toContain("STALE-");
+  });
+  test("status counts no iteration of 2026-01-01", () => {
+    expect(status).not.toContain("2026-01-01");
+    const run = /iterations\s+(\d+) run/.exec(status);
+    expect(Number(run?.[1])).toBe(count(read(join(D, "ralph.log")), /=== iteration/));
+  });
+  test("the rotation does not say it kept files", () => {
+    expect(read(join(D, "ralph.log"))).not.toContain("are ralph.log.1 and up");
+  });
+});
+
 describe("refs/ralph/ is a safety net, not a leak", () => {
   // Every reverted or dropped iteration saved its commits under refs/ralph/,
   // and nothing ever removed one. A ref is also the only thing keeping those

@@ -40,7 +40,9 @@ export class Log {
    * Rotate once past `maxBytes`: ralph.log.1 is the one before this, up to
    * `keep` of them. Everything numbered at or above `keep` goes, not only the
    * file at that number: a loop whose LOG_KEEP was lowered still carries the
-   * files from the higher setting, and nothing else would remove them.
+   * files from the higher setting, and nothing else would remove them. That
+   * holds for a `keep` of 0 too, where every numbered file goes: skipped there,
+   * the files a higher setting left were read as this loop's log for good.
    */
   rotate(maxBytes: number, keep: number): void {
     if (!(maxBytes > 0)) return;
@@ -48,11 +50,11 @@ export class Log {
     if (size < maxBytes) return;
     const dir = dirname(this.file);
     const base = basename(this.file);
+    for (const f of readdirSync(dir)) {
+      const m = f.startsWith(`${base}.`) ? /^\d+$/.exec(f.slice(base.length + 1)) : null;
+      if (m && Number(m[0]) >= Math.max(keep, 1)) rmSync(join(dir, f), { force: true });
+    }
     if (keep >= 1) {
-      for (const f of readdirSync(dir)) {
-        const m = f.startsWith(`${base}.`) ? /^\d+$/.exec(f.slice(base.length + 1)) : null;
-        if (m && Number(m[0]) >= keep) rmSync(join(dir, f), { force: true });
-      }
       for (let i = keep - 1; i >= 1; i--) {
         if (existsSync(`${this.file}.${i}`)) renameSync(`${this.file}.${i}`, `${this.file}.${i + 1}`);
       }
@@ -61,6 +63,10 @@ export class Log {
       rmSync(this.file, { force: true });
     }
     writeFileSync(this.file, "");
-    this.line(`log rotated at ${size} bytes; the ${keep} before this one are ${base}.1 and up`);
+    this.line(
+      keep >= 1
+        ? `log rotated at ${size} bytes; the ${keep} before this one are ${base}.1 and up`
+        : `log rotated at ${size} bytes; LOG_KEEP is ${keep}, so the old log was thrown away`,
+    );
   }
 }
