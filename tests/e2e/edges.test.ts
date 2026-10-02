@@ -53,9 +53,12 @@ describe("ERROR_STOP, and the backoff between failures", () => {
     fx.makeLoop(loop, app, { MAX_ITER: 5, ERROR_STOP: 2, NOTIFY_CMD: sq(fx.p("notify-es.sh")) });
     await fx.runLoop(loop, fx.stub("stub-es", ["fail", "fail", "fail"]));
     fx.makeLoop(loop2, app, { MAX_ITER: 3, ERROR_SLEEP: 1 });
-    const t0 = Date.now();
-    await fx.runLoop(loop2, fx.stub("stub-es2", ["fail", "fail", "nothing"]));
-    took = Date.now() - t0;
+    // Timed from the spawn of the process that ran: a loop bun never finished
+    // loading is killed and started again after 30s, and that wait is the
+    // suite's. Linux CI read 33464ms so, in run 36997718482.
+    const run = fx.startLoop(loop2, fx.stub("stub-es2", ["fail", "fail", "nothing"]));
+    await run.done;
+    took = performance.now() - run.startedAt;
   });
 
   test("ERROR_STOP stops the loop after that many failures in a row", () => {

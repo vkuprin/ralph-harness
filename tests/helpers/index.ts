@@ -143,6 +143,12 @@ export interface LoopRun {
   done: Promise<number>;
   /** Set by `kill` and `term`: no process is started after the one running now. */
   stopped: boolean;
+  /**
+   * `performance.now()` when the process running now was spawned. A test that
+   * times the loop starts here: the wait on one that hung at boot, which the
+   * suite killed and replaced, is the suite's and not the loop's.
+   */
+  readonly startedAt: number;
   /** `signal` to the process running now, and no restart after it. */
   kill(signal?: NodeJS.Signals): void;
 }
@@ -307,8 +313,10 @@ export class Fx {
     stub: string,
     opts: { remote?: string; env?: Record<string, string | undefined>; bootWait?: number } = {},
   ): LoopRun {
+    let startedAt = 0;
     const spawnOnce = (flags: string) => {
       const out = openSync(join(dir, "ralph.out"), flags);
+      startedAt = performance.now();
       const proc = Bun.spawn(loopArgv(dir), {
         env: this.env({ STUB_DIR: stub, STUB_REMOTE: opts.remote ?? "", ...opts.env }),
         stdin: "ignore",
@@ -322,6 +330,9 @@ export class Fx {
     const run: LoopRun = {
       get proc() {
         return current;
+      },
+      get startedAt() {
+        return startedAt;
       },
       done: Promise.resolve(0),
       stopped: false,
