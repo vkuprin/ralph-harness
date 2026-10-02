@@ -253,8 +253,16 @@ describe("loops that share a repository keep their own thrown-away commits", () 
     fx.git(app, "reset", "-q", "--hard", "HEAD~2");
     fx.makeLoop(B, app, { WORKTREE: true, MAX_ITER: 2, REF_KEEP: 0, VERIFY_CMD: "./measure.sh" });
     fx.makeLoop(A, app, { WORKTREE: true, MAX_ITER: 2, REF_KEEP: 1, VERIFY_CMD: "./measure.sh" });
-    await fx.runLoop(B, fx.stub("stub-shared-b", ["commit-bad", "commit-bad"]));
-    await fx.runLoop(A, fx.stub("stub-shared-a", ["commit-bad", "commit-bad"]));
+    // The two stubs make the same change with the same message on the same
+    // parent, so commits made in one second were one commit: on a fast CI
+    // runner b and a shared a SHA, and the checks below read b's ref as a's.
+    // The date is pinned so that would happen every time; the author is what
+    // tells the two loops' commits apart.
+    const as = (who: string) => ({
+      env: { GIT_AUTHOR_NAME: who, GIT_AUTHOR_DATE: "1790902711 +0000", GIT_COMMITTER_DATE: "1790902711 +0000" },
+    });
+    await fx.runLoop(B, fx.stub("stub-shared-b", ["commit-bad", "commit-bad"]), as("loop b"));
+    await fx.runLoop(A, fx.stub("stub-shared-a", ["commit-bad", "commit-bad"]), as("loop a"));
     aShas = rows(A).map((r) => r[3] ?? "");
     bShas = rows(B).map((r) => r[3] ?? "");
     reviewA = fx.cli(home, ["review", "a"]).out;
