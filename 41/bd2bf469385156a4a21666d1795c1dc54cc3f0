@@ -1,0 +1,28 @@
+.changeset/config-refused-not-thrown.md
+  s_aedfd3c7162598::t_fb97a3c3eb9013 1-5
+tests/e2e/cli.test.ts
+  s_aedfd3c7162598::t_8406228e9eb714 424-425,460,472,839,841-845
+  s_aedfd3c7162598::t_5b91ee36cd30e6 840
+src/lib/config.ts
+  s_aedfd3c7162598::t_5a418100c28b04 278-279
+  s_aedfd3c7162598::t_bd66497c763e38 289-298
+tests/unit/config.test.ts
+  s_aedfd3c7162598::t_68f51fdf82e1c1 53-62
+  s_aedfd3c7162598::t_7980c9821e8cd8 97-104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "41bd2bf469385156a4a21666d1795c1dc54cc3f0",
+  "prompts": {},
+  "sessions": {
+    "s_aedfd3c7162598": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "abcfb3f2-09df-441f-bfd1-416936cd514e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
