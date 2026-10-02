@@ -2,7 +2,7 @@ import { accessSync, constants, existsSync, readFileSync, rmSync, statSync, writ
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { hour, nowSec, stampMinutes } from "../lib/clock.ts";
 import { type Config, defaults, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
-import { rewrite, sameDir } from "../lib/files.ts";
+import { isCheckout, rewrite, sameDir } from "../lib/files.ts";
 import type { Log } from "../lib/log.ts";
 import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
@@ -471,7 +471,7 @@ export class Loop {
     const c = this.cfg;
     const file = "config.json";
     if (!c.REPO) await this.refuse(`ralph: ${file} must set REPO`, REFUSED);
-    if (!existsSync(join(c.REPO, ".git"))) await this.refuse(`ralph: REPO is not a git checkout: ${c.REPO}`, REFUSED);
+    if (!isCheckout(c.REPO)) await this.refuse(`ralph: REPO is not a git checkout: ${c.REPO}`, REFUSED);
     if (c.ACTIVE_HOURS) {
       const w = parseHours(c.ACTIVE_HOURS);
       if (typeof w === "string") await this.refuse(w, REFUSED);

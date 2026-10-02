@@ -1,5 +1,5 @@
-import { lstatSync, readlinkSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, lstatSync, readlinkSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 /**
  * Replace the text of a file a human owns, all at once: a reader sees the old
@@ -53,4 +53,15 @@ export function sameDir(a: string, b: string): boolean {
       return false;
     }
   }
+}
+
+/**
+ * Whether `dir` is the top of a git checkout. `.git` is a directory only in a
+ * plain clone; in a linked worktree, a submodule and a clone made with
+ * --separate-git-dir it is a file naming the real one. `ralph new` once asked
+ * for a directory while the loop asked for either, so a loop that ran on any
+ * of those three could not be scaffolded. Both ask here.
+ */
+export function isCheckout(dir: string): boolean {
+  return existsSync(join(dir, ".git"));
 }

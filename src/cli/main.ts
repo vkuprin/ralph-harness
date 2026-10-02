@@ -18,7 +18,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stamp, stampMinutes } from "../lib/clock.ts";
 import { checkSetting, parseConfig, pushProblem } from "../lib/config.ts";
-import { rewrite } from "../lib/files.ts";
+import { isCheckout, rewrite } from "../lib/files.ts";
 import { readResults } from "../lib/results.ts";
 import { Log } from "../lib/log.ts";
 import { hint } from "../lib/shq.ts";
@@ -447,7 +447,7 @@ function cmdNew(args: string[]): void {
   }
   const repo = resolve(repoArg);
   if (!isDir(repo)) die(`no such directory: ${repoArg}`);
-  if (!isDir(join(repo, ".git"))) die(`not a git checkout: ${repo}`);
+  if (!isCheckout(repo)) die(`not a git checkout: ${repo}`);
   // A newline would end the comment the raw path sits in, in the template.
   if (repo.includes("\n")) die(`a repo path cannot hold a newline: ${JSON.stringify(repo)}`);
   const dir = join(HOME, name);

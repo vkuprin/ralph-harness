@@ -552,6 +552,67 @@ describe("ralph new refuses a name the harness cannot use", () => {
   });
 });
 
+describe("ralph new takes every checkout git works in", () => {
+  // .git is a directory only in a plain clone. In a linked worktree, a
+  // submodule and a clone made with --separate-git-dir it is a file naming
+  // the real one. The loop has always run in all three; ralph new refused them
+  // as "not a git checkout", so a loop on any of them could not be scaffolded.
+  const home = fx.p("home-kinds");
+  const app = fx.p("app-kinds");
+  const R = fx.p("remote-kinds.git");
+  const kinds = {
+    linked: fx.p("linked-kinds"),
+    sub: fx.p("super-kinds/sub"),
+    separate: fx.p("separate-kinds"),
+  };
+  const made: Record<string, { code: number; out: string }> = {};
+  let plainDir = { code: 0, out: "", err: "" };
+  let subDir = { code: 0, out: "", err: "" };
+
+  setup(async () => {
+    fx.makeRepo(app, R);
+    fx.git(app, "worktree", "add", "-q", kinds.linked, "-b", "feature");
+    fx.sh(["git", "init", "-q", "-b", "main", fx.p("super-kinds")]);
+    fx.sh(["git", "-C", fx.p("super-kinds"), "-c", "protocol.file.allow=always", "submodule", "-q", "add", R, "sub"]);
+    fx.sh(["git", "clone", "-q", "--separate-git-dir", fx.p("separate-kinds.git"), R, kinds.separate]);
+    for (const [name, repo] of Object.entries(kinds)) {
+      const r = fx.cli(home, ["new", name, repo]);
+      made[name] = { code: r.code, out: both(r) };
+      if (r.code !== 0) continue;
+      patchConfig(join(home, name), TAME);
+      await fx.runLoop(join(home, name), fx.stub(`stub-kinds-${name}`, ["commit"]));
+    }
+
+    // What is still not a checkout: a directory git knows nothing of, and a
+    // directory inside a checkout, which the loop refuses at its start.
+    mkdirSync(fx.p("plain-kinds"));
+    plainDir = fx.cli(home, ["new", "plaindir", fx.p("plain-kinds")]);
+    mkdirSync(join(app, "inner"));
+    subDir = fx.cli(home, ["new", "subdir", join(app, "inner")]);
+  });
+
+  for (const name of Object.keys(kinds)) {
+    test(`a ${name} checkout is scaffolded`, () => {
+      expect(made[name]!.out).toContain("created");
+      expect(made[name]!.code).toBe(0);
+    });
+    test(`and the ${name} loop runs in a worktree of its own and keeps its commit`, () => {
+      expect(statuses(join(home, name))).toBe("keep");
+      expect(read(join(home, name, "ralph.log"))).toContain(`on ralph/${name}`);
+    });
+  }
+  test("a directory git knows nothing of is still refused, and nothing is left for it", () => {
+    expect(plainDir.code).not.toBe(0);
+    expect(both(plainDir)).toContain("not a git checkout");
+    expect(existsSync(join(home, "plaindir"))).toBe(false);
+  });
+  test("so is a directory inside a checkout, which the loop would refuse at every start", () => {
+    expect(subDir.code).not.toBe(0);
+    expect(both(subDir)).toContain("not a git checkout");
+    expect(existsSync(join(home, "subdir"))).toBe(false);
+  });
+});
+
 describe("the commands ralph prints back are ones a shell will run", () => {
   // git takes plenty that a shell reads as syntax: & ; | ( ) $ ` and both quotes
   // are all legal in a branch name. So `ralph new 'a&b'` scaffolded a loop that
