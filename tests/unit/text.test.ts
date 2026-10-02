@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { lastNonBlank, plain, stripEscapes } from "../../src/lib/text.ts";
+import { inFence, lastNonBlank, plain, section, stripEscapes } from "../../src/lib/text.ts";
 
 const ESC = "\x1b";
 
@@ -44,5 +44,45 @@ describe("lastNonBlank", () => {
   test("nothing at all", () => {
     expect(lastNonBlank([])).toBe("");
     expect(lastNonBlank([`${ESC}[0m`, "\t"])).toBe("");
+  });
+});
+
+describe("inFence: a line in a fenced code block is never a heading", () => {
+  const fenced = (text: string) => inFence(text.split("\n"));
+  test("backticks and tildes, the fence lines included", () => {
+    expect(fenced("a\n```bash\n## x\n```\nb")).toEqual([false, true, true, true, false]);
+    expect(fenced("~~~\n## x\n~~~")).toEqual([true, true, true]);
+  });
+  test("a fence closes only on its own kind, at least as long, with nothing after it", () => {
+    expect(fenced("````\n```\n## x\n````")).toEqual([true, true, true, true]);
+    expect(fenced("```\n~~~\n## x\n```")).toEqual([true, true, true, true]);
+    expect(fenced("```\n``` not a close\n```")).toEqual([true, true, true]);
+  });
+  test("up to three spaces before a fence, as in a list item", () => {
+    expect(fenced("- item\n\n  ```\n  ## x\n  ```")).toEqual([false, false, true, true, true]);
+    expect(fenced("    ```\n## x\n    ```")).toEqual([false, false, false]);
+  });
+  test("```x``` on one line is inline code, not a fence", () => {
+    expect(fenced("```x```\n## x\n```")).toEqual([false, false, false]);
+  });
+  test("a fence that never closes is not one, so a stray ``` hides no heading", () => {
+    expect(fenced("```\n## x\n### y")).toEqual([false, false, false]);
+    expect(fenced("```\n## x\n~~~\n## y\n~~~")).toEqual([false, false, true, true, true]);
+  });
+  test("a file of fences that never close is read in one pass, not one per fence", () => {
+    const lines = Array.from({ length: 20000 }, (_, i) => `\`\`\`${i}`);
+    const t = performance.now();
+    expect(inFence(lines).some(Boolean)).toBe(false);
+    expect(performance.now() - t).toBeLessThan(1000);
+  });
+});
+
+describe("section", () => {
+  test("a ## in a fenced code block does not end the section", () => {
+    const prompt = "## The job\n\nRun this:\n\n```bash\n## build first\nbun run build\n```\n\nThen ship it.\n\n## Rules\n\n- none\n";
+    expect(section(prompt, "## The job")).toBe("\nRun this:\n\n```bash\n## build first\nbun run build\n```\n\nThen ship it.");
+  });
+  test("nor does one start a section", () => {
+    expect(section("```\n## Steering\nquoted\n```\n", "## Steering")).toBe("");
   });
 });

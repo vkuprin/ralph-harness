@@ -1,4 +1,4 @@
-import { splitLines } from "../lib/text.ts";
+import { inFence, splitLines } from "../lib/text.ts";
 
 // PROGRESS.md is the loop's memory: the agent rewrites it at the end of every
 // iteration and every prompt carries it. Two bounds keep it from ending the
@@ -20,28 +20,28 @@ export interface Capped {
  */
 export function capProgress(text: string, keep: number): Capped {
   const lines = splitLines(text);
+  // A heading in a fenced code block is quoted text. Read as one, a `## ` in an
+  // entry's shell snippet ended the Log there: the cap archived half the entry
+  // and every entry below it stayed in PROGRESS.md for good.
+  const code = inFence(lines);
   const kept: string[] = [];
-  const over: string[] = [];
+  // The overflow, one group per entry, newest first.
+  const groups: string[][] = [];
   let inLog = false;
   let c = 0;
-  for (const line of lines) {
-    if (line.startsWith("## Log")) {
+  for (const [i, line] of lines.entries()) {
+    if (!code[i] && line.startsWith("## Log")) {
       inLog = true;
       kept.push(line);
       continue;
     }
-    if (inLog && line.startsWith("## ")) inLog = false;
-    if (inLog && line.startsWith("### ")) c++;
-    if (inLog && c > keep) over.push(line);
+    if (inLog && !code[i] && line.startsWith("## ")) inLog = false;
+    if (inLog && !code[i] && line.startsWith("### ") && ++c > keep) groups.push([]);
+    if (inLog && c > keep) groups.at(-1)!.push(line);
     else kept.push(line);
   }
   if (c <= keep) return { entries: c, kept: null, archived: "" };
-  // The overflow is newest first; the archive reads oldest first.
-  const groups: string[][] = [];
-  for (const line of over) {
-    if (line.startsWith("### ")) groups.push([]);
-    groups.at(-1)?.push(line);
-  }
+  // The archive reads oldest first.
   const archived = groups
     .reverse()
     .map((g) => g.map((l) => `${l}\n`).join(""))
@@ -78,12 +78,14 @@ export function injectProgress(text: string, max: number, path: string): { text:
 export function decisions(text: string): string[] {
   const out: string[] = [];
   let on = false;
-  for (const line of splitLines(text)) {
-    if (line.startsWith("## Needs a decision")) {
+  const lines = splitLines(text);
+  const code = inFence(lines);
+  for (const [i, line] of lines.entries()) {
+    if (!code[i] && line.startsWith("## Needs a decision")) {
       on = true;
       continue;
     }
-    if (on && line.startsWith("## ")) on = false;
+    if (on && !code[i] && line.startsWith("## ")) on = false;
     if (on && /\S/.test(line) && !line.includes("_(nothing yet)_")) out.push(line);
   }
   return out;
