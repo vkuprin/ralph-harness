@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import {
   cliPath,
   count,
@@ -650,5 +650,39 @@ describe("a WORKTREE_DIR that is a checkout of REPO but not this loop's worktree
   test("the loop's own worktree on a detached HEAD is still its own", () => {
     expect(read(join(own, "ralph.log"))).not.toContain("refusing");
     expect(statuses(own).split(" ")).toHaveLength(2);
+  });
+});
+
+describe("a new loop's files send the reader to the settings file it has", () => {
+  // The template's PROMPT.md said "set QUIET_STOP in config.sh" long after the
+  // settings moved to config.json, so every loop `ralph new` wrote sent its
+  // human to a file the loop does not have and the harness does not read.
+  const home = fx.p("home-names");
+  const dir = join(home, "names");
+  const files: Record<string, string> = {};
+
+  setup(() => {
+    const app = fx.p("app-names");
+    fx.makeRepo(app, fx.p("remote-names.git"));
+    const r = fx.cli(home, ["new", "names", app]);
+    if (r.code !== 0) throw new Error(`ralph new failed: ${r.err}`);
+    for (const f of readdirSync(dir)) files[f] = read(join(dir, f));
+  });
+
+  test("no file of a new loop names config.sh, which the harness does not read", () => {
+    expect(Object.keys(files)).toContain("config.json");
+    expect(Object.keys(files).filter((f) => files[f]!.includes("config.sh"))).toEqual([]);
+  });
+  test("each setting its text says to set is in the file the text names", () => {
+    const pointers: string[] = [];
+    for (const f of ["PROMPT.md", "PROGRESS.md"]) {
+      for (const m of files[f]!.matchAll(/\b([A-Z][A-Z0-9_]{2,})\s+in\s+([\w.-]+\.(?:json|sh))\b/g)) {
+        const [key, file] = [m[1]!, m[2]!];
+        const settings = files[file] === undefined ? {} : (Bun.JSONC.parse(files[file]) as Record<string, unknown>);
+        pointers.push(`${f}: ${key} in ${file}${Object.hasOwn(settings, key) ? "" : " (not there)"}`);
+      }
+    }
+    expect(pointers.length).toBeGreaterThan(0);
+    expect(pointers.filter((p) => p.endsWith("(not there)"))).toEqual([]);
   });
 });
