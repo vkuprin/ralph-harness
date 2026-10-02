@@ -16,15 +16,15 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { stampMinutes } from "../lib/clock.ts";
+import { stamp, stampMinutes } from "../lib/clock.ts";
 import { checkSetting, parseConfig, pushProblem } from "../lib/config.ts";
 import { rewrite } from "../lib/files.ts";
 import { readResults } from "../lib/results.ts";
 import { Log } from "../lib/log.ts";
 import { hint } from "../lib/shq.ts";
 import { splitLines } from "../lib/text.ts";
-import { IS_WIN, claudeProblem, commandLineSync, killTree, upTimeSync } from "../lib/proc.ts";
-import { HARNESS, LOOP_ENTRY, LOOP_MARK, REFUSED, STOP_FILE, TEMPLATE, endsWithArg, markThen, ralphHome } from "../paths.ts";
+import { IS_WIN, claudeProblem, commandLineSync, killTree, reapOrphan, upTimeSync } from "../lib/proc.ts";
+import { CHILD_FILE, HARNESS, LOOP_ENTRY, LOOP_MARK, REFUSED, STOP_FILE, TEMPLATE, endsWithArg, markThen, ralphHome } from "../paths.ts";
 import { migrate } from "./migrate.ts";
 
 const USAGE = `ralph — long-running Claude Code loops: a fresh \`claude -p\` every iteration,
@@ -553,7 +553,19 @@ async function cmdStart(name?: string): Promise<void> {
 async function cmdStop(name?: string): Promise<void> {
   const dir = loopDir(name);
   const pid = pidOf(dir);
-  if (!pid) die(`${name} is not running`);
+  if (!pid) {
+    // A loop killed outright (kill -9, the OOM killer, bun crashing) runs no
+    // handler, and its agent goes on in a group of its own with nothing left to
+    // bound it, ITER_TIMEOUT included. This said "not running" and left it
+    // writing into the checkout until the next `ralph start`.
+    const orphan = await reapOrphan(join(dir, CHILD_FILE));
+    if (orphan === null) die(`${name} is not running`);
+    const said = `PID ${orphan}, which its last run left running when it died, was still running; stopped it and its process group`;
+    // The file alone: Log.line writes to stdout too, which is the line below.
+    new Log(join(dir, "ralph.log")).raw(`[${stamp()}] ralph stop: ${said}\n`);
+    green(`${name} was not running, but ${said}`);
+    return;
+  }
   // TERM lets the loop take down the agent's whole process group (tests, dev
   // servers, MCP servers) and log where it stopped. That can take a few
   // seconds, so wait before reaching for SIGKILL. Windows has no TERM, so

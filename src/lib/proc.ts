@@ -3,6 +3,7 @@ import { appendFileSync, closeSync, existsSync, openSync, readFileSync, realpath
 import { constants, devNull } from "node:os";
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
+import { LOOP_MARK } from "../paths.ts";
 import { nowSec, sleep } from "./clock.ts";
 
 // Everything the harness starts goes through this file, for two reasons.
@@ -428,12 +429,16 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
  * killer, bun crashing) leaves its bounded command running in a group of its
  * own, and nothing reaches it after that: `ralph status` and `ralph stop` find
  * no loop, and the next start ran a second agent beside it in the same
- * checkout. Only the loop holding the lock may call this, which is what makes
- * the command a dead loop's and nobody else's.
+ * checkout. The loop holding the lock calls this before it starts anything,
+ * and `ralph stop` when it finds no loop running.
  *
  * A PID is not an identity, so the start the mark recorded has to match the
- * one ps gives now, to within the second etime is rounded to. Not on Windows
- * yet: nothing here has been run there.
+ * one ps gives now, to within the second etime is rounded to. And a command
+ * whose parent is a running loop is that loop's, not an orphan: a dead loop's
+ * command has been handed to init or a subreaper, and a loop the CLI could not
+ * find (its ralph.lock gone, or written a moment after the CLI looked) is
+ * still the parent of what it runs. Not on Windows yet: nothing here has been
+ * run there.
  */
 export async function reapOrphan(mark: string): Promise<number | null> {
   if (IS_WIN) return null;
@@ -446,12 +451,22 @@ export async function reapOrphan(mark: string): Promise<number | null> {
   const m = /^(\d+) (\d+)\n$/.exec(text);
   let pid = 0;
   if (m && alive(Number(m[1]))) {
-    const up = parseEtime((await run(["ps", "-p", m[1]!, "-o", "etime="])).stdout);
+    const [etime = "", ppid = ""] = (await run(["ps", "-p", m[1]!, "-o", "etime=", "-o", "ppid="])).stdout.trim().split(/\s+/);
+    const up = parseEtime(etime);
     const started = up === null ? NaN : Math.floor(Date.now() / 1000) - up;
-    if (Math.abs(started - Number(m[2])) <= 2) pid = Number(m[1]);
+    if (Math.abs(started - Number(m[2])) <= 2) {
+      if (/^\d+$/.test(ppid) && (await commandLine(ppid)).includes(LOOP_MARK)) return null;
+      pid = Number(m[1]);
+    }
   }
   if (pid) await killGroup(pid);
-  rmSync(mark, { force: true });
+  // Only the mark read above: a loop started during the wait for the group to
+  // go has written its own.
+  let now = "";
+  try {
+    now = readFileSync(mark, "utf8");
+  } catch {}
+  if (now === text) rmSync(mark, { force: true });
   return pid || null;
 }
 

@@ -43,7 +43,8 @@ No npm dependencies.
   `QUIET_STOP` says so.
 - A usage limit is waited out and doesn't count toward `MAX_ITER`.
 - `ralph stop` stops the loop right away, together with any tests or servers
-  the agent started.
+  the agent started. When the loop itself was killed outright (`kill -9`, a
+  crash), it stops the agent the loop left running (not on Windows yet).
 
 ## Real runs
 

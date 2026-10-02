@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { copyFileSync, writeFileSync } from "node:fs";
-import { Fx, IS_WIN, alive, join, read, readConfigValue, setup, sleeperGone, until } from "../helpers/index.ts";
+import { afterAll, describe, expect, test } from "bun:test";
+import { copyFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
+import { Fx, IS_WIN, alive, count, join, noProc, read, readConfigValue, setup, sleeperGone, term, until } from "../helpers/index.ts";
 
 const fx = new Fx("identity");
 
@@ -175,5 +175,90 @@ describe.skipIf(IS_WIN)("a loop whose paths hold letters past ASCII, driven from
   });
   test("status then says stopped", () => {
     expect(stopped).toContain("stopped");
+  });
+});
+
+// Not on Windows: reapOrphan has not been run there, and returns nothing.
+describe.skipIf(IS_WIN)("ralph stop on a loop killed without its handler stops the agent it left running", () => {
+  // kill -9, the OOM killer or bun crashing ends the loop with no handler run,
+  // and its agent goes on in a process group of its own, bounded by nothing:
+  // the loop that would enforce ITER_TIMEOUT is gone. `ralph stop` said the
+  // loop was not running and left the agent writing into the worktree until
+  // the next `ralph start`, which a human who has just run `ralph stop` has no
+  // reason to run.
+  const app = fx.p("app-orphan");
+  const home = fx.p("home-orphan");
+  const dead = join(home, "dead");
+  const live = join(home, "live");
+  let S = "";
+  let L = "";
+  let agent = 0;
+  let outlived = false;
+  let stop = { code: -1, out: "", err: "" };
+  let again = { code: -1, out: "", err: "" };
+  let liveStop = { code: -1, out: "", err: "" };
+  let liveAgentRunning = false;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-orphan.git"));
+    fx.makeLoop(dead, app, { MAX_ITER: 1, ITER_TIMEOUT: 600 });
+    S = fx.stub("stub-orphan", ["sleep"]);
+    const first = fx.startLoop(dead, S);
+    await until(() => read(join(S, "sleeper.pid")).trim() !== "", 30);
+    agent = Number(fx.sh(["ps", "-o", "ppid=", "-p", read(join(S, "sleeper.pid")).trim()]).out.trim());
+    first.proc.kill("SIGKILL");
+    await first.done;
+    outlived = !sleeperGone(join(S, "sleeper.pid"));
+    stop = fx.cli(home, ["stop", "dead"]);
+    again = fx.cli(home, ["stop", "dead"]);
+
+    // The mark names a running loop's agent while nothing names the loop: its
+    // ralph.lock is gone, and it was not started by `ralph start`, so there is
+    // no ralph.pid. Its agent's start matches the mark, so only its parent
+    // tells it from an orphan, and that parent is a loop.
+    fx.makeLoop(live, app, { MAX_ITER: 1, ITER_TIMEOUT: 600 });
+    L = fx.stub("stub-orphan-live", ["sleep"]);
+    const second = fx.startLoop(live, L);
+    try {
+      await until(() => read(join(L, "sleeper.pid")).trim() !== "", 30);
+      rmSync(join(live, "ralph.lock"), { force: true });
+      liveStop = fx.cli(home, ["stop", "live"]);
+      liveAgentRunning = !sleeperGone(join(L, "sleeper.pid"));
+    } finally {
+      term(live, second.proc);
+      await second.done;
+    }
+  });
+  afterAll(() => {
+    // Against a stop that reaps nothing the agent is still running, and a
+    // failed check leaves nothing behind for the next test to trip on.
+    if (agent > 1 && !noProc(`--add-dir ${dead} `)) {
+      try {
+        process.kill(-agent, "SIGKILL");
+      } catch {}
+    }
+  });
+
+  test("the agent outlived the loop that started it", () => {
+    expect(agent).toBeGreaterThan(1);
+    expect(outlived).toBe(true);
+  });
+  test("stop stopped it and its whole group, and said so", () => {
+    expect(stop.code).toBe(0);
+    expect(stop.out).toContain(`PID ${agent}, which its last run left running when it died`);
+    expect(count(stop.out, /left running when it died/)).toBe(1);
+    expect(read(join(dead, "ralph.log"))).toContain(`ralph stop: PID ${agent}, which its last run left running`);
+    expect(sleeperGone(join(S, "sleeper.pid"))).toBe(true);
+    expect(noProc(`--add-dir ${dead} `)).toBe(true);
+  });
+  test("and leaves no mark behind, so a second stop finds nothing", () => {
+    expect(existsSync(join(dead, ".child"))).toBe(false);
+    expect(again.code).toBe(1);
+    expect(again.err).toContain("dead is not running");
+  });
+  test("an agent whose parent is a running loop is that loop's, not an orphan", () => {
+    expect(liveStop.code).toBe(1);
+    expect(liveStop.err).toContain("live is not running");
+    expect(liveAgentRunning).toBe(true);
   });
 });

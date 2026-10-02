@@ -235,6 +235,27 @@ describe.skipIf(IS_WIN)("reapOrphan", () => {
       c.kill("SIGKILL");
     }
   });
+
+  test("keeps a mark written while it waited for the group to go", async () => {
+    // A group that takes a second to go after TERM, and a loop that starts in
+    // that second and marks its own agent: `ralph stop` reaping beside a
+    // `ralph start`. The mark is the new agent's, which the next start needs.
+    const c = spawn("sh", ["-c", "trap 'sleep 1; exit 0' TERM; while :; do sleep 0.1; done"], { detached: true, stdio: "ignore" });
+    const mark = join(T, "w.mark");
+    writeFileSync(mark, `${c.pid} ${now()}\n`);
+    try {
+      const reaped = reapOrphan(mark);
+      await Bun.sleep(300);
+      const theirs = `1 ${now()}\n`;
+      writeFileSync(mark, theirs);
+      expect(await reaped).toBe(c.pid!);
+      expect(readFileSync(mark, "utf8")).toBe(theirs);
+    } finally {
+      try {
+        process.kill(-c.pid!, "SIGKILL");
+      } catch {}
+    }
+  }, 20_000);
 });
 
 describe("reading a loop off a command line", () => {
