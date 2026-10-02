@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,12 +23,19 @@ for k in "\${keys[@]}"; do
   esac
 done`;
 
+// Every bash at hand, not only the first on PATH. The old harness ran under
+// whichever bash came first, which on a Mac is often /bin/bash, bash 3.2, and
+// 3.2 reads some lines differently from bash 5. Checked against one bash, a
+// value only that bash held passed here and failed on a CI runner whose bash
+// read the same line another way.
+const BASHES = [...new Set([Bun.which("bash"), "/bin/bash"].filter((b): b is string => !!b && existsSync(b)).map((b) => realpathSync(b)))];
+
 type Seen = Record<string, string | string[]>;
 
-function sourced(text: string, keys: string[]): Seen {
+function sourced(bash: string, text: string, keys: string[]): Seen {
   const f = join(T, `config.${Math.random().toString(36).slice(2)}.sh`);
   writeFileSync(f, text);
-  const r = Bun.spawnSync(["bash", "-c", ORACLE, "_", f, ...keys], {
+  const r = Bun.spawnSync([bash, "-c", ORACLE, "_", f, ...keys], {
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", DEFAULT_RE: DEFAULT_RATE_LIMIT_RE },
   });
   const parts = r.stdout.toString().split("\0");
@@ -61,9 +68,13 @@ function agrees(text: string): void {
   if (!m.ok) throw new Error(m.error);
   const keys = Object.keys(m.config).filter((k) => k !== "RATE_LIMIT_EXTRA_RE");
   const extends_ = "RATE_LIMIT_EXTRA_RE" in m.config;
-  const want = sourced(text, extends_ ? [...keys, "RATE_LIMIT_RE"] : keys);
-  for (const k of keys) expect([k, asBash(m.config[k])]).toEqual([k, want[k]!]);
-  if (extends_) expect(`${DEFAULT_RATE_LIMIT_RE}|${m.config.RATE_LIMIT_EXTRA_RE as string}`).toBe(want.RATE_LIMIT_RE as string);
+  for (const bash of BASHES) {
+    const want = sourced(bash, text, extends_ ? [...keys, "RATE_LIMIT_RE"] : keys);
+    for (const k of keys) expect([bash, k, asBash(m.config[k])]).toEqual([bash, k, want[k]!]);
+    if (extends_) {
+      expect([bash, `${DEFAULT_RATE_LIMIT_RE}|${m.config.RATE_LIMIT_EXTRA_RE as string}`]).toEqual([bash, want.RATE_LIMIT_RE as string]);
+    }
+  }
 }
 
 /** Refused, or read as bash read it. What the converter must never do is write something else. */
@@ -126,9 +137,10 @@ HEALTH_CMD="echo \\"quoted\\" and a \\\\ backslash and a \\$ sign"
     agrees("FROZEN=(\n  measure.sh \\\n  tests/eval \\\n)\nCHURN_IGNORE=(a \\\n  b)\nVERIFY_CMD=x \\\nMAX_ITER=3\n");
   });
   test("a brace, a ~ or a backslash where bash keeps it as it is", () => {
-    agrees('VERIFY_CMD=x{a,b}\nFROZEN=(a\\{b,c} \'{d,e}\' a:~/b a=~/b a~b "~/c" ""~/d)\n');
+    agrees('VERIFY_CMD=x{a,b}\nFROZEN=(a\\{b,c} \'{d,e}\' a:~/b a~b "~/c" ""~/d)\n');
+    // Not a bare name before the '=', so bash 3.2 does not read an assignment.
+    agrees("FROZEN=(--opt=~/b a==~/b \"a\"=~/b a\\=~/b a='~'/b 1a=~/b)\n");
     agrees("SETUP_CMD=a:\"~\"/b HEALTH_CMD=a\\:~/b DONE_CMD=a=~/b NOTIFY_CMD=a:''~/b\n");
-    agrees("VERIFY_CMD=a\\");
   });
   test("a scalar in a list setting is a list of one", () => {
     const m = migrate("FROZEN=measure.sh\n", "x");
@@ -161,6 +173,10 @@ describe("ralph migrate refuses what it would have to evaluate", () => {
     ["VERIFY_CMD=PATH=/opt/bin:~/bin\n", "a ~ that bash would have expanded"],
     ["VERIFY_CMD=\\\n~/bin/check\n", "a ~ that bash would have expanded"],
     ["FROZEN=(a)#b\n", '"#" right after the ) that closes a list'],
+    ["VERIFY_CMD=a\\", "a backslash at the very end of the file"],
+    ["MAX_ITER=3\nVERIFY_CMD=a\\\n", "a backslash at the very end of the file"],
+    ["FROZEN=(a=~/b)\n", "a ~ after name= in a list"],
+    ["FROZEN=(x a=b:~/c)\n", "a ~ after name= in a list"],
     ["MAX_ITER=forty\n", "not a whole number"],
     ["WORKTREE=yes\n", "not 0 or 1"],
     ["PUSH=main\n", "not 0, 1 or pr"],

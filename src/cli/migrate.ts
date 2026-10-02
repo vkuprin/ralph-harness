@@ -40,8 +40,14 @@ export function assignments(text: string): Assignment[] {
   };
   const isBreak = (ch: string | undefined) => ch === undefined || ch === " " || ch === "\t" || ch === "\n" || ch === ";";
   // A backslash before a newline is gone before bash reads a word, so it
-  // neither ends nor starts one.
-  const isJoin = (at: number) => text[at] === "\\" && text[at + 1] === "\n";
+  // neither ends nor starts one. One that ends the file is not: bash 3.2 reads
+  // on into whatever its caller runs next.
+  const atEnd = "a backslash at the very end of the file, which each bash reads differently";
+  const isJoin = (at: number) => {
+    if (text[at] !== "\\" || text[at + 1] !== "\n") return false;
+    if (at + 2 >= text.length) refuse(atEnd, at);
+    return true;
+  };
 
   /** One word from i: quoting applied. Stops at an unquoted break (or `)` in a list). */
   const word = (key: string, inList: boolean, first: boolean): { text: string; extends: boolean } => {
@@ -51,6 +57,12 @@ export function assignments(text: string): Assignment[] {
     // Where bash expands a ~: at the start of a word, and in a plain
     // assignment after an unquoted ':' too (`PATH=a:~/bin`).
     let tilde = true;
+    // In a list, bash 3.2 also reads a word that starts with a bare `name=` as
+    // an assignment, and expands a ~ after its '=' or after a ':' that follows
+    // (`(a=~/b)`, `(a=b:~/c)`). bash 5 keeps those, so neither is converted.
+    let bare = inList;
+    let named = false;
+    let afterName = false;
     while (i < text.length) {
       const ch = text[i]!;
       if (isBreak(ch) || (inList && ch === ")")) break;
@@ -59,7 +71,12 @@ export function assignments(text: string): Assignment[] {
         continue;
       }
       if (ch === "~" && tilde) refuse("a ~ that bash would have expanded");
+      if (ch === "~" && afterName) refuse("a ~ after name= in a list, which bash 3.2 expands and bash 5 does not");
       tilde = !inList && ch === ":";
+      const nameEnds = bare && ch === "=" && s !== "";
+      bare = bare && (/[A-Za-z_]/.test(ch) || (s !== "" && /[0-9]/.test(ch)));
+      if (nameEnds) named = true;
+      afterName = nameEnds || (named && ch === ":");
       if (ch === "'") {
         const end = text.indexOf("'", i + 1);
         if (end < 0) refuse("a quote that never closes");
@@ -91,8 +108,10 @@ export function assignments(text: string): Assignment[] {
         if (i >= text.length) refuse("a quote that never closes", start);
         i++;
       } else if (ch === "\\") {
-        // A backslash at the very end of the file is kept, as bash keeps it.
-        s += text[i + 1] ?? "\\";
+        // bash 3.2 drops a backslash at the very end of the file, bash 5.3
+        // keeps it, and the bash of a macOS CI runner left the setting unset.
+        if (i + 1 >= text.length) refuse(atEnd);
+        s += text[i + 1];
         i += 2;
       } else if (ch === "$") {
         refuse(text[i + 1] === "'" ? "a $'…' string" : "a $ expansion, which this converter does not evaluate");
