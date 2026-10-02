@@ -1,0 +1,41 @@
+tests/e2e/cli.test.ts
+  s_d1af6146d5ec4e::t_69d10e33de2998 848-852
+  s_d1af6146d5ec4e::t_05a1cfb2d61651 846-847,853-857
+tests/e2e/gates.test.ts
+  s_d1af6146d5ec4e::t_e0b9855a5821e1 351,364,366,368-369,373-374,381-387,389-395,407-408
+  s_d1af6146d5ec4e::t_1afcf9a9207ac8 352-363,365,367,370-372,375-380,388,396-406
+tests/stub/claude
+  s_d1af6146d5ec4e::t_6dbc86dc79a6df 155-161
+README.md
+  s_d1af6146d5ec4e::t_327930cc72c089 222
+template/config.json
+  s_d1af6146d5ec4e::t_327930cc72c089 112
+.changeset/frozen-check-fails-closed.md
+  s_d1af6146d5ec4e::t_aab7516ee5d5ea 1-5
+src/loop/loop.ts
+  s_d1af6146d5ec4e::t_8218a522ecfae4 479
+  s_d1af6146d5ec4e::t_acbc4dd9faf7df 695-701,706-711
+  s_d1af6146d5ec4e::t_9000785f9dcdf6 764-769
+  s_d1af6146d5ec4e::t_a26970933e7f23 662
+  s_d1af6146d5ec4e::t_4cba886f1b73a1 1247-1255,1262-1263
+  s_d1af6146d5ec4e::t_8a607c427b6396 2
+  s_d1af6146d5ec4e::t_d39aa9b41e0b39 445-450
+  s_d1af6146d5ec4e::t_0b640ba34b9444 463-478,480-481
+  s_d1af6146d5ec4e::t_69d10e33de2998 702-703,705,1256-1261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "c81b4baab2ae8593063f8e7858bfc20a892430af",
+  "prompts": {},
+  "sessions": {
+    "s_d1af6146d5ec4e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "98ada60d-72e0-4595-8c3d-d2dcfc7e1c13",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
