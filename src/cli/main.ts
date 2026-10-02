@@ -188,7 +188,9 @@ function pidOf(dir: string, bashToo = false): string | null {
   for (const file of ["ralph.pid", "ralph.lock"]) {
     const pid = read(join(dir, file)).trim();
     if (!/^\d+$/.test(pid) || !alive(Number(pid))) continue;
+    dbg(`pidOf ${file} ${pid}: commandLineSync begin`);
     const cmd = commandLineSync(pid);
+    dbg(`pidOf: commandLineSync end`);
     if (!endsWithArg(cmd, dir)) continue;
     if (markThen(cmd, LOOP_MARK)) return pid;
     // The bash harness this replaced ran `bash <harness>/ralph.sh <dir>`.
@@ -528,6 +530,15 @@ function cmdNew(args: string[]): void {
  * The loop has run its own first lines: it holds ralph.lock under its PID, or
  * it has already exited (a refusal says why in ralph.log). Both take a moment.
  */
+function dbg(m: string): void {
+  if (process.platform !== "win32") return;
+  try {
+    mkdirSync("C:\\ralph-debug", { recursive: true });
+    appendFileSync("C:\\ralph-debug\\start.log", `${new Date().toISOString()} cli=${process.pid} ${m}\n`);
+  } catch {}
+}
+process.on("exit", (c) => dbg(`exit ${c}`));
+
 function booted(dir: string, pid: number, exited: () => boolean): boolean {
   return exited() || !alive(pid) || read(join(dir, "ralph.lock")).trim() === String(pid);
 }
@@ -556,7 +567,9 @@ const BOOT_TRIES = 3;
  */
 function notStarted(dir: string, name: string, pid: number, from: number): never {
   if (read(join(dir, "ralph.pid")).trim() === String(pid)) rmSync(join(dir, "ralph.pid"), { force: true });
+  dbg(`notStarted: pidOf begin`);
   const other = pidOf(dir);
+  dbg(`notStarted: pidOf end ${other}`);
   if (other) die(`already running as PID ${other}`);
   let text = "";
   try {
@@ -591,7 +604,9 @@ async function cmdStart(name?: string): Promise<void> {
     void ended.then((code) => (status = code));
     const exited = () => status !== undefined;
     writeFileSync(join(dir, "ralph.pid"), `${pid}\n`);
+    dbg(`spawned ${pid} for ${name} attempt ${attempt}`);
     for (let waited = 0; waited < BOOT_WAIT * 10 && !booted(dir, pid, exited); waited++) await Bun.sleep(100);
+    dbg(`boot wait over: booted=${booted(dir, pid, exited)} exited=${exited()} alive=${alive(pid)}`);
     if (booted(dir, pid, exited)) {
       // The lock is not the end of a start: the worktree and SETUP_CMD come
       // after it, and a loop that refuses one of them is gone a moment later.
@@ -601,7 +616,9 @@ async function cmdStart(name?: string): Promise<void> {
       for (let waited = 0; waited < BOOT_WAIT * 10 && !started(dir, pid) && !gone(); waited++) await Bun.sleep(100);
       if (!started(dir, pid) && gone()) {
         // Gone and reaped, so its exit status is on its way.
+        dbg(`gone: exited=${exited()} alive=${alive(pid)} started=${started(dir, pid)}`);
         if (!exited()) status = await ended;
+        dbg(`await ended returned ${status}`);
         notStarted(dir, name!, pid, from);
       }
       green(`started ${name} as PID ${pid}`);

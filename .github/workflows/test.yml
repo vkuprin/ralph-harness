@@ -1,70 +1,13 @@
 name: test
 
+# Scratch branch ci-debug/windows, never merged: a Windows-only job that runs
+# the diagnostics and the failing tests, dispatched by hand.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 jobs:
-  # The release PR (changeset-release/main) and its merge into main change only
-  # package.json, CHANGELOG.md and .changeset/, on top of a commit that already
-  # passed every job below: that is when the release job opened the PR. So both
-  # skip the suite, and the merge goes straight to release. Each test job
-  # repeats that condition, since a job's `if` cannot read a shared variable.
-
-  # Pinned rather than ubuntu-latest, so the runner image moving underneath the
-  # suite is a change someone makes, not one that happens to it.
-  linux:
-    if: >-
-      ${{ !(github.head_ref == 'changeset-release/main' || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'changeset-release/main') || startsWith(github.event.head_commit.message, 'chore: release')))) }}
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.8
-      - run: bun install --frozen-lockfile
-      - name: typecheck
-        run: bun run typecheck
-      # Lint and formatting read the same on every platform, so they run here only.
-      - name: lint
-        run: bun run lint
-      - name: format
-        run: bun run format:check
-      - name: unit tests
-        run: bun test --timeout 600000 tests/unit
-      - name: end-to-end tests
-        run: bun test --timeout 600000 tests/e2e
-
-  # Most loops run on a Mac, and ps, process groups and the temporary
-  # directories differ there. macOS minutes cost ten times as much on private
-  # repositories, so this job runs once the repository is public, or by hand.
-  macos:
-    if: >-
-      ${{ (!github.event.repository.private || github.event_name == 'workflow_dispatch') && !(github.head_ref == 'changeset-release/main' || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'changeset-release/main') || startsWith(github.event.head_commit.message, 'chore: release')))) }}
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.8
-      - run: bun install --frozen-lockfile
-      - name: typecheck
-        run: bun run typecheck
-      - name: tests
-        run: bun test --timeout 600000 tests/unit tests/e2e
-
-  # Native Windows: no process groups, no TERM, no ps, and the bash that runs
-  # the *_CMD settings is Git for Windows' MSYS one. The steps run in that same
-  # Git Bash, which puts sh, sleep and the rest the suite uses on PATH; the
-  # claude and gh stand-ins are compiled to .exe by the preload.
   windows:
-    if: >-
-      ${{ !(github.head_ref == 'changeset-release/main' || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'changeset-release/main') || startsWith(github.event.head_commit.message, 'chore: release')))) }}
     runs-on: windows-2025
-    # The suite takes about 15 minutes here. A hang is not allowed the six
-    # hours GitHub would give it.
     timeout-minutes: 45
     defaults:
       run:
@@ -75,113 +18,20 @@ jobs:
         with:
           bun-version: 1.3.8
       - run: bun install --frozen-lockfile
-      - name: typecheck
-        run: bun run typecheck
-      - name: unit tests
-        run: bun test --timeout 600000 tests/unit
-      - name: end-to-end tests
-        run: bun test --timeout 600000 tests/e2e
-
-  # What npm would ship, installed the way a user installs it. A runtime file
-  # left out of "files" in package.json fails here, not on someone's machine.
-  # On Windows npm puts a shim for bin/ralph at the prefix itself, not in bin/.
-  package:
-    if: >-
-      ${{ !(github.head_ref == 'changeset-release/main' || (github.event_name == 'push' && (contains(github.event.head_commit.message, 'changeset-release/main') || startsWith(github.event.head_commit.message, 'chore: release')))) }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2025]
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v5
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.8
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-      - name: pack and install
+      - name: process tree under each kill
+        continue-on-error: true
+        run: bun debug/tree.ts
+      - name: ralph start refusals, five times
+        continue-on-error: true
         run: |
-          npm pack
-          npm install -g --prefix "$RUNNER_TEMP/g" ./vkuprin-ralph-harness-*.tgz
-      - name: the installed CLI scaffolds a loop
-        env:
-          RALPH_HOME: ${{ runner.temp }}/home
-        run: |
-          ralph="$RUNNER_TEMP/g/bin/ralph"
-          if [ "$RUNNER_OS" = Windows ]; then ralph="$RUNNER_TEMP/g/ralph"; fi
-          "$ralph" --version
-          git init -q "$RUNNER_TEMP/app"
-          git -C "$RUNNER_TEMP/app" -c user.name=ci -c user.email=ci@example.com commit -q --allow-empty -m init
-          "$ralph" new smoke "$RUNNER_TEMP/app"
-          "$ralph" status smoke
-
-  # Runs only on a commit no job above failed: they all passed, or all skipped
-  # because this is the release PR's merge. With changesets pending it
-  # opens or updates the release PR; once that PR is merged it publishes to npm
-  # (trusted publishing, no token), tags vX.Y.Z, writes the GitHub Release and
-  # bumps the Homebrew formula in vkuprin/homebrew-tap.
-  release:
-    needs: [linux, macos, windows, package]
-    if: >-
-      ${{ !cancelled()
-      && !contains(needs.*.result, 'failure')
-      && !contains(needs.*.result, 'cancelled')
-      && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-24.04
-    concurrency: release
-    permissions:
-      contents: write
-      pull-requests: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v5
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.8
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-      # Trusted publishing needs npm 11.5.1 or later.
-      - run: npm install -g npm@latest
-      - run: bun install --frozen-lockfile
-      - id: changesets
-        uses: changesets/action@v2
-        with:
-          publish-script: bunx changeset publish
-          version-script: bun run version-packages
-          commit-message: "chore: release"
-          pr-title: "chore: release"
-        env:
-          NPM_CONFIG_PROVENANCE: "true"
-      - id: version
-        if: steps.changesets.outputs.published == 'true'
-        run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
-      # The tap is reached with a deploy key that can write to vkuprin/homebrew-tap
-      # and nothing else, and github.com's host key is pinned rather than trusted
-      # on first use.
-      - if: steps.changesets.outputs.published == 'true'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
-        run: |
-          set -euo pipefail
-          url="https://github.com/vkuprin/ralph-harness/archive/refs/tags/v${VERSION}.tar.gz"
-          sha=$(curl -fsSL --retry 5 --retry-all-errors "$url" | sha256sum | cut -d' ' -f1)
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$TAP_KEY" > ~/.ssh/tap
-          chmod 600 ~/.ssh/tap
-          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > ~/.ssh/known_hosts
-          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
-          git clone -q git@github.com:vkuprin/homebrew-tap.git tap
-          cd tap
-          sed -i -E "s|^  url \".*\"$|  url \"${url}\"|; s|^  sha256 \".*\"$|  sha256 \"${sha}\"|" Formula/ralph.rb
-          grep -qF "  url \"${url}\"" Formula/ralph.rb
-          grep -qF "  sha256 \"${sha}\"" Formula/ralph.rb
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -qam "ralph ${VERSION}"
-          git push -q origin HEAD
+          for i in 1 2 3 4 5; do
+            echo "::group::run $i"
+            bun test --timeout 600000 tests/e2e/cli.test.ts -t "ralph start says so when the loop did not start" || echo "RUN $i FAILED"
+            echo "::endgroup::"
+          done
+      - name: start trace
+        if: always()
+        run: cat /c/ralph-debug/start.log || true
+      - name: the fetch transport test
+        continue-on-error: true
+        run: bun test --timeout 600000 tests/e2e/edges.test.ts -t "a fetch that never answers"
