@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { inFence, lastNonBlank, plain, section, stripEscapes } from "../../src/lib/text.ts";
+import { inFence, isHeading, lastNonBlank, plain, section, stripEscapes } from "../../src/lib/text.ts";
 
 const ESC = "\x1b";
 
@@ -84,5 +84,38 @@ describe("section", () => {
   });
   test("nor does one start a section", () => {
     expect(section("```\n## Steering\nquoted\n```\n", "## Steering")).toBe("");
+  });
+  test("a heading that only starts with the name is another section", () => {
+    // The reviewer is handed `## The job` as the job. A PROMPT.md for a job
+    // board has a `## The jobs table` too, and its notes were handed over as
+    // part of the job.
+    const prompt = "## The job\n\nFix the login.\n\n## The jobs table\n\nschema notes\n";
+    expect(section(prompt, "## The job")).toBe("\nFix the login.");
+  });
+});
+
+describe("isHeading: the name, and not a longer word that starts with it", () => {
+  test("the name alone, or followed by what does not go on with the word", () => {
+    for (const line of [
+      "## Log",
+      "## Log ",
+      "## Log\r",
+      "## Log (newest first)",
+      "## Log: newest first",
+      "## Log — newest first",
+      "## Log ##",
+    ]) {
+      expect([line, isHeading(line, "## Log")]).toEqual([line, true]);
+    }
+  });
+  test("a longer word is another heading", () => {
+    for (const line of ["## Login flow", "## Logging", "## Logs I read", "## Log-in", "## Log_2", "## Log2", "## Logø"]) {
+      expect([line, isHeading(line, "## Log")]).toEqual([line, false]);
+    }
+  });
+  test("a line that does not start with the name is not it", () => {
+    expect(isHeading("### Log", "## Log")).toBe(false);
+    expect(isHeading(" ## Log", "## Log")).toBe(false);
+    expect(isHeading("## Lo", "## Log")).toBe(false);
   });
 });

@@ -91,11 +91,22 @@ export function inFence(lines: string[]): boolean[] {
 }
 
 /**
- * The body of a `## Heading` section of a markdown file: the lines after the
- * first line starting with `heading`, up to the next line starting with `## `,
- * with trailing newlines stripped — what `awk '/^## X/{f=1; next} /^## /{f=0} f'`
+ * Whether `line` is the heading `name` (`## Log`): the name, then nothing or
+ * anything that does not go on with the word, as in `## Log (newest first)`.
+ * A heading that only starts with the name is another section. Read as the
+ * Log, `## Login flow` had its `### ` notes counted as entries, so the cap
+ * moved real ones to the archive under PROGRESS_KEEP, or moved the notes.
+ */
+export function isHeading(line: string, name: string): boolean {
+  return line.startsWith(name) && !/^[\p{L}\p{N}_-]/u.test(line.slice(name.length));
+}
+
+/**
+ * The body of a `## Heading` section of a markdown file: the lines after each
+ * `heading` line (`isHeading`), up to the next line starting with `## `, with
+ * trailing newlines stripped — what `awk '/^## X/{f=1; next} /^## /{f=0} f'`
  * inside `$(…)` gave, except that a line in a fenced code block is never a
- * heading.
+ * heading, and `## The jobs table` is not `## The job`.
  */
 export function section(text: string, heading: string): string {
   const out: string[] = [];
@@ -103,7 +114,7 @@ export function section(text: string, heading: string): string {
   const lines = splitLines(text);
   const code = inFence(lines);
   for (const [i, line] of lines.entries()) {
-    if (!code[i] && line.startsWith(heading)) {
+    if (!code[i] && isHeading(line, heading)) {
       on = true;
       continue;
     }

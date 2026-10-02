@@ -93,3 +93,42 @@ describe("a heading in a fenced code block is quoted text, not a heading", () =>
     expect(decisions(p)).toContain("- the key is missing");
   });
 });
+
+describe("a heading that only starts with a section's name is another section", () => {
+  // `## Login flow` read as `## Log`: its three `### step` notes were counted as
+  // Log entries. Above the Log, eight entries under PROGRESS_KEEP 8 read as
+  // eleven, and the three oldest real ones went to the archive. Below it, the
+  // notes themselves went.
+  const head = "# Progress\n\n## Needs a decision\n\n- _(nothing yet)_\n\n";
+  const login = "## Login flow\n\n### step 1\n\nform\n\n### step 2\n\nsession\n\n### step 3\n\nlogout\n\n";
+  const log = (n: number, heading = "## Log") => {
+    let s = `${heading}\n\n`;
+    for (let i = n; i >= 1; i--) s += `### entry ${i}\n\nbody ${i}\n\n`;
+    return s;
+  };
+  test("one above the Log is not counted, and no entry moves", () => {
+    expect(capProgress(head + login + log(8), 8)).toEqual({ entries: 8, kept: null, archived: "" });
+  });
+  test("one below the Log ends it, and its notes stay", () => {
+    expect(capProgress(head + log(8) + login, 8)).toEqual({ entries: 8, kept: null, archived: "" });
+  });
+  test("with entries to move, only Log entries move", () => {
+    const r = capProgress(head + login + log(10) + login, 8);
+    expect(r.entries).toBe(10);
+    expect([...r.archived.matchAll(/^### (.*)$/gm)].map((m) => m[1])).toEqual(["entry 1", "entry 2"]);
+    expect(count(r.kept!, /^### step/gm)).toBe(6);
+  });
+  test("a file with only a longer heading has no Log, so the cap says it does nothing", () => {
+    expect(capProgress(`${head}## Logging\n\n### what we log\n\n### where it goes\n\n`, 1).entries).toBe(0);
+  });
+  test("the Log heading may still say more after the name", () => {
+    for (const h of ["## Log (newest first)", "## Log: newest first", "## Log\r"]) {
+      expect([h, capProgress(head + log(10, h), 8).entries]).toEqual([h, 10]);
+    }
+  });
+  test("Needs a decision is read by its name as well", () => {
+    expect(decisions("## Needs a decision\n\n- one\n\n## Needs a decisions log\n\n- two\n")).toEqual(["- one"]);
+  });
+});
+
+const count = (text: string, re: RegExp) => (text.match(re) ?? []).length;

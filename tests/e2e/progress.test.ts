@@ -364,3 +364,82 @@ describe.skipIf(IS_WIN)("a PROMPT.md or PROGRESS.md linked in from elsewhere sta
     expect(readdirSync(D).filter((f) => f.includes(".tmp."))).toEqual([]);
   });
 });
+
+describe("a heading that only starts with a section's name is another section", () => {
+  // The harness found its sections by prefix, so `## Login flow` was the Log.
+  // Measured with eight entries under PROGRESS_KEEP 8: with the notes above the
+  // Log, the cap moved three real entries to the archive ("moved 3 old Log
+  // entries"); with them below it, it moved the agent's three notes; with only
+  // `## Logging` it never said the cap was doing nothing. The reviewer, handed
+  // `## The job`, got `## The jobs table` along with it.
+  const app = fx.p("app-heading");
+  const above = fx.p("loops/heading-above");
+  const below = fx.p("loops/heading-below");
+  const nolog = fx.p("loops/heading-nolog");
+  const review = fx.p("loops/heading-review");
+  const login = "## Login flow\n\n### step 1: the form\n\nform\n\n### step 2: the session\n\nsession\n\n### step 3: logout\n\nlogout\n\n";
+  const head = () => {
+    const tpl = readFileSync(join(ROOT, "template/PROGRESS.md"), "utf8").split("\n");
+    return `${tpl
+      .slice(
+        0,
+        tpl.findIndex((l) => l.startsWith("## Log")),
+      )
+      .join("\n")}\n`;
+  };
+  const log = () => {
+    let s = "## Log\n\n";
+    for (let i = 8; i >= 1; i--) s += `### 2026-01-0${i} 10:00 — iteration ${i}\n\nentry ${i}\n\n`;
+    return s;
+  };
+  const steps = (dir: string) => count(read(join(dir, "PROGRESS.md")), /^### step/);
+  const archived = (dir: string) => readdirSync(dir).includes("PROGRESS-archive.md");
+  let S = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-heading.git"));
+    const N = fx.stub("stub-heading", ["nothing"]);
+    for (const [dir, text] of [
+      [above, head() + login + log()],
+      [below, head() + log() + login],
+      [nolog, `${head()}## Logging\n\n### what we log\n\nnotes\n\n### where it goes\n\nnotes\n\n`],
+    ] as const) {
+      fx.makeLoop(dir, app, { MAX_ITER: 1, PROGRESS_KEEP: 8 });
+      writeFileSync(join(dir, "PROGRESS.md"), text);
+      await fx.runLoop(dir, N);
+    }
+    S = fx.stub("stub-heading-review", ["commit"], ["ACCEPT"]);
+    fx.makeLoop(review, app, { WORKTREE: true, PUSH: false, REVIEW: true, MAX_ITER: 1, ITER_TIMEOUT: 30 });
+    writeFileSync(
+      join(review, "PROMPT.md"),
+      "# jobs\n\n## The job\n\nFix the login form.\n\n## The jobs table\n\nJOBS-TABLE-NOTES: the columns, for the agent alone\n\n## Done looks like\n\nthe login works\n",
+    );
+    await fx.runLoop(review, S);
+  });
+
+  test("notes above the Log are not counted, and no entry moves", () => {
+    // The step notes hold no iteration number.
+    expect(entries(join(above, "PROGRESS.md")).filter(Number.isFinite)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(archived(above)).toBe(false);
+    expect(read(join(above, "ralph.log"))).not.toContain("progress cap: moved");
+  });
+  test("and the notes themselves stay", () => {
+    expect(steps(above)).toBe(3);
+  });
+  test("notes below the Log stay in PROGRESS.md", () => {
+    expect(steps(below)).toBe(3);
+    expect(archived(below)).toBe(false);
+    expect(read(join(below, "ralph.log"))).not.toContain("progress cap: moved");
+  });
+  test("a file with only a longer heading has no Log, and the log says the cap does nothing", () => {
+    expect(read(join(nolog, "ralph.log"))).toContain("no '### ' entries under a '## Log' heading");
+  });
+  test("the reviewer is handed the job, and not the section after it whose name starts the same", () => {
+    const p = read(join(S, "prompt.review.1"));
+    expect(p).toContain("Fix the login form.");
+    expect(p).not.toContain("JOBS-TABLE-NOTES");
+  });
+  test("the reviewed commit was kept", () => {
+    expect(statuses(review)).toBe("keep");
+  });
+});
