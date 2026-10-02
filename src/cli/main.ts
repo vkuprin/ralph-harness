@@ -81,7 +81,7 @@ Loops live in $RALPH_HOME (default ~/.claude/ralph), one directory each. The
 harness lives where ralph is installed; loop contents stay on the machine,
 because they hold task state and production details. \`log\` and \`tail\` read
 ralph.log, which holds the agent's output and the harness's own errors both;
-nothing you need is only in the ralph.out that \`start\` leaves beside it.
+ralph.out, which \`start\` leaves beside it, holds only a crash of bun's own.
 `;
 
 const HOME = ralphHome();
@@ -578,8 +578,11 @@ async function cmdStart(name?: string): Promise<void> {
   const log = new Log(join(dir, "ralph.log"));
   for (let attempt = 1; ; attempt++) {
     const from = log.size();
+    // Not stdout: every line the loop logs goes there too, for a loop run by
+    // hand in a terminal, and here that made ralph.out a second ralph.log that
+    // nothing rotates. stderr is what bun says on its own, a crash, in no log.
     const fd = openSync(join(dir, "ralph.out"), "a");
-    const child = spawn(process.execPath, [LOOP_ENTRY, dir], { detached: true, windowsHide: true, stdio: ["ignore", fd, fd] });
+    const child = spawn(process.execPath, [LOOP_ENTRY, dir], { detached: true, windowsHide: true, stdio: ["ignore", "ignore", fd] });
     closeSync(fd);
     child.unref();
     const pid = child.pid!;

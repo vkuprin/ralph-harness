@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { Fx, count, join, noProc, read, rows, setup, statuses, writeConfig } from "../helpers/index.ts";
+import { Fx, IS_WIN, alive, count, join, noProc, read, rows, setup, statuses, until, writeConfig } from "../helpers/index.ts";
 
 const fx = new Fx("logs");
 
@@ -334,5 +334,74 @@ describe("the harness's own errors reach the log a human is told to read", () =>
   });
   test("ralph log shows it", () => {
     expect(logOut).toContain("cannot lock ref");
+  });
+});
+
+describe("ralph.out, which nothing rotates, is not a second copy of the log", () => {
+  // Every line the loop logs goes to stdout as well, so a loop run by hand in a
+  // terminal hears it, and `ralph start` pointed that stdout at ralph.out. So
+  // ralph.out held ralph.log over again, and nothing rotates it or removes it:
+  // ten iterations whose VERIFY_CMD ended on a 200 KB line (a JSON reporter
+  // prints its whole report as one) left ralph.log near its limit and 2,003,804
+  // bytes in ralph.out, growing by every iteration's verdict for as long as the
+  // loop ran. What bun prints of its own accord, a crash, is in no log, so that
+  // still goes to ralph.out.
+  const home = fx.p("home-out");
+  const D = join(home, "out");
+  const C = join(home, "crash");
+  const big = 50_000;
+  let started = "";
+  let out = "";
+  let crashOut = "";
+
+  /** `ralph start`, what it said, and the PID it said it started. */
+  function start(name: string, stub: string): { said: string; pid: number } {
+    const said = fx.cli(home, ["start", name], { STUB_DIR: stub }).out;
+    return { said, pid: Number(/as PID (\d+)/.exec(said)?.[1]) };
+  }
+
+  setup(async () => {
+    fx.makeRepo(fx.p("app-out"), fx.p("remote-out.git"));
+    const S = fx.stub("stub-out", ["commit", "commit", "commit", "commit"]);
+    fx.makeLoop(D, fx.p("app-out"), {
+      WORKTREE: true,
+      MAX_ITER: 4,
+      LOG_MAX_BYTES: 20000,
+      LOG_KEEP: 1,
+      VERIFY_CMD: `echo first; head -c ${big} /dev/zero | tr '\\0' x; echo; exit 1`,
+    });
+    const run = start("out", S);
+    started = run.said;
+    await until(() => rows(D).length === 4, 120);
+    await until(() => !alive(run.pid), 30);
+    out = read(join(D, "ralph.out"));
+
+    if (IS_WIN) return;
+    fx.makeRepo(fx.p("app-crash"), fx.p("remote-crash.git"));
+    fx.makeLoop(C, fx.p("app-crash"), { MAX_ITER: 3, QUIET_SLEEP: 600 });
+    // One quiet iteration, then the loop sleeps with no child of its own.
+    const crash = start("crash", fx.stub("stub-crash", ["nothing"])).pid;
+    await until(() => rows(C).length === 1, 60);
+    process.kill(crash, "SIGSEGV");
+    await until(() => !alive(crash), 30);
+    crashOut = read(join(C, "ralph.out"));
+  });
+
+  test("the loop ran under ralph start, and verify failed every iteration", () => {
+    expect(started).toContain("started out as PID");
+    expect(rows(D).map((r) => r[4])).toEqual(["revert:verify", "revert:verify", "revert:verify", "revert:verify"]);
+  });
+  test("the log has what the loop said", () => {
+    expect(allLogs(D)).toContain("verify exited 1");
+  });
+  test("ralph.out holds no line of the log", () => {
+    expect(out).not.toContain("=== iteration");
+    expect(out).not.toContain("verify exited");
+  });
+  test("ralph.out stays small however long the loop runs", () => {
+    expect(out.length).toBeLessThan(1000);
+  });
+  test.skipIf(IS_WIN)("what bun prints when the loop crashes still lands in ralph.out", () => {
+    expect(crashOut).toContain("Bun");
   });
 });

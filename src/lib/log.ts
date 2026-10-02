@@ -5,7 +5,8 @@ import { stamp } from "./clock.ts";
 // ralph.log is where a human is sent: `ralph log`, `ralph tail` and `ralph
 // status` read it, and it holds every agent's output and the harness's own
 // errors both. A line is written to the file and to stdout, so a loop run by
-// hand in a terminal still hears it; `ralph start` points stdout at ralph.out.
+// hand in a terminal still hears it; `ralph start` drops that stdout, and
+// points only stderr at ralph.out, which nothing rotates.
 //
 // Nothing holds the file open between writes. Every child that writes here
 // opens it when it starts, so a rotation between iterations cannot leave a
