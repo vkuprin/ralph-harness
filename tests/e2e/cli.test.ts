@@ -843,6 +843,18 @@ describe("ralph start says so when the loop did not start", () => {
       spoil: (d) => patchConfig(d, { RATE_LIMIT_RE: "(?<x>limit)", RATE_LIMIT_EXTRA_RE: "\\k<y>" }),
       why: "must make a regular expression as one pattern",
     },
+    // The frozen-file check read git's stdout alone, so a FROZEN that git
+    // refuses, or that names nothing in the worktree, kept every commit.
+    {
+      name: "frozen",
+      spoil: (d) => patchConfig(d, { WORKTREE: true, FROZEN: ["measure.sh", ""] }),
+      why: "the frozen-file check cannot run",
+    },
+    {
+      name: "absolute",
+      spoil: (d) => patchConfig(d, { WORKTREE: true, FROZEN: [join(app, "measure.sh")] }),
+      why: "FROZEN holds the absolute path",
+    },
     { name: "badjson", spoil: (d) => writeFileSync(join(d, "config.json"), "{not json\n"), why: "does not parse" },
     { name: "noprompt", spoil: (d) => rmSync(join(d, "PROMPT.md")), why: "loop is missing PROMPT.md" },
     { name: "nogit", spoil: (d) => patchConfig(d, { REPO: fx.p("not-a-repo") }), why: "REPO is not a git checkout" },

@@ -152,6 +152,13 @@ switch (mode) {
     appendFileSync("measure.sh", "# edited\n");
     commit("frozen");
     break;
+  case "break-diff":
+    // edits the frozen file, then sets a config value git diff and git log
+    // refuse, which rev-parse, merge-base and reset never read
+    appendFileSync("measure.sh", "# edited\n");
+    commit("break-diff");
+    git("config", "diff.renames", "bogus");
+    break;
   case "cheat":
     // commits a failing change, then quietly defangs the check without committing it
     writeFileSync("BAD", "");

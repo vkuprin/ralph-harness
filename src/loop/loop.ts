@@ -1,5 +1,5 @@
 import { accessSync, constants, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { hour, nowSec, stampMinutes } from "../lib/clock.ts";
 import { type Config, defaults, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
 import { rewrite, sameDir } from "../lib/files.ts";
@@ -442,6 +442,12 @@ export class Loop {
         REFUSED,
       );
     }
+    // The frozen-file check stops the loop when git cannot run it, which is
+    // after an agent has been paid for; say so before the first one instead.
+    if (c.WORKTREE && c.FROZEN.length) {
+      const frozen = await this.frozenProblem();
+      if (frozen) await this.refuse(`ralph: ${frozen}`, REFUSED);
+    }
     // Every iteration would exit 127 and back off, for ever, with no word about why.
     const claude = claudeProblem();
     if (claude) await this.refuse(`ralph: ${claude}`, REFUSED);
@@ -452,6 +458,25 @@ export class Loop {
         REFUSED,
       );
     }
+  }
+
+  /**
+   * Why the frozen-file check cannot read FROZEN, or "". git judges the
+   * entries, with the command the gate runs, against the empty tree, so a
+   * repository with no commit yet is asked too. An absolute path names a file
+   * in REPO, which git takes here, but the gate runs in the worktree, where the
+   * same path is outside the repository and git refuses it.
+   */
+  private async frozenProblem(): Promise<string> {
+    const { REPO, FROZEN } = this.cfg;
+    const abs = FROZEN.find((f) => isAbsolute(f));
+    if (abs !== undefined) {
+      return `FROZEN holds the absolute path ${JSON.stringify(abs)}, and the frozen-file check runs in the worktree, where it names nothing — write it relative to the top of the repository`;
+    }
+    const empty = (await run(["git", "hash-object", "-t", "tree", "--stdin"], { cwd: REPO, input: "" })).stdout.trim();
+    const d = await run(["git", "diff", "--name-only", empty, empty, "--", ...FROZEN], { cwd: REPO });
+    if (d.code === 0) return "";
+    return `the frozen-file check cannot run, so FROZEN would guard nothing: git diff exited ${d.code}: ${lastNonBlank(splitLines(d.stderr))}`;
   }
 
   /** What a start does once the lock is this process's: the remote, gh, the worktree. */
@@ -634,6 +659,7 @@ export class Loop {
 
     let status = "";
     let reason = "";
+    let unchecked = "";
     if (c.WORKTREE) {
       // Gates judge what was committed. Anything left uncommitted is thrown
       // away first, so an uncommitted edit to a frozen file cannot help a
@@ -666,13 +692,23 @@ export class Loop {
         status = "quiet";
       }
     } else if (!status && c.WORKTREE) {
-      const touched = c.FROZEN.length
-        ? splitLines(await this.gitOut(["diff", "--name-only", before, "HEAD", "--", ...c.FROZEN]))
+      // A check git could not run is not a pass. git refuses a pathspec it
+      // cannot read with nothing on stdout, and reading stdout alone kept every
+      // commit, the ones that edited a frozen file too.
+      let touched = "";
+      if (c.FROZEN.length) {
+        const d = await run(["git", "diff", "--name-only", before, "HEAD", "--", ...c.FROZEN]);
+        if (d.code !== 0) unchecked = `git diff exited ${d.code}: ${lastNonBlank(splitLines(d.stderr))}`;
+        else
+          touched = splitLines(d.stdout)
             .map((f) => `${f} `)
-            .join("")
-        : "";
-      const v = touched ? null : await this.verify();
-      if (touched) {
+            .join("");
+      }
+      const v = touched || unchecked ? null : await this.verify();
+      if (unchecked) {
+        status = "revert:frozen";
+        reason = `could not check the frozen files: ${unchecked}`;
+      } else if (touched) {
         status = "revert:frozen";
         reason = `touched frozen files: ${touched}`;
       } else if (v !== null) {
@@ -724,6 +760,12 @@ export class Loop {
     if (status.startsWith("keep")) {
       if (c.WORKTREE) this.gated(after);
       this.log.line(`iteration ${this.iter} shipped ${after} in ${took}s${reason ? ` (${reason})` : ""}`);
+    }
+    if (unchecked) {
+      // It fails the same way next time, and every agent after this one would
+      // be paid for and then reset.
+      this.stop(`the frozen-file check could not run (${unchecked}); reset to ${before} — fix FROZEN in config.json`, true);
+      return false;
     }
 
     // A limit streak clears the moment claude answers again, whatever the
@@ -1202,9 +1244,23 @@ export class Loop {
     // The messages first, so the cap cannot cut them: they are where a commit
     // claims what it measured, and the reviewer cannot reach git itself — in a
     // worktree .git is a file pointing into a repository outside its reach.
-    const messages = (await this.git(["log", "--reverse", "--format=commit %H%n%n%B", `${before}..HEAD`])).stdout;
-    const stat = (await this.git(["diff", "--stat", before, "HEAD"])).stdout;
-    const diff = (await this.git(["diff", before, "HEAD"])).stdout;
+    const shown = [
+      await this.git(["log", "--reverse", "--format=commit %H%n%n%B", `${before}..HEAD`]),
+      await this.git(["diff", "--stat", before, "HEAD"]),
+      await this.git(["diff", before, "HEAD"]),
+    ];
+    // git that cannot show the commits prints nothing, and a reviewer handed
+    // nothing still answers: its ACCEPT is of an empty diff.
+    const failed = shown.find((r) => r.code !== 0);
+    if (failed) {
+      return {
+        status: "unavailable",
+        reason: `git could not show the commits (exit ${failed.code}), so there was nothing to review`,
+        cost,
+        tokens,
+      };
+    }
+    const [messages, stat, diff] = shown.map((r) => r.stdout);
     writeFileSync(this.p("review.diff"), Buffer.from(`${messages}\n${stat}\n${diff}`).subarray(0, 200000));
     const prompt = this.read(this.p("PROMPT.md"));
     // A PROMPT.md written without that heading is still the job. Better the

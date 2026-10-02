@@ -348,3 +348,61 @@ describe("a coloured VERIFY_CMD reaches every reader as plain text", () => {
     expect(prompt).not.toContain("\x1b");
   });
 });
+
+describe("a gate whose git command fails does not read as a pass", () => {
+  // The frozen-file check read the stdout of `git diff --name-only` and dropped
+  // its exit status, and the reviewer was handed whatever `git log` and `git
+  // diff` printed. An agent that sets diff.renames to a word git does not know
+  // makes both refuse, with nothing on stdout, while rev-parse, merge-base and
+  // reset carry on. Measured before the fix: the commit that edited the frozen
+  // measure.sh was kept, and the reviewer accepted an empty diff.
+  const app = fx.p("app-nodiff");
+  const loop = fx.p("loops/nodiff");
+  const W = fx.p("app-nodiff-ralph-nodiff");
+  const rapp = fx.p("app-nodiff-review");
+  const rloop = fx.p("loops/nodiff-review");
+  let S = "";
+  let R = "";
+  let before = "";
+  let restart = { code: -1, out: "", err: "" };
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-nodiff.git"));
+    S = fx.stub("stub-nodiff", ["break-diff", "commit"]);
+    fx.makeLoop(loop, app, { WORKTREE: true, MAX_ITER: 2, VERIFY_CMD: "./measure.sh", FROZEN: ["measure.sh"] });
+    before = fx.git(app, "rev-parse", "HEAD");
+    await fx.runLoop(loop, S);
+    restart = fx.cli(join(T, "loops"), ["start", "nodiff"], { STUB_DIR: S });
+
+    fx.makeRepo(rapp, fx.p("remote-nodiff-review.git"));
+    R = fx.stub("stub-nodiff-review", ["break-diff"], ["ACCEPT"]);
+    fx.makeLoop(rloop, rapp, { WORKTREE: true, MAX_ITER: 1, REVIEW: true, VERIFY_CMD: "./measure.sh" });
+    await fx.runLoop(rloop, R);
+  });
+
+  test("the commit that edited the frozen file is reset, not kept", () => {
+    expect(statuses(loop)).toBe("revert:frozen");
+    expect(fx.git(W, "rev-parse", "HEAD")).toBe(before);
+    expect(read(join(W, "measure.sh"))).not.toContain("# edited");
+  });
+  test("the verdict says the frozen files could not be checked", () => {
+    expect(rows(loop)[0]![6]).toContain("could not check the frozen files: git diff exited 128");
+  });
+  test("the loop stops rather than pay for an agent the same check would reset", () => {
+    expect(read(join(S, "agent_calls")).trim()).toBe("1");
+    expect(read(join(loop, "ralph.log"))).toContain("stopping: the frozen-file check could not run");
+  });
+  test("the reset commit is saved under the loop's refs", () => {
+    expect(fx.git(W, "for-each-ref", "refs/ralph/nodiff/reverted/")).not.toBe("");
+  });
+  test("and the next start refuses, saying the check cannot run", () => {
+    expect(restart.code).not.toBe(0);
+    expect(restart.err).toContain("the frozen-file check cannot run");
+    expect(read(join(S, "agent_calls")).trim()).toBe("1");
+  });
+  test("the reviewer is not asked to judge a diff git could not show", () => {
+    expect(read(join(R, "review_calls"))).toBe("");
+    expect(statuses(rloop)).toBe("keep:unreviewed");
+    expect(rows(rloop)[0]![6]).toContain("git could not show the commits");
+  });
+});

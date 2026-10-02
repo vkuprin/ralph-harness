@@ -109,7 +109,7 @@
 
   // Paths a commit may not touch: the measurement script, fixtures, the tests
   // VERIFY_CMD relies on. A commit that edits one is reset, so the agent cannot
-  // pass the gate by moving it.
+  // pass the gate by moving it. Relative to the top of the repository.
   // "FROZEN": ["scripts/measure.sh", "test/fixtures"],
   "FROZEN": [],
 
