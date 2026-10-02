@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { constants, devNull } from "node:os";
-import { dlopen, FFIType, type Pointer } from "bun:ffi";
+import { dlopen, FFIType } from "bun:ffi";
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
 import { LOOP_MARK } from "../paths.ts";
@@ -97,16 +97,18 @@ function alive(pid: number): boolean {
 // without an `exec` in front of it, and TerminateJobObject on a job git was put
 // in when it started ended every process in it. A process started before the
 // assignment is outside the job, so killTree still runs taskkill /T after it.
-const jobs = new Map<number, Pointer>();
+// A HANDLE is u64 and not ptr: Bun's FFI docs say a Windows HANDLE is not an
+// address, and ptr does not carry one as expected.
+const jobs = new Map<number, bigint>();
 let kernel32: ReturnType<typeof openKernel32> | null | undefined;
 
 function openKernel32() {
   return dlopen("kernel32.dll", {
-    CreateJobObjectW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
-    OpenProcess: { args: [FFIType.u32, FFIType.bool, FFIType.u32], returns: FFIType.ptr },
-    AssignProcessToJobObject: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
-    TerminateJobObject: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.bool },
-    CloseHandle: { args: [FFIType.ptr], returns: FFIType.bool },
+    CreateJobObjectW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.u64 },
+    OpenProcess: { args: [FFIType.u32, FFIType.bool, FFIType.u32], returns: FFIType.u64 },
+    AssignProcessToJobObject: { args: [FFIType.u64, FFIType.u64], returns: FFIType.bool },
+    TerminateJobObject: { args: [FFIType.u64, FFIType.u32], returns: FFIType.bool },
+    CloseHandle: { args: [FFIType.u64], returns: FFIType.bool },
   }).symbols;
 }
 
