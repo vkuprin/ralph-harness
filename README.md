@@ -219,7 +219,7 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | `SETUP_CMD` | `""` | run once in a new worktree, like `npm ci` |
 | `VERIFY_CMD` | `""` | your check after every commit; failing resets the commit |
 | `VERIFY_TIMEOUT` | `1800` | seconds `VERIFY_CMD` may take |
-| `FROZEN` | `[]` | paths a commit may not touch, relative to the top of the repository |
+| `FROZEN` | `[]` | paths a commit may not touch, relative to the top of the repository, case and all |
 | `REVIEW` | `true` | a read-only Claude reviewer judges each commit |
 | `REVIEW_MODEL` | `MODEL` | the reviewer's model |
 | `REVIEW_LIMIT_TRIES` | `12` | times a rate-limited reviewer is retried; `0` forever |

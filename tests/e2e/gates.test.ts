@@ -549,3 +549,71 @@ describe("git looks at the files itself when it cleans the worktree", () => {
     expect(existsSync(join(W2, "dep"))).toBe(false);
   });
 });
+
+describe("a gate the config names but no gate will run is said at the start", () => {
+  // git reads a FROZEN entry as a path, case and all, and every gate runs in
+  // the worktree. Measured before the fix: FROZEN "Measure.sh" or "mesure.sh"
+  // let a commit that edited measure.sh ship, and so did WORKTREE false with
+  // FROZEN, VERIFY_CMD and REVIEW set, where a commit that VERIFY_CMD fails
+  // shipped too and the reviewer was never asked. The log said nothing but
+  // `verify=yes review=1`, and the agent was told a frozen edit is reset.
+  const app = fx.p("app-unguarded");
+  const loop = fx.p("loops/unguarded");
+  const app2 = fx.p("app-nowt");
+  const loop2 = fx.p("loops/nowt");
+  const app3 = fx.p("app-nogates");
+  const loop3 = fx.p("loops/nogates");
+  let S = "";
+  let S2 = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-unguarded.git"));
+    mkdirSync(join(app, "eval"));
+    writeFileSync(join(app, "eval", "cases.txt"), "one\n");
+    fx.git(app, "add", "-A");
+    fx.git(app, "commit", "-qm", "eval cases");
+    fx.git(app, "push", "-q", "origin", "main");
+    S = fx.stub("stub-unguarded", ["touch-frozen"]);
+    fx.makeLoop(loop, app, { WORKTREE: true, MAX_ITER: 1, FROZEN: ["Measure.sh", "mesure.sh", "eval"] });
+    await fx.runLoop(loop, S);
+
+    fx.makeRepo(app2, fx.p("remote-nowt.git"));
+    S2 = fx.stub("stub-nowt", ["touch-frozen", "commit-bad"], ["REJECT: no", "REJECT: no"]);
+    fx.makeLoop(loop2, app2, { WORKTREE: false, MAX_ITER: 2, FROZEN: ["measure.sh"], VERIFY_CMD: "./measure.sh", REVIEW: true });
+    await fx.runLoop(loop2, S2);
+
+    fx.makeRepo(app3, fx.p("remote-nogates.git"));
+    fx.makeLoop(loop3, app3, { WORKTREE: false, MAX_ITER: 1 });
+    await fx.runLoop(loop3, fx.stub("stub-nogates", ["commit"]));
+  });
+
+  test("a FROZEN entry in the wrong case is named, with the file git has", () => {
+    expect(read(join(loop, "ralph.log"))).toContain(
+      `FROZEN: "Measure.sh" matches no file in the worktree, so the frozen-file check stops only a commit that adds one — git compares case, and "measure.sh" is there`,
+    );
+  });
+  test("a FROZEN entry that names nothing is named", () => {
+    expect(read(join(loop, "ralph.log"))).toContain(
+      `FROZEN: "mesure.sh" matches no file in the worktree, so the frozen-file check stops only a commit that adds one — name a file that is there`,
+    );
+  });
+  test("an entry that names a file is not, and the check itself is unchanged", () => {
+    expect(read(join(loop, "ralph.log"))).not.toContain(`FROZEN: "eval"`);
+    expect(statuses(loop)).toBe("keep");
+  });
+  test("without WORKTREE the start says which gates judge nothing", () => {
+    expect(statuses(loop2)).toBe("keep keep");
+    expect(read(join(loop2, "ralph.log"))).toContain(
+      `WORKTREE false: VERIFY_CMD, REVIEW, FROZEN judge nothing — every gate runs in the worktree`,
+    );
+  });
+  test("and the agent is not told that a frozen edit is reset", () => {
+    const prompt = read(join(S2, "prompt.agent.1"));
+    expect(prompt).toContain("Frozen, never edit: measure.sh.");
+    expect(prompt).not.toContain("A commit that touches any of them is reset");
+    expect(read(join(S, "prompt.agent.1"))).toContain("A commit that touches any of them is reset");
+  });
+  test("a loop without WORKTREE that names no gate hears nothing about them", () => {
+    expect(read(join(loop3, "ralph.log"))).not.toContain("judge nothing");
+  });
+});

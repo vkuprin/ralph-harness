@@ -584,6 +584,38 @@ export class Loop {
     return `the frozen-file check cannot run, so FROZEN would guard nothing: git diff exited ${d.code}: ${lastNonBlank(splitLines(d.stderr))}`;
   }
 
+  /**
+   * Say once what the config asks a gate to guard and no gate will, as a
+   * LAND_OK_CMD that holds nothing is said: the start line's `verify=yes
+   * review=1` reads as if they ran. Every gate runs in the worktree, so without
+   * one VERIFY_CMD, REVIEW and FROZEN judge nothing. And git reads a FROZEN
+   * entry as a path, case and all, so one that names no file git tracks stops
+   * only a commit that adds it: `Measure.sh` or `mesure.sh` let an edit of
+   * measure.sh ship. Logged, not refused: a loop written for an older version
+   * without WORKTREE ran this way, and freezing a file that must never be
+   * created is a choice.
+   */
+  private async unguarded(): Promise<void> {
+    const c = this.cfg;
+    if (!c.WORKTREE) {
+      const named = [c.VERIFY_CMD ? "VERIFY_CMD" : "", c.REVIEW ? "REVIEW" : "", c.FROZEN.length ? "FROZEN" : ""].filter(Boolean);
+      if (named.length) {
+        this.log.line(
+          `WORKTREE false: ${named.join(", ")} judge nothing — every gate runs in the worktree, so each commit lands in ${c.REPO} unjudged`,
+        );
+      }
+      return;
+    }
+    for (const f of c.FROZEN) {
+      const ls = await this.git(["ls-files", "-z", "--", f], { quiet: true });
+      if (ls.code !== 0 || ls.stdout !== "") continue;
+      const near = (await this.git(["ls-files", "-z", "--", `:(icase)${f}`], { quiet: true })).stdout.split("\0")[0];
+      this.log.line(
+        `FROZEN: ${JSON.stringify(f)} matches no file in the worktree, so the frozen-file check stops only a commit that adds one — ${near ? `git compares case, and ${JSON.stringify(near)} is there` : "name a file that is there, relative to the top of the repository"}`,
+      );
+    }
+  }
+
   /** What a start does once the lock is this process's: the remote, gh, the worktree. */
   async start(): Promise<void> {
     const c = this.cfg;
@@ -616,6 +648,7 @@ export class Loop {
       await this.refuse(`cannot enter the work directory ${this.work}`);
     }
     if (c.WORKTREE) await this.dropUnjudged();
+    await this.unguarded();
 
     if (c.LIVE_STEER) {
       writeFileSync(this.p(".agent-settings.json"), `${JSON.stringify(agentSettings())}\n`);
@@ -1305,7 +1338,9 @@ export class Loop {
         s += `\nAfter your turn the harness runs VERIFY_CMD on your commits — \`${c.VERIFY_CMD}\`, for up to ${c.VERIFY_TIMEOUT}s — and resets them if it fails. It runs whatever you did, so do not run the whole of it yourself: run the tests that cover what you changed, and leave the full run to the harness.\n`;
       }
     }
-    if (c.FROZEN.length) s += `\nFrozen, never edit: ${c.FROZEN.join(" ")}. A commit that touches any of them is reset.\n`;
+    // Without the worktree no gate runs, and the agent is not told one does.
+    if (c.FROZEN.length)
+      s += `\nFrozen, never edit: ${c.FROZEN.join(" ")}.${c.WORKTREE ? " A commit that touches any of them is reset." : ""}\n`;
 
     const e = c.ESCALATE_AFTER;
     if (e > 0 && this.trouble >= e * 2) {
