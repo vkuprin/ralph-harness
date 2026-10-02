@@ -78,4 +78,7 @@ describe("limitLine", () => {
   test("case does not matter", () => {
     expect(limitLine(["CREDIT BALANCE IS TOO LOW"], re)).not.toBeNull();
   });
+  test("a coloured limit line comes back as plain text, since it becomes the reason", () => {
+    expect(limitLine(["\x1b[31mWeekly limit reached\x1b[0m\t"], re)).toBe("Weekly limit reached ");
+  });
 });

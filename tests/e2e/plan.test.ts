@@ -109,6 +109,80 @@ describe("PLAN_FIRST: plan mode, approved by the harness, carried out in the sam
   });
 });
 
+describe("PLAN_FIRST: an agent that plans twice in one run gets both plans into the log, apart", () => {
+  const app = fx.p("app-twice");
+  const loop = fx.p("loops/twice");
+  let S = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-twice.git"));
+    S = fx.stub("stub-twice", ["plan-twice"]);
+    fx.makeLoop(loop, app, { MAX_ITER: 1, PLAN_FIRST: true });
+    await fx.runLoop(loop, S);
+  });
+
+  test("both plans are approved", () => {
+    const replies = read(join(S, "approve.1"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as { id: number; result: { content?: { text: string }[] } });
+    for (const id of [3, 5]) {
+      const text = replies.find((m) => m.id === id)?.result.content?.[0]?.text ?? "{}";
+      expect((JSON.parse(text) as { behavior?: string }).behavior).toBe("allow");
+    }
+  });
+  test("the first plan's last line stands alone, and the second plan's heading starts a line of its own", () => {
+    const log = lines(join(loop, "ralph.log"));
+    expect(log).toContain("1. read the code");
+    expect(log).toContain("## Revised");
+    expect(log.join("\n")).not.toContain("code## Revised");
+  });
+  test("a rule goes between the two, after the first and before the second", () => {
+    const log = lines(join(loop, "ralph.log"));
+    const first = log.indexOf("1. read the code");
+    const rule = log.indexOf("---", first);
+    expect(first).toBe(log.findIndex((l) => l.endsWith("plan approved:")) + 1);
+    expect(rule).toBeGreaterThan(first);
+    expect(log.indexOf("## Revised")).toBeGreaterThan(rule);
+    expect(statuses(loop)).toBe("keep");
+  });
+});
+
+describe("the approve server answers even when it cannot keep the plan", () => {
+  const msg = (id: number, tool: string, input: object) =>
+    JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "approve", arguments: { tool_name: tool, input } } });
+  /** The server's replies to two ExitPlanMode calls, with RALPH_PLAN_FILE set to `file`. */
+  const ask = (file: string) => {
+    const r = Bun.spawnSync([process.execPath, join(ROOT, "hooks/approve-plan.ts")], {
+      stdin: Buffer.from(`${msg(1, "ExitPlanMode", { plan: "a plan" })}\n${msg(2, "Bash", { command: "ls" })}\n`),
+      env: { ...process.env, RALPH_PLAN_FILE: file },
+      timeout: 30_000,
+    });
+    return r.stdout
+      .toString()
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as { id: number; result: { content: { text: string }[] } })
+      .map((m) => ({ id: m.id, behavior: (JSON.parse(m.result.content[0]!.text) as { behavior: string }).behavior }));
+  };
+
+  test("a plan file in a directory that is gone: the plan is still approved, and the next prompt still answered", () => {
+    expect(ask(fx.p("no-such-dir/.plan.md"))).toEqual([
+      { id: 1, behavior: "allow" },
+      { id: 2, behavior: "deny" },
+    ]);
+  });
+  test("a plan file that is a directory: the same", () => {
+    const d = fx.p("plan-is-a-dir");
+    mkdirSync(d);
+    expect(ask(d)).toEqual([
+      { id: 1, behavior: "allow" },
+      { id: 2, behavior: "deny" },
+    ]);
+  });
+});
+
 describe("PLAN_FIRST when the agent never asks to leave plan mode", () => {
   const app = fx.p("app-noplan");
   const loop = fx.p("loops/noplan");

@@ -239,3 +239,75 @@ describe("NOTIFY_CMD: the loop tells the human instead of failing quietly", () =
     expect(tpl).toContain("api.telegram.org");
   });
 });
+
+// An environment variable holds no NUL byte, and the system refuses one past
+// its size limit. RALPH_MESSAGE once carried the agent's words and a
+// command's last line whole, and spawn threw: the loop ended with an internal
+// error, and the "stopped" notice after it threw the same way.
+describe("a notification the environment could not carry whole still goes out, and the loop runs on", () => {
+  const app = fx.p("app-nb");
+  const remote = fx.p("remote-nb.git");
+
+  // The agent pastes binary output into a question.
+  const nul = fx.p("loops/nb-nul");
+  const nulLog = fx.p("notify-nb-nul.log");
+  let nulRc = -1;
+
+  // A VERIFY_CMD whose last line is 1.5 MB: a test reporter's JSON on one line.
+  const big = fx.p("loops/nb-big");
+  const bigLog = fx.p("notify-nb-big.log");
+  let bigRc = -1;
+
+  setup(async () => {
+    fx.makeRepo(app, remote);
+
+    mkNotifier(nulLog, fx.p("notify-nb-nul.sh"));
+    fx.makeLoop(nul, app, {
+      WORKTREE: true,
+      MAX_ITER: 2,
+      ITER_TIMEOUT: 30,
+      VERIFY_CMD: "./measure.sh",
+      NOTIFY_CMD: sq(fx.p("notify-nb-nul.sh")),
+    });
+    nulRc = await fx.runLoop(nul, fx.stub("stub-nb-nul", ["decide-nul", "commit"]));
+
+    mkNotifier(bigLog, fx.p("notify-nb-big.sh"));
+    fx.makeLoop(big, app, {
+      WORKTREE: true,
+      MAX_ITER: 2,
+      ESCALATE_AFTER: 1,
+      ITER_TIMEOUT: 30,
+      VERIFY_CMD: "echo first; head -c 1500000 /dev/zero | tr '\\0' x; echo; exit 1",
+      NOTIFY_CMD: sq(fx.p("notify-nb-big.sh")),
+    });
+    bigRc = await fx.runLoop(big, fx.stub("stub-nb-big", ["commit", "commit"]));
+  });
+
+  test("a question holding a NUL byte is notified", () => {
+    expect(events(nulLog)).toEqual(["decision", "stopped"]);
+  });
+  test("with its words, and the NUL gone", () => {
+    const m = field(5, "decision", nulLog);
+    expect(m).toContain("is this file ours?");
+    expect(m).not.toContain("\0");
+  });
+  test("and the loop ran on to MAX_ITER", () => {
+    expect(nulRc).toBe(0);
+    expect(statuses(nul)).toBe("quiet keep");
+    expect(read(join(nul, "ralph.log"))).not.toContain("internal error");
+  });
+
+  test("a stuck event whose reason is a 1.5 MB line is notified", () => {
+    expect(events(bigLog)).toEqual(["stuck", "stopped"]);
+  });
+  test("cut to at most 4000 bytes, from its start", () => {
+    const m = field(5, "stuck", bigLog);
+    expect(Buffer.byteLength(m)).toBeLessThanOrEqual(4000);
+    expect(m).toMatch(/^1 iterations in a row were reverted or failed; the last: revert:verify — verify exited 1: x{100}/);
+  });
+  test("and that loop ran on to MAX_ITER too", () => {
+    expect(bigRc).toBe(0);
+    expect(statuses(big)).toBe("revert:verify revert:verify");
+    expect(read(join(big, "ralph.log"))).not.toContain("internal error");
+  });
+});

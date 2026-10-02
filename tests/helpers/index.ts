@@ -123,9 +123,34 @@ export interface Ran {
   err: string;
 }
 
+/**
+ * Seconds one `Fx.sh` command may run. The longest the suite makes on purpose
+ * took 15s on macOS (`ralph stop` waiting out a loop that ignores TERM), and
+ * `ralph start` can wait 3 × 30s for a loop that hangs at boot. A command that
+ * hangs now costs its test five minutes, instead of the whole job.
+ */
+const SH_TIMEOUT = 300;
+
+/**
+ * A loop the suite started. `proc` is the process running now, and the boot
+ * watch in `startLoop` may replace it, so a `proc` read earlier can be one that
+ * is gone: a TERM sent to it once missed the replacement, whose agent then held
+ * `done` past the hook's 600s. A run is stopped through `kill` or `term`, which
+ * reach the process running when they are called and start none after it.
+ */
 export interface LoopRun {
-  proc: Bun.Subprocess;
+  readonly proc: Bun.Subprocess;
   done: Promise<number>;
+  /** Set by `kill` and `term`: no process is started after the one running now. */
+  stopped: boolean;
+  /**
+   * `performance.now()` when the process running now was spawned. A test that
+   * times the loop starts here: the wait on one that hung at boot, which the
+   * suite killed and replaced, is the suite's and not the loop's.
+   */
+  readonly startedAt: number;
+  /** `signal` to the process running now, and no restart after it. */
+  kill(signal?: NodeJS.Signals): void;
 }
 
 /**
@@ -187,18 +212,32 @@ export class Fx {
     return out;
   }
 
-  /** Run a command to completion. */
-  sh(argv: string[], opts: { cwd?: string; env?: Record<string, string | undefined>; input?: string } = {}): Ran {
+  /**
+   * Run a command to completion, or throw once it has run `timeout` seconds
+   * (SH_TIMEOUT). A synchronous spawn blocks the event loop, so bun's own test
+   * timeout cannot end one that never returns, and on Windows one `fx.cli`
+   * call held its job until the 45-minute cap cancelled it.
+   */
+  sh(argv: string[], opts: { cwd?: string; env?: Record<string, string | undefined>; input?: string; timeout?: number } = {}): Ran {
     // Windows starts no script by its #! line; bun runs the CLI there.
     if (IS_WIN && argv[0] === cliPath()) argv = [process.execPath, ...argv];
+    const secs = opts.timeout ?? SH_TIMEOUT;
     const r = Bun.spawnSync(argv, {
       cwd: opts.cwd,
       env: this.env(opts.env),
       stdin: opts.input === undefined ? "ignore" : new TextEncoder().encode(opts.input),
       stdout: "pipe",
       stderr: "pipe",
+      timeout: secs * 1000,
+      // TERM is the default, and a command that ignores it ran on to its end.
+      killSignal: "SIGKILL",
     });
-    return { code: r.exitCode ?? 128, out: r.stdout.toString(), err: r.stderr.toString() };
+    const out = r.stdout.toString();
+    const err = r.stderr.toString();
+    if (r.exitedDueToTimeout) {
+      throw new Error(`${argv.join(" ")} did not return within ${secs}s and was killed\nstdout: ${out}\nstderr: ${err}`);
+    }
+    return { code: r.exitCode ?? 128, out, err };
   }
 
   /** `bash -c script`, with the arguments after it as $1, $2, … */
@@ -266,12 +305,18 @@ export class Fx {
    * Start the loop on `dir`, output to `dir/ralph.out`. Bun on Linux now and
    * then never finishes loading the loop (see cmdStart), and a test waiting on
    * it waited out the whole hook timeout; so, as `ralph start` does, a loop
-   * that has not taken its lock or exited within 30s is killed and started
-   * again, twice at most. `proc` is the process running now.
+   * that has not taken its lock or exited within `bootWait` seconds (30) is
+   * killed and started again, twice at most, unless the run was stopped.
    */
-  startLoop(dir: string, stub: string, opts: { remote?: string; env?: Record<string, string | undefined> } = {}): LoopRun {
+  startLoop(
+    dir: string,
+    stub: string,
+    opts: { remote?: string; env?: Record<string, string | undefined>; bootWait?: number } = {},
+  ): LoopRun {
+    let startedAt = 0;
     const spawnOnce = (flags: string) => {
       const out = openSync(join(dir, "ralph.out"), flags);
+      startedAt = performance.now();
       const proc = Bun.spawn(loopArgv(dir), {
         env: this.env({ STUB_DIR: stub, STUB_REMOTE: opts.remote ?? "", ...opts.env }),
         stdin: "ignore",
@@ -281,20 +326,40 @@ export class Fx {
       closeSync(out);
       return proc;
     };
-    const run: LoopRun = { proc: spawnOnce("w"), done: Promise.resolve(0) };
+    let current = spawnOnce("w");
+    const run: LoopRun = {
+      get proc() {
+        return current;
+      },
+      get startedAt() {
+        return startedAt;
+      },
+      done: Promise.resolve(0),
+      stopped: false,
+      kill(signal = "SIGTERM") {
+        run.stopped = true;
+        current.kill(signal);
+      },
+    };
     run.done = (async () => {
       for (let attempt = 1; ; attempt++) {
-        const proc = run.proc;
+        const proc = current;
         let exited = false;
         void proc.exited.then(() => {
           exited = true;
         });
         const booted = () => exited || read(join(dir, "ralph.lock")).trim() === String(proc.pid);
-        if ((await until(booted, 30)) || attempt >= 3) return proc.exited;
-        console.warn(`loop ${dir} (PID ${proc.pid}) had not started after 30s; bun never finished loading it — starting it again`);
+        if ((await until(booted, opts.bootWait ?? 30)) || attempt >= 3) return proc.exited;
         proc.kill("SIGKILL");
-        await proc.exited;
-        run.proc = spawnOnce("a");
+        const code = await proc.exited;
+        // A stop that came while this one hung, or while it was being killed:
+        // on Windows the stop file is never read by a loop that hangs, and its
+        // replacement would delete it and run on.
+        if (run.stopped) return code;
+        console.warn(
+          `loop ${dir} (PID ${proc.pid}) had not started after ${opts.bootWait ?? 30}s; bun never finished loading it — starting it again`,
+        );
+        current = spawnOnce("a");
       }
     })();
     return run;
@@ -414,17 +479,19 @@ export async function waitProc(pid: number, text: string): Promise<boolean> {
 
 /**
  * What `ralph stop` sends a loop: TERM, or on Windows, which has no TERM a
- * program can catch, the stop file the loop watches for. `pid` when the loop
- * is not `proc` itself (one `ralph start` put in the background).
+ * program can catch, the stop file the loop watches for. `run` is stopped
+ * whatever happens, so its boot watch starts nothing after this. `pid` when
+ * the loop is not the run's process (one `ralph start` put in the background).
  */
-export function term(dir: string, proc: Bun.Subprocess | null, pid?: number): void {
+export function term(dir: string, run: LoopRun | null, pid?: number): void {
+  if (run) run.stopped = true;
   if (IS_WIN) {
     writeFileSync(join(dir, "ralph.stop"), "");
     return;
   }
   try {
     if (pid) process.kill(pid, "SIGTERM");
-    else proc?.kill("SIGTERM");
+    else run?.kill("SIGTERM");
   } catch {}
 }
 

@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import {
   Fx,
   type HookAnswer,
+  IS_WIN,
   count,
   events,
   field,
@@ -10,6 +11,8 @@ import {
   lines,
   loopArgv,
   mkNotifier,
+  noProc,
+  patchConfig,
   read,
   rows,
   setup,
@@ -50,9 +53,12 @@ describe("ERROR_STOP, and the backoff between failures", () => {
     fx.makeLoop(loop, app, { MAX_ITER: 5, ERROR_STOP: 2, NOTIFY_CMD: sq(fx.p("notify-es.sh")) });
     await fx.runLoop(loop, fx.stub("stub-es", ["fail", "fail", "fail"]));
     fx.makeLoop(loop2, app, { MAX_ITER: 3, ERROR_SLEEP: 1 });
-    const t0 = Date.now();
-    await fx.runLoop(loop2, fx.stub("stub-es2", ["fail", "fail", "nothing"]));
-    took = Date.now() - t0;
+    // Timed from the spawn of the process that ran: a loop bun never finished
+    // loading is killed and started again after 30s, and that wait is the
+    // suite's. Linux CI read 33464ms so, in run 36997718482.
+    const run = fx.startLoop(loop2, fx.stub("stub-es2", ["fail", "fail", "nothing"]));
+    await run.done;
+    took = performance.now() - run.startedAt;
   });
 
   test("ERROR_STOP stops the loop after that many failures in a row", () => {
@@ -83,10 +89,10 @@ describe("a signal during a nap ends the loop at once", () => {
     await until(() => read(join(loop, "ralph.log")).includes("shipped nothing"), 30);
     await Bun.sleep(300);
     const t0 = Date.now();
-    term(loop, run.proc);
+    term(loop, run);
     code = await Promise.race([run.done, Bun.sleep(15000).then(() => -1)]);
     took = Date.now() - t0;
-    if (code === -1) run.proc.kill("SIGKILL");
+    if (code === -1) run.kill("SIGKILL");
   });
 
   test("TERM in the middle of a 600s nap ends the loop within seconds", () => {
@@ -96,6 +102,72 @@ describe("a signal during a nap ends the loop at once", () => {
   test("it says where it stopped, and lets go of the lock", () => {
     expect(read(join(loop, "ralph.log"))).toContain("ralph stopped by signal during iteration 1");
     expect(existsSync(join(loop, "ralph.lock"))).toBe(false);
+  });
+});
+
+describe("after the last iteration the loop ends, it does not wait first", () => {
+  // Every pause exists to space one iteration from the next, and after
+  // MAX_ITER there is no next. The loop used to sleep its backoff, its quiet
+  // pause and STEP_SLEEP, and then wait for ACTIVE_HOURS to open again, before
+  // it looked at MAX_ITER: up to a day "running" with nothing pending, and
+  // PR_MERGE waited behind it. A limit is the exception: the same iteration
+  // runs again, so its wait still belongs.
+  const hour = fx.p("hour-last");
+  const cases: Record<string, { cfg: Record<string, string | number | boolean>; modes: string[]; status: string }> = {
+    revert: {
+      cfg: { WORKTREE: true, VERIFY_CMD: "false", ERROR_SLEEP: 600, STEP_SLEEP: 600 },
+      modes: ["commit"],
+      status: "revert:verify",
+    },
+    keep: { cfg: { STEP_SLEEP: 600 }, modes: ["commit"], status: "keep" },
+    quiet: { cfg: { QUIET_SLEEP: 600, STEP_SLEEP: 600 }, modes: ["nothing"], status: "quiet" },
+    error: { cfg: { ERROR_SLEEP: 600, STEP_SLEEP: 600 }, modes: ["fail"], status: "error" },
+    // The window closes during the last iteration's gate.
+    hours: {
+      cfg: { WORKTREE: true, ACTIVE_HOURS: "22-08", ACTIVE_POLL: 1, VERIFY_CMD: `printf '09\\n' > ${sq(hour)}` },
+      modes: ["commit"],
+      status: "keep",
+    },
+    limit: { cfg: { RATE_LIMIT_SLEEP: 2 }, modes: ["limit", "commit"], status: "ratelimit keep" },
+  };
+  const ended: Record<string, number | "timeout"> = {};
+  const took: Record<string, number> = {};
+
+  setup(async () => {
+    writeFileSync(hour, "23\n");
+    await Promise.all(
+      Object.entries(cases).map(async ([name, c]) => {
+        const app = fx.p(`app-last-${name}`);
+        fx.makeRepo(app, fx.p(`remote-last-${name}.git`));
+        fx.makeLoop(fx.p(`loops/last-${name}`), app, { MAX_ITER: 1, ...c.cfg });
+        const t0 = Date.now();
+        const run = fx.startLoop(fx.p(`loops/last-${name}`), fx.stub(`stub-last-${name}`, c.modes), {
+          env: { RALPH_TEST_HOUR: hour },
+        });
+        ended[name] = await Promise.race([run.done, Bun.sleep(60_000).then(() => "timeout" as const)]);
+        took[name] = Date.now() - t0;
+        if (ended[name] === "timeout") {
+          run.kill("SIGKILL");
+          await run.done;
+        }
+      }),
+    );
+  });
+
+  for (const [name, c] of Object.entries(cases)) {
+    test(`${name}: the loop ends at MAX_ITER without the pause`, () => {
+      const loop = fx.p(`loops/last-${name}`);
+      expect(statuses(loop)).toBe(c.status);
+      expect(ended[name]).toBe(0);
+      expect(read(join(loop, "ralph.log"))).toContain("stopping: hit MAX_ITER=1");
+    });
+  }
+  test("a window that closed during the last iteration is not waited for", () => {
+    expect(read(fx.p("loops/last-hours", "ralph.log"))).not.toContain("outside ACTIVE_HOURS");
+  });
+  test("a limit on the last iteration is still waited out, and the iteration run again", () => {
+    expect(took.limit).toBeGreaterThanOrEqual(2000);
+    expect(read(fx.p("stub-last-limit", "agent_calls")).trim()).toBe("2");
   });
 });
 
@@ -281,11 +353,68 @@ describe("a rebase that fails verify is dropped (PUSH=1)", () => {
     expect(statuses(loop)).toBe("keep drop:reverify");
     expect(rows(loop)[1]![6]).toContain("after rebase onto origin/main: verify exited 1");
   });
-  test("so it never reaches origin, and is kept under refs/ralph/dropped/", () => {
+  test("so it never reaches origin, and is kept under refs/ralph/rev/dropped/", () => {
     const main = fx.git(remote, "log", "--format=%s", "main");
     expect(main).toContain("human: add human.txt");
     expect(main).not.toContain("stub: work");
-    expect(fx.git(fx.p("app-rev-ralph-rev"), "for-each-ref", "refs/ralph/dropped/")).not.toBe("");
+    expect(fx.git(fx.p("app-rev-ralph-rev"), "for-each-ref", "refs/ralph/rev/dropped/")).not.toBe("");
+  });
+});
+
+describe("a fetch that never answers is cut off, as a push is", () => {
+  // A stalled connection does not fail a fetch by itself, and every fetch ran
+  // unbounded: the loop sat in sync for good, saying nothing. Origin here is a
+  // transport that hangs, and it moves the fake clock 1000 awake seconds on
+  // its way in, so the 300s bound is reached on the next poll.
+  const ran: Record<string, { code: number | "timeout"; took: number }> = {};
+
+  async function runHung(name: string, cfg: Record<string, unknown>): Promise<void> {
+    const app = fx.p(`app-${name}`);
+    fx.makeRepo(app, fx.p(`remote-${name}.git`));
+    // The clock file comes through the environment, so no path is read by
+    // the shell, and names the hanging command on its command line.
+    const hang = `sh -c 'n=$(cat "$RALPH_TEST_CLOCK"); echo $((n+1000)) > "$RALPH_TEST_CLOCK"; exec sh -c "sleep 611; :" "$RALPH_TEST_CLOCK"' --`;
+    fx.git(app, "config", "core.sshCommand", hang);
+    fx.git(app, "remote", "set-url", "origin", "ssh://hang.invalid/x");
+    const clock = fx.p(`clock-${name}`);
+    writeFileSync(clock, "0\n");
+    fx.makeLoop(fx.p(`loops/${name}`), app, { WORKTREE: true, MAX_ITER: 1, POLL_GAP_MAX: 100000, ...cfg });
+    const run = fx.startLoop(fx.p(`loops/${name}`), fx.stub(`stub-${name}`, ["commit"]), { env: { RALPH_TEST_CLOCK: clock } });
+    const t0 = Date.now();
+    const code = await Promise.race([run.done, Bun.sleep(60_000).then(() => "timeout" as const)]);
+    ran[name] = { code, took: (Date.now() - t0) / 1000 };
+    if (code === "timeout") {
+      run.kill();
+      await run.done;
+    }
+  }
+
+  setup(async () => {
+    await runHung("hangpush", { PUSH: true, PUSH_CONFIRM: "main" });
+    await runHung("hangpr", { PUSH: "pr" });
+  });
+
+  test("the loop ends by itself, in well under the 611s the fetch would hang", () => {
+    for (const name of ["hangpush", "hangpr"]) {
+      expect(ran[name]!.code).toBe(0);
+      expect(ran[name]!.took).toBeLessThan(60);
+    }
+  });
+  test("the commit is still kept, and stays local", () => {
+    expect(statuses(fx.p("loops/hangpush"))).toBe("keep");
+    expect(fx.git(fx.p("remote-hangpush.git"), "log", "--format=%s", "main")).not.toContain("stub: work");
+    expect(statuses(fx.p("loops/hangpr"))).toBe("keep");
+    expect(fx.gitOk(fx.p("remote-hangpr.git"), "rev-parse", "-q", "--verify", "refs/heads/ralph/hangpr")).toBe(false);
+  });
+  test("each fetch says it timed out: at the worktree's creation, and in both syncs", () => {
+    for (const name of ["hangpush", "hangpr"]) {
+      const log = read(join(fx.p(`loops/${name}`), "ralph.log"));
+      expect(count(log, /git fetch origin main timed out after 300s/)).toBe(3);
+      expect(count(log, /sync: fetch failed, not pushing this time/)).toBe(2);
+    }
+  });
+  test("and the transport it was waiting on is gone", async () => {
+    expect(await until(() => noProc(fx.p("clock-hangpush")) && noProc(fx.p("clock-hangpr")), 5)).toBe(true);
   });
 });
 
@@ -325,6 +454,60 @@ describe("SETUP_CMD that works, and a branch that is reused", () => {
   });
   test("and setup is not run over it", () => {
     expect(lines(ran).length).toBe(1);
+  });
+});
+
+describe("a start stopped while SETUP_CMD runs", () => {
+  // `ralph stop` during a slow setup, an `npm ci` under bash. Measured before
+  // the fix: the TERM reached the shell alone, so what the setup had started
+  // ran on in the worktree with no loop above it, and the next start found the
+  // worktree and its branch in place, took the reuse path, which never runs
+  // SETUP_CMD, and ran the agent in a checkout its setup had never finished.
+  const app = fx.p("app-setstop");
+  const loop = fx.p("loops/setstop");
+  const hold = fx.p("setstop-hold");
+  const first = fx.p("setstop-first");
+  const ran = fx.p("setstop-ran");
+  let code = -1;
+  let held = false;
+  let gone = false;
+  let S2 = "";
+  let afterThird = 0;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-setstop.git"));
+    // The first setup waits on a child of its own, as bash waits on npm; every
+    // later one finishes at once. `hold` names that child on its command line.
+    const script = fx.p("setstop.sh");
+    writeFileSync(
+      script,
+      `if [ -e ${sq(first)} ]; then echo ran >> ${sq(ran)}; exit 0; fi\nbash -c 'sleep 30; :' ${sq(hold)} &\n: > ${sq(first)}\nwait\n`,
+    );
+    fx.makeLoop(loop, app, { WORKTREE: true, MAX_ITER: 1, QUIET_SLEEP: 1, SETUP_CMD: `bash ${sq(script)}` });
+    const run = fx.startLoop(loop, fx.stub("stub-setstop", ["nothing"]));
+    held = await until(() => existsSync(first), 30);
+    term(loop, run);
+    code = await run.done;
+    gone = await until(() => noProc(hold), 5);
+    S2 = fx.stub("stub-setstop2", ["nothing"]);
+    await fx.runLoop(loop, S2);
+    await fx.runLoop(loop, fx.stub("stub-setstop3", ["nothing"]));
+    afterThird = lines(ran).length;
+  });
+
+  test("the stop ends what the setup started, not only its shell", () => {
+    expect(held).toBe(true);
+    expect(code).toBe(130);
+    expect(gone).toBe(true);
+  });
+  test("the next start runs SETUP_CMD again, before the agent", () => {
+    const log = read(join(loop, "ralph.log"));
+    expect(count(log, /setup: bash /)).toBe(2);
+    expect(log).toContain("SETUP_CMD did not finish the last time");
+    expect(read(join(S2, "agent_calls")).trim()).toBe("1");
+  });
+  test("and once it has finished, a start does not run it again", () => {
+    expect(afterThird).toBe(1);
   });
 });
 
@@ -410,12 +593,141 @@ describe("state that outlives a restart", () => {
     expect(p).toContain("stub: sicken");
   });
   test("a churning file the human heard about is not news again after a restart", () => {
-    expect(events(churnNote).filter((e: string) => e === "churn")).toEqual(["churn"]);
+    // Red once in a full local run and never in 88 runs of its own, with
+    // nothing to say why. The loop's own record of the two runs is the why.
+    const why = ["results.tsv", ".churn-seen", "ralph.log"].map((f) => `--- ${f}\n${read(join(churn, f))}`).join("\n");
+    expect(
+      events(churnNote).filter((e: string) => e === "churn"),
+      why,
+    ).toEqual(["churn"]);
   });
   test("what the harness pushed itself is remembered, so a restart pushes on top of it", () => {
     expect(statuses(pr)).toBe("keep keep");
     expect(fx.git(remotePr, "rev-parse", "ralph/rs-pr")).toBe(fx.git(fx.p("app-rs-pr-ralph-rs-pr"), "rev-parse", "HEAD"));
     expect(events(prNote)).not.toContain("pr-blocked");
+  });
+});
+
+// A loop killed with no chance to run its handler (kill -9, the OOM killer,
+// bun crashing) left its agent running in a group of its own: `ralph status`
+// called the loop stopped, `ralph stop` found nothing to stop, and the next
+// start ran a second agent beside it in the same checkout. Windows reaps
+// nothing yet (see reapOrphan).
+describe.skipIf(IS_WIN)("a loop killed without its handler: the next start stops what it left running", () => {
+  const app = fx.p("app-k9");
+  const loop = fx.p("loops/k9");
+  const odd = fx.p("loops/k9-odd");
+  let S = "";
+  let agent = 0;
+  let outlived = false;
+  let stranger: Bun.Subprocess | null = null;
+  let strangerRunning = false;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-k9.git"));
+    fx.makeLoop(loop, app, { WORKTREE: true, MAX_ITER: 1, VERIFY_CMD: "./measure.sh" });
+    S = fx.stub("stub-k9", ["sleep", "commit"]);
+    const first = fx.startLoop(loop, S);
+    await until(() => read(join(S, "sleeper.pid")).trim() !== "", 30);
+    agent = Number(fx.sh(["ps", "-o", "ppid=", "-p", read(join(S, "sleeper.pid")).trim()]).out.trim());
+    first.kill("SIGKILL");
+    await first.done;
+    outlived = !sleeperGone(join(S, "sleeper.pid"));
+    await fx.runLoop(loop, S);
+
+    // A mark naming a PID that is now somebody else's: a process this test
+    // started, whose start is not the one recorded.
+    fx.makeLoop(odd, app, { MAX_ITER: 1 });
+    stranger = Bun.spawn(["sleep", "999"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    writeFileSync(join(odd, ".child"), `${stranger.pid} 1000000000\n`);
+    await fx.runLoop(odd, fx.stub("stub-k9-odd", ["nothing"]));
+    await Bun.sleep(200);
+    strangerRunning = stranger.exitCode === null && stranger.signalCode === null;
+    stranger.kill("SIGKILL");
+  });
+  afterAll(() => {
+    // Against a loop that reaps nothing the agent is still running, and a
+    // failed check leaves nothing behind for the next test to trip on.
+    if (agent > 1 && !noProc(`--add-dir ${loop} `)) {
+      try {
+        process.kill(-agent, "SIGKILL");
+      } catch {}
+    }
+  });
+
+  test("the agent outlived the loop that started it", () => {
+    expect(agent).toBeGreaterThan(1);
+    expect(outlived).toBe(true);
+  });
+  test("the next start stopped it and its whole group", () => {
+    expect(sleeperGone(join(S, "sleeper.pid"))).toBe(true);
+    expect(noProc(`--add-dir ${loop} `)).toBe(true);
+  });
+  test("and said so, before its own iteration began", () => {
+    const log = read(join(loop, "ralph.log"));
+    const said = log.indexOf(`start: PID ${agent}, which the last run of this loop left running`);
+    expect(said).toBeGreaterThan(-1);
+    expect(log.indexOf("=== iteration", said)).toBeGreaterThan(said);
+    expect(count(log, /was still running; stopped it/)).toBe(1);
+  });
+  test("the restarted iteration was judged, and leaves no mark behind", () => {
+    expect(read(join(S, "agent_calls")).trim()).toBe("2");
+    expect(statuses(loop)).toBe("keep");
+    expect(existsSync(join(loop, ".child"))).toBe(false);
+  });
+  test("a mark whose PID is now somebody else's kills nothing", () => {
+    expect(strangerRunning).toBe(true);
+    expect(read(join(odd, "ralph.log"))).not.toContain("stopped it and its process group");
+    expect(existsSync(join(odd, ".child"))).toBe(false);
+  });
+});
+
+describe("a start refused before the lock leaves the running loop's mark alone", () => {
+  // The loop judges its settings before it takes ralph.lock, so a second start
+  // can refuse while the first runs, and a refusal notifies. Its notifier is a
+  // bounded command, which marks .child, and the mark there is the running
+  // loop's agent: the one its next start stops if this loop is killed outright.
+  const app = fx.p("app-premark");
+  const loop = fx.p("loops/premark");
+  const notes = fx.p("premark-notify.log");
+  let S = "";
+  let before = "";
+  let after = "";
+  let second = -1;
+  let gone = false;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-premark.git"));
+    const notifier = fx.p("premark-notify.sh");
+    mkNotifier(notes, notifier);
+    fx.makeLoop(loop, app, { MAX_ITER: 1, ITER_TIMEOUT: 600, NOTIFY_CMD: sq(notifier) });
+    S = fx.stub("stub-premark", ["sleep"]);
+    const first = fx.startLoop(loop, S);
+    try {
+      await until(() => read(join(S, "sleeper.pid")).trim() !== "", 30);
+      before = read(join(loop, ".child"));
+      // A setting the running loop never read (config.json is read once), and
+      // one the second start refuses after reading it.
+      patchConfig(loop, { PR_MERGE: true });
+      second = await fx.runLoop(loop, S);
+      after = read(join(loop, ".child"));
+    } finally {
+      term(loop, first);
+      await first.done;
+      gone = sleeperGone(join(S, "sleeper.pid"));
+    }
+  });
+
+  test("the second start was refused, and said so through the notifier", () => {
+    expect(second).toBe(2);
+    expect(events(notes)).toContain("refused");
+  });
+  test("the mark still names the running loop's agent", () => {
+    expect(before).toMatch(/^\d+ \d+\n$/);
+    expect(after).toBe(before);
+  });
+  test("and the running loop, stopped, takes its agent with it", () => {
+    expect(gone).toBe(true);
   });
 });
 
@@ -491,5 +803,21 @@ describe("CLI edges", () => {
     const shippedSection = r.slice(r.indexOf("Shipped, newest first"), r.indexOf("Reverted or dropped"));
     expect(count(shippedSection, /stub: work/)).toBe(1);
     expect(shippedSection).toContain("agent call 3");
+  });
+  test("log N shows the last N lines", () => {
+    const r = fx.cli(home, ["log", "shipped", "2"]);
+    expect(r.code).toBe(0);
+    expect(r.out.trimEnd().split("\n").length).toBe(2);
+  });
+  // parseInt read `-1` (tail's habit) as -1, so log and results printed nothing
+  // and review said "nothing yet" over three shipped commits; `1e3` as 1; `0`,
+  // `abc` and an empty word as the default. All with exit 0.
+  test("an n that is not a whole number of 1 or more is refused, not guessed at", () => {
+    for (const cmd of ["log", "results", "review"])
+      for (const n of ["-1", "0", "abc", "1e3", "2x", "+2", " 2", ""]) {
+        const r = fx.cli(home, [cmd, "shipped", n]);
+        expect({ cmd, n, code: r.code, out: r.out }).toEqual({ cmd, n, code: 1, out: "" });
+        expect(r.err).toContain(`usage: ralph ${cmd} <name> [n]`);
+      }
   });
 });

@@ -3,6 +3,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import {
   Fx,
   IS_WIN,
+  type LoopRun,
   alive,
   join,
   noProc,
@@ -12,6 +13,8 @@ import {
   sleeperGone,
   statuses,
   strangers,
+  term,
+  until,
   waitProc,
 } from "../helpers/index.ts";
 
@@ -154,5 +157,113 @@ describe("a check is about this run and nothing else", () => {
   });
   test("a name no section has used is still made", () => {
     expect(existsSync(fx.p("loops/dup-ok", "config.json"))).toBe(true);
+  });
+});
+
+describe("a command the suite runs that never returns fails one test, not the job", () => {
+  // Bun.spawnSync blocks the event loop, so bun's own test timeout cannot end
+  // a command that does not return. On Windows a `ralph steer` with no text,
+  // which prints its usage and starts nothing, sat in one fx.cli call until the
+  // job was cancelled at its 45-minute cap, and no test after it was reported.
+  // This one ignores TERM, as a bun that never finished may, and exits by
+  // itself after 20s, so the suite ends even without the timeout.
+  const marker = fx.p("hung-command");
+  let thrown: unknown;
+  let secs = 0;
+
+  setup(() => {
+    const started = performance.now();
+    try {
+      fx.sh(
+        [
+          process.execPath,
+          "-e",
+          "process.on('SIGTERM', () => {}); console.log('started'); setTimeout(() => process.exit(0), 20000)",
+          marker,
+        ],
+        { timeout: 1 },
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    secs = (performance.now() - started) / 1000;
+  });
+
+  test("the call ends at its timeout, as an error that names the command", () => {
+    expect(secs).toBeLessThan(10);
+    expect(String(thrown)).toContain("did not return within 1s");
+    expect(String(thrown)).toContain(marker);
+  });
+  test("and says what the command printed before it hung", () => {
+    expect(String(thrown)).toContain("started");
+  });
+  test("and the command is not left running", () => {
+    expect(noProc(marker)).toBe(true);
+  });
+});
+
+describe("a loop run that is stopped stays stopped, whatever its boot watch is doing", () => {
+  // startLoop kills a loop that hangs at boot and starts another in its place.
+  // A test that read `run.proc` and stopped it later could stop the one that
+  // was gone: on Linux CI a TERM reached the hung loop just as the watch
+  // replaced it, the replacement ran its agent under ITER_TIMEOUT 600, and the
+  // setup waiting for it timed out at 600s. A stop goes through the run now.
+  const app = fx.p("app-stopped");
+  const hung = fx.p("loops/stopped-hung");
+  const replaced = fx.p("loops/stopped-replaced");
+  let S1 = "";
+  let S2 = "";
+  let hungEnded: number | "timeout" = "timeout";
+  let replacedEnded: number | "timeout" = "timeout";
+  let wasReplaced = false;
+
+  /** `run.done` within `secs`, or "timeout" after stopping it outright. */
+  async function within(run: LoopRun, secs: number): Promise<number | "timeout"> {
+    const r = await Promise.race([run.done, Bun.sleep(secs * 1000).then(() => "timeout" as const)]);
+    if (r === "timeout") {
+      run.kill("SIGKILL");
+      await run.done;
+    }
+    return r;
+  }
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-stopped.git"));
+    const hang = (name: string) => {
+      writeFileSync(fx.p(name), "");
+      return { RALPH_TEST_BOOT_HANG: fx.p(name) };
+    };
+
+    // Stopped while its first process hangs, before the watch gives up on it.
+    // TERM ends a hung process; on Windows the stop file is never read by one,
+    // and the replacement the watch started used to delete it and run on.
+    fx.makeLoop(hung, app, { MAX_ITER: 1, ITER_TIMEOUT: 600 });
+    S1 = fx.stub("stub-stopped-hung", ["sleep"]);
+    const one = fx.startLoop(hung, S1, { env: hang("hang-stopped-hung"), bootWait: 1 });
+    await Bun.sleep(300);
+    term(hung, one);
+    hungEnded = await within(one, 20);
+
+    // Stopped once the watch has replaced it and the replacement's agent runs:
+    // the moment the Linux run hit.
+    fx.makeLoop(replaced, app, { MAX_ITER: 1, ITER_TIMEOUT: 600 });
+    S2 = fx.stub("stub-stopped-replaced", ["sleep"]);
+    const two = fx.startLoop(replaced, S2, { env: hang("hang-stopped-replaced"), bootWait: 1 });
+    const first = two.proc;
+    await until(() => read(join(S2, "sleeper.pid")).trim() !== "", 30);
+    wasReplaced = two.proc !== first;
+    term(replaced, two);
+    replacedEnded = await within(two, 20);
+  });
+
+  test("one stopped while it hangs ends, and no other runs an agent", () => {
+    expect(hungEnded).not.toBe("timeout");
+    expect(existsSync(join(S1, "agent_calls"))).toBe(false);
+  });
+  test("one stopped after its replacement started ends, agent and all", () => {
+    expect(wasReplaced).toBe(true);
+    expect(replacedEnded).not.toBe("timeout");
+    expect(read(join(replaced, "ralph.log"))).toContain("ralph stopped by signal during iteration 1");
+    expect(sleeperGone(join(S2, "sleeper.pid"))).toBe(true);
   });
 });

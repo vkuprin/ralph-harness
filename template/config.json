@@ -38,9 +38,10 @@
   // below needs it. The worktree sits next to the repo by default, so build tools
   // that look at parent directories see the same layout.
   "WORKTREE": true,
-  // Somewhere other than next to the repo. It must be free, or already be a
-  // worktree of REPO: the harness resets and cleans whatever is there after every
-  // iteration, so it refuses to start on a checkout that is not this loop's.
+  // Somewhere other than next to the repo. It must be free, or already be this
+  // loop's worktree, with ralph/__NAME__ checked out: the harness resets and
+  // cleans whatever is there after every iteration, so it refuses to start on a
+  // checkout that is not this loop's, REPO and a folder inside it included.
   // "WORKTREE_DIR": "/somewhere/else",
 
   // The branch the worktree starts from, and the one kept commits are pushed to.
@@ -109,7 +110,7 @@
 
   // Paths a commit may not touch: the measurement script, fixtures, the tests
   // VERIFY_CMD relies on. A commit that edits one is reset, so the agent cannot
-  // pass the gate by moving it.
+  // pass the gate by moving it. Relative to the top of the repository.
   // "FROZEN": ["scripts/measure.sh", "test/fixtures"],
   "FROZEN": [],
 
@@ -169,6 +170,7 @@
   // Seconds one agent run may take before its whole process group is killed.
   // Seconds the machine was awake for, not wall clock: a laptop suspended in the
   // middle of an iteration used to kill a healthy agent the moment it woke.
+  // 0 or less is not "no limit": it is this default, and so for VERIFY_TIMEOUT.
   "ITER_TIMEOUT": 7200,
 
   // Pause before retrying an iteration that hit a limit (5-hour, weekly, credit,
@@ -277,11 +279,12 @@
   "LOG_MAX_BYTES": 10000000,
   "LOG_KEEP": 3,
 
-  // Every commit a gate throws away is kept under refs/ralph/reverted/ or
-  // refs/ralph/dropped/, so `ralph review` can still show it and you can still get
-  // it back. That ref is also the only thing keeping the commit reachable, so
-  // unbounded they stop `git gc` from ever reclaiming the objects. The newest
-  // REF_KEEP of each kind are kept and the older ones let go. 0 keeps every ref.
+  // Every commit a gate throws away is kept under refs/ralph/<loop>/reverted/ or
+  // refs/ralph/<loop>/dropped/, so `ralph review` can still show it and you can
+  // still get it back. That ref is also the only thing keeping the commit
+  // reachable, so unbounded they stop `git gc` from ever reclaiming the objects.
+  // The newest REF_KEEP of each kind are kept and the older ones let go; a loop
+  // lets go only of its own. 0 keeps every ref.
   "REF_KEEP": 20,
 
   // `ralph steer` also reaches the iteration in flight, at its next tool call.

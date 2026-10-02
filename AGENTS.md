@@ -10,7 +10,9 @@ is one class on purpose, so an iteration reads in order.
   config, signals. `src/loop/loop.ts`: the iteration, the gates, sync.
 - `src/loop/{cost,limits,progress,active-hours,merge}.ts`: pure pieces with unit tests.
 - `src/lib/`: `proc` (bounded runs, process groups, the freeze on a signal),
-  `clock` (the one test seam into time), `config`, `log`, `results`, `shq`, `text`.
+  `clock` (the one test seam into time), `config`, `files` (rewriting a file a
+  human owns, through its symlink; whether two paths are one directory), `log`,
+  `results`, `shq`, `text`.
 - `src/cli/main.ts`: the CLI (`setup`, `new`, `start`, `stop`, `status`, `results`,
   `steer`, …). `ralph setup` (and bare `ralph new`) opens Claude Code with
   `skills/ralph-new/SKILL.md` from the harness as system prompt. `src/cli/migrate.ts`: `ralph migrate`, config.sh to config.json.
@@ -140,8 +142,11 @@ Windows is a platform, not a port kept on the side, and every difference lives
 in `src/lib/proc.ts` behind `IS_WIN`, so the loop reads the same on all three.
 What stands in for what:
 
-- No process groups: `killGroup` and `killTree` kill the tree with
-  `taskkill /T /F`. No TERM a program started without a console can catch:
+- No process groups: each bounded command goes into a job object of its own
+  (`enterJob`, through `bun:ffi`), and `killGroup` and `killTree` end the job,
+  then the tree with `taskkill /T /F`. The tree alone is not enough: Git
+  Bash's fork and exec leave a process whose parent PID names one already
+  gone, and taskkill /T walks parent PIDs. No TERM a program started without a console can catch:
   `ralph stop` writes `ralph.stop` into the loop directory, and `main.ts` answers
   it through the same `onSignal` as a signal, freeze first. A new way to stop a
   loop goes through that one handler on both.

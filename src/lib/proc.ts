@@ -1,8 +1,10 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, openSync, realpathSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { constants, devNull } from "node:os";
+import { dlopen, FFIType } from "bun:ffi";
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
+import { LOOP_MARK } from "../paths.ts";
 import { nowSec, sleep } from "./clock.ts";
 
 // Everything the harness starts goes through this file, for two reasons.
@@ -21,7 +23,7 @@ import { nowSec, sleep } from "./clock.ts";
 
 // Windows has neither process groups nor a TERM a console program can catch,
 // so the same promises are kept there another way, and every difference is in
-// this file: a tree kill (taskkill /T) stands in for the group, output bound
+// this file: a job object, then a tree kill (taskkill /T), stands in for the group, output bound
 // for a file is pumped through a pipe (see `pumped`), and a command line is
 // read from CIM rather than ps.
 export const IS_WIN = process.platform === "win32";
@@ -87,6 +89,62 @@ function alive(pid: number): boolean {
   }
 }
 
+// On Windows each bounded command goes into a job object of its own, and a
+// kill ends the job. taskkill /T finds a tree by each process's parent PID, and
+// Git Bash's fork and exec leave a process whose parent PID names one already
+// gone. Measured on windows-2025: a hung git fetch's ssh transport, a `sh -c
+// "sleep 611"` under core.sshCommand, outlived taskkill /T on git with and
+// without an `exec` in front of it, and TerminateJobObject on a job git was put
+// in when it started ended every process in it. A process started before the
+// assignment is outside the job, so killTree still runs taskkill /T after it.
+// A HANDLE is u64 and not ptr: Bun's FFI docs say a Windows HANDLE is not an
+// address, and ptr does not carry one as expected.
+const jobs = new Map<number, bigint>();
+let kernel32: ReturnType<typeof openKernel32> | null | undefined;
+
+function openKernel32() {
+  return dlopen("kernel32.dll", {
+    CreateJobObjectW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.u64 },
+    OpenProcess: { args: [FFIType.u32, FFIType.bool, FFIType.u32], returns: FFIType.u64 },
+    AssignProcessToJobObject: { args: [FFIType.u64, FFIType.u64], returns: FFIType.bool },
+    TerminateJobObject: { args: [FFIType.u64, FFIType.u32], returns: FFIType.bool },
+    CloseHandle: { args: [FFIType.u64], returns: FFIType.bool },
+  }).symbols;
+}
+
+function win32() {
+  if (kernel32 === undefined) {
+    try {
+      kernel32 = openKernel32();
+    } catch {
+      kernel32 = null;
+    }
+  }
+  return kernel32;
+}
+
+/** Put a command just started into a job of its own. Without one, killTree is taskkill /T alone. */
+function enterJob(pid: number): void {
+  const k = IS_WIN ? win32() : null;
+  if (!k) return;
+  const job = k.CreateJobObjectW(null, null);
+  if (!job) return;
+  // PROCESS_SET_QUOTA | PROCESS_TERMINATE, what AssignProcessToJobObject needs.
+  const proc = k.OpenProcess(0x0101, false, pid);
+  const ok = proc ? k.AssignProcessToJobObject(job, proc) : false;
+  if (proc) k.CloseHandle(proc);
+  if (ok) jobs.set(pid, job);
+  else k.CloseHandle(job);
+}
+
+/** The command ended by itself: let go of its job, and leave what it left running alone. */
+function leaveJob(pid: number): void {
+  const job = jobs.get(pid);
+  if (!job) return;
+  jobs.delete(pid);
+  win32()?.CloseHandle(job);
+}
+
 /**
  * TERM the whole group, give it up to ten seconds, then KILL the group. The
  * KILL goes out whether or not the leader has gone: a leader that exits on TERM
@@ -125,6 +183,11 @@ export async function killGroup(pid: number, done?: Promise<number>): Promise<vo
  */
 export function killTree(pid: number): void {
   if (IS_WIN) {
+    const job = jobs.get(pid);
+    if (job) {
+      win32()?.TerminateJobObject(job, 1);
+      leaveJob(pid);
+    }
     spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
     return;
   }
@@ -250,10 +313,22 @@ function cimSplit(text: string): { started: number; command: string } | null {
   return { started: Number(text.slice(0, nl)), command: text.slice(nl + 1).trim() };
 }
 
+// ps prints a command line in the caller's locale, and outside a UTF-8 one it
+// escapes every byte past ASCII: macOS writes the ø in a loop directory as
+// M-CM-8, and procps, going by its source, as ?. A `ralph status` from cron,
+// launchd or an ssh session without LANG then matched nothing, calling a
+// running loop stopped, and `ralph stop` left it running. In C.UTF-8 ps
+// prints the bytes as they are.
+const psEnv = () => ({ ...process.env, LC_ALL: "C.UTF-8" });
+
 /** `pid`'s whole command line, or "" when it is not running. */
 export function commandLineSync(pid: string): string {
   if (!IS_WIN) {
-    const r = spawnSync("ps", ["-ww", "-p", pid, "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const r = spawnSync("ps", ["-ww", "-p", pid, "-o", "command="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: psEnv(),
+    });
     return (r.stdout ?? "").trimEnd();
   }
   const r = spawnSync(cimArgv()[0]!, cimArgv().slice(1), {
@@ -267,7 +342,7 @@ export function commandLineSync(pid: string): string {
 
 /** The same, through `run`, for the loop. */
 export async function commandLine(pid: string): Promise<string> {
-  if (!IS_WIN) return (await run(["ps", "-ww", "-p", pid, "-o", "command="])).stdout;
+  if (!IS_WIN) return (await run(["ps", "-ww", "-p", pid, "-o", "command="], { env: psEnv() })).stdout;
   return cimSplit((await run(cimArgv(), { env: { ...process.env, RALPH_PID: pid } })).stdout)?.command ?? "";
 }
 
@@ -297,6 +372,13 @@ export function etime(secs: number): string {
   return `${lead}${two(m)}:${two(secs % 60)}`;
 }
 
+/** Seconds from what ps prints as etime, or null when it is not one. */
+export function parseEtime(text: string): number | null {
+  const m = /^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/.exec(text.trim());
+  if (!m) return null;
+  return Number(m[1] ?? 0) * 86400 + Number(m[2] ?? 0) * 3600 + Number(m[3]) * 60 + Number(m[4]);
+}
+
 export interface Bounded {
   rc: number;
   timedOut: boolean;
@@ -313,6 +395,8 @@ export interface BoundedOptions {
   cwd?: string;
   /** The longest gap between two polls that counts as time the command had. */
   pollGapMax: number;
+  /** A file that names the command while it runs, for `reapOrphan`. */
+  mark?: string;
 }
 
 /**
@@ -340,18 +424,30 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
   const out = pumped ? "pipe" : openSync(opts.out, "a");
   const err = pumped ? "pipe" : errFile !== opts.out ? openSync(errFile, "a") : out;
   const [cmd, ...args] = argv;
-  const child = spawn(cmd!, args, {
-    // A group of its own, to kill whole. Windows has no groups, and there a
-    // detached child gets a console window of its own; the tree is killed.
-    detached: !IS_WIN,
-    windowsHide: true,
-    stdio: [input, out, err],
-    env: clean(opts.env ?? process.env),
-    cwd: opts.cwd,
-  });
+  let child: ChildProcess | null = null;
+  let refused = "";
+  try {
+    child = spawn(cmd!, args, {
+      // A group of its own, to kill whole. Windows has no groups, and there a
+      // detached child gets a console window of its own; the tree is killed.
+      detached: !IS_WIN,
+      windowsHide: true,
+      stdio: [input, out, err],
+      env: clean(opts.env ?? process.env),
+      cwd: opts.cwd,
+    });
+  } catch (e) {
+    refused = refusal(cmd!, e);
+  }
   closeSync(input);
   if (typeof out === "number") closeSync(out);
   if (typeof err === "number" && err !== out) closeSync(err);
+  if (!child) {
+    try {
+      appendFileSync(errFile, refused);
+    } catch {}
+    return settle({ rc: 127, timedOut: false });
+  }
   const pumps = pumped ? [pumpTo(child.stdout, opts.out), pumpTo(child.stderr, errFile)] : [];
   const done = exited(child);
   const pid = child.pid;
@@ -360,7 +456,16 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
     await drained(child, pumps);
     return settle({ rc, timedOut: false });
   }
+  enterJob(pid);
   current = { pid, done };
+  // The wall clock, which is what ps's etime is read against, and not the
+  // loop's clock. A mark that cannot be written costs only the cleanup after a
+  // kill -9, so it does not stop the command.
+  if (opts.mark) {
+    try {
+      writeFileSync(opts.mark, `${pid} ${Math.floor(Date.now() / 1000)}\n`);
+    } catch {}
+  }
   let finished = false;
   void done.then(() => {
     finished = true;
@@ -388,8 +493,88 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
   }
   const rc = await done;
   await drained(child, pumps);
+  leaveJob(pid);
   current = null;
+  if (opts.mark) rmSync(opts.mark, { force: true });
   return settle({ rc, timedOut });
+}
+
+/**
+ * Stop the command a mark names, if it is still running, and say which PID
+ * that was. A loop killed with no chance to run its handler (kill -9, the OOM
+ * killer, bun crashing) leaves its bounded command running in a group of its
+ * own, and nothing reaches it after that: `ralph status` and `ralph stop` find
+ * no loop, and the next start ran a second agent beside it in the same
+ * checkout. The loop holding the lock calls this before it starts anything,
+ * and `ralph stop` when it finds no loop running.
+ *
+ * A PID is not an identity, so the start the mark recorded has to match the
+ * one ps gives now, to within the second etime is rounded to. And a command
+ * whose parent is a running loop is that loop's, not an orphan: a dead loop's
+ * command has been handed to init or a subreaper, and a loop the CLI could not
+ * find (its ralph.lock gone, or written a moment after the CLI looked) is
+ * still the parent of what it runs. Not on Windows yet: nothing here has been
+ * run there.
+ */
+export async function reapOrphan(mark: string): Promise<number | null> {
+  if (IS_WIN) return null;
+  let text: string;
+  try {
+    text = readFileSync(mark, "utf8");
+  } catch {
+    return null;
+  }
+  const m = /^(\d+) (\d+)\n$/.exec(text);
+  let pid = 0;
+  if (m && alive(Number(m[1]))) {
+    const ppid = markedParent(Number(m[2]), (await run(["ps", "-p", m[1]!, "-o", "etime=", "-o", "ppid="])).stdout);
+    if (ppid !== null) {
+      if (/^\d+$/.test(ppid) && (await commandLine(ppid)).includes(LOOP_MARK)) return null;
+      pid = Number(m[1]);
+    }
+  }
+  if (pid) await killGroup(pid);
+  // Only the mark read above: a loop started during the wait for the group to
+  // go has written its own.
+  let now = "";
+  try {
+    now = readFileSync(mark, "utf8");
+  } catch {}
+  if (now === text) rmSync(mark, { force: true });
+  return pid || null;
+}
+
+/**
+ * The PID `reapOrphan` would stop, without stopping it or touching the mark,
+ * for a reader that only reports. `ralph status` said `stopped` while the
+ * command a killed loop left behind ran on, its agent unbounded and writing
+ * into the checkout, and gave no reason to run the `ralph stop` that ends it.
+ */
+export function orphanSync(mark: string): number | null {
+  if (IS_WIN) return null;
+  let m: RegExpExecArray | null;
+  try {
+    m = /^(\d+) (\d+)\n$/.exec(readFileSync(mark, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!m || !alive(Number(m[1]))) return null;
+  const ps = spawnSync("ps", ["-p", m[1]!, "-o", "etime=", "-o", "ppid="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const ppid = markedParent(Number(m[2]), ps.stdout ?? "");
+  if (ppid === null || (/^\d+$/.test(ppid) && commandLineSync(ppid).includes(LOOP_MARK))) return null;
+  return Number(m[1]);
+}
+
+/**
+ * The parent PID from `ps -o etime= -o ppid=`, when the start that gives
+ * matches the one a mark recorded, to within the second etime is rounded to;
+ * null when it does not, and the PID is somebody else's now.
+ */
+function markedParent(started: number, ps: string): string | null {
+  const [etime = "", ppid = ""] = ps.trim().split(/\s+/);
+  const up = parseEtime(etime);
+  if (up === null || Math.abs(Math.floor(Date.now() / 1000) - up - started) > 2) return null;
+  return ppid;
 }
 
 export interface Ran {
@@ -417,14 +602,28 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<Ran> {
   const [cmd, ...args] = argv;
   const errFd = opts.errTo && !pumped ? openSync(opts.errTo, "a") : null;
   const outFd = opts.outTo && !pumped ? openSync(opts.outTo, "a") : null;
-  const child = spawn(cmd!, args, {
-    stdio: [opts.input === undefined ? "ignore" : "pipe", outFd ?? "pipe", errFd ?? "pipe"],
-    env: clean(opts.env ?? process.env),
-    cwd: opts.cwd,
-    windowsHide: true,
-  });
+  let child: ChildProcess | null = null;
+  let refused = "";
+  try {
+    child = spawn(cmd!, args, {
+      stdio: [opts.input === undefined ? "ignore" : "pipe", outFd ?? "pipe", errFd ?? "pipe"],
+      env: clean(opts.env ?? process.env),
+      cwd: opts.cwd,
+      windowsHide: true,
+    });
+  } catch (e) {
+    refused = refusal(cmd!, e);
+  }
   if (errFd !== null) closeSync(errFd);
   if (outFd !== null) closeSync(outFd);
+  if (!child) {
+    if (opts.errTo) {
+      try {
+        appendFileSync(opts.errTo, refused);
+      } catch {}
+    }
+    return settle({ code: 127, stdout: "", stderr: opts.errTo ? "" : refused });
+  }
   plainChildren.add(child);
   const chunks: Buffer[] = [];
   const errChunks: Buffer[] = [];
@@ -471,6 +670,22 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<Ran> {
     stdout: Buffer.concat(chunks).toString("utf8"),
     stderr: Buffer.concat(errChunks).toString("utf8"),
   });
+}
+
+/**
+ * Why the system would not start a command, as a line for where its output
+ * goes. A start it refuses throws from `spawn` instead of erroring later: an
+ * environment past the system's size limit (E2BIG), or a NUL byte in a
+ * variable or an argument, which none can hold. Thrown, it ended the loop from
+ * inside a notifier, and the "stopped" notice after it threw the same way, so
+ * the human heard nothing. So it is a command that did not run, 127, as one
+ * that is not there.
+ */
+function refusal(cmd: string, e: unknown): string {
+  const why = (e instanceof Error ? e.message : String(e)).split("\n")[0]!;
+  // The message can quote the value that held the NUL.
+  // eslint-disable-next-line no-control-regex -- matching control characters is the point
+  return `${cmd}: could not start: ${[...why.replace(/[\x00-\x1f\x7f]/g, " ")].slice(0, 300).join("")}\n`;
 }
 
 function clean(env: Record<string, string | undefined>): Record<string, string> {

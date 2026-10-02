@@ -43,7 +43,8 @@ No npm dependencies.
   `QUIET_STOP` says so.
 - A usage limit is waited out and doesn't count toward `MAX_ITER`.
 - `ralph stop` stops the loop right away, together with any tests or servers
-  the agent started.
+  the agent started. When the loop itself was killed outright (`kill -9`, a
+  crash), it stops the agent the loop left running (not on Windows yet).
 
 ## Real runs
 
@@ -165,7 +166,7 @@ ralph status
 | `ralph edit <name>` | open `PROMPT.md` in `$EDITOR` |
 | `ralph start <name>` | run it in the background |
 | `ralph stop <name>` | stop the loop and everything the agent started |
-| `ralph status [name]` | running or not, iterations, verdicts, HEAD |
+| `ralph status [name]` | running or not (and anything a killed loop left running), iterations, verdicts, HEAD |
 | `ralph review <name> [n]` | what it shipped, what it threw away, what waits to merge |
 | `ralph results <name> [n]` | last n verdicts as a table |
 | `ralph log <name> [n]` | last n log lines |
@@ -193,7 +194,7 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | `REPO` | your repo | the checkout to work on, absolute path. Required |
 | `MODEL` | `"opus"` | model for the agent and the reviewer |
 | `PLAN_FIRST` | `false` | start each iteration in Claude's plan mode; the harness approves the plan and the same run carries it out |
-| `MAX_ITER` | `500` | hard ceiling on iterations |
+| `MAX_ITER` | `500` | hard ceiling on iterations; the loop ends right after the last one, with no pause and no wait for `ACTIVE_HOURS` |
 | `QUIET_STOP` | `0` | stop after this many iterations in a row ship nothing; `0` never |
 | `QUIET_SLEEP` | `1200` | seconds to wait after an iteration that shipped nothing |
 | `STEP_SLEEP` | `30` | seconds between iterations that shipped |
@@ -218,7 +219,7 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | `SETUP_CMD` | `""` | run once in a new worktree, like `npm ci` |
 | `VERIFY_CMD` | `""` | your check after every commit; failing resets the commit |
 | `VERIFY_TIMEOUT` | `1800` | seconds `VERIFY_CMD` may take |
-| `FROZEN` | `[]` | paths a commit may not touch |
+| `FROZEN` | `[]` | paths a commit may not touch, relative to the top of the repository, case and all |
 | `REVIEW` | `true` | a read-only Claude reviewer judges each commit |
 | `REVIEW_MODEL` | `MODEL` | the reviewer's model |
 | `REVIEW_LIMIT_TRIES` | `12` | times a rate-limited reviewer is retried; `0` forever |
@@ -287,7 +288,7 @@ Events: `stopped`, `refused`, `stuck`, `limit`, `limit-clear`, `decision`, `heal
 | `PROGRESS_MAX_BYTES` | `120000` | most of `PROGRESS.md` put into one prompt; `0` all |
 | `LOG_MAX_BYTES` | `10000000` | rotate `ralph.log` past this size; `0` never |
 | `LOG_KEEP` | `3` | rotated logs kept |
-| `REF_KEEP` | `20` | thrown-away commits kept under `refs/ralph/`; `0` keeps all |
+| `REF_KEEP` | `20` | thrown-away commits kept under `refs/ralph/<name>/`, of each kind; `0` keeps all |
 
 </details>
 

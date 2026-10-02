@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type SpawnOptions } from "node:child_process";
 import {
   appendFileSync,
   closeSync,
@@ -16,14 +16,30 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { stampMinutes } from "../lib/clock.ts";
+import { stamp, stampMinutes } from "../lib/clock.ts";
 import { checkSetting, parseConfig, pushProblem } from "../lib/config.ts";
+import { isCheckout, rewrite } from "../lib/files.ts";
 import { readResults } from "../lib/results.ts";
 import { Log } from "../lib/log.ts";
 import { hint } from "../lib/shq.ts";
 import { splitLines } from "../lib/text.ts";
-import { IS_WIN, claudeProblem, commandLineSync, killTree, upTimeSync } from "../lib/proc.ts";
-import { HARNESS, LOOP_ENTRY, LOOP_MARK, STOP_FILE, TEMPLATE, endsWithArg, markThen, ralphHome } from "../paths.ts";
+import { IS_WIN, claudeProblem, commandLineSync, killTree, orphanSync, reapOrphan, shellCommand, upTimeSync } from "../lib/proc.ts";
+import {
+  CHILD_FILE,
+  HARNESS,
+  LEGACY_REFS,
+  LOOP_ENTRY,
+  LOOP_MARK,
+  STARTED_FILE,
+  STOP_FILE,
+  TEMPLATE,
+  endsWithArg,
+  isLegacyRef,
+  markThen,
+  ralphHome,
+  refPrefix,
+  sortRefs,
+} from "../paths.ts";
 import { migrate } from "./migrate.ts";
 
 const USAGE = `ralph — long-running Claude Code loops: a fresh \`claude -p\` every iteration,
@@ -65,11 +81,24 @@ Loops live in $RALPH_HOME (default ~/.claude/ralph), one directory each. The
 harness lives where ralph is installed; loop contents stay on the machine,
 because they hold task state and production details. \`log\` and \`tail\` read
 ralph.log, which holds the agent's output and the harness's own errors both;
-nothing you need is only in the ralph.out that \`start\` leaves beside it.
+ralph.out, which \`start\` leaves beside it, holds only a crash of bun's own.
 `;
 
 const HOME = ralphHome();
 const out = (s: string) => process.stdout.write(s);
+// A reader that has read enough closes the pipe: `head -1`, `grep -q`, a pager
+// the human quits. Bun reports that as an error event on stdout, and with
+// nobody listening it was an uncaught error: a stack trace and exit status 1,
+// so `ralph status | grep -q running` under pipefail called a running loop not
+// running. The event comes on a later tick than the write, so a command that
+// runs to its end without waiting has finished by then, `die` included, and the
+// 0 here is the status it would have had. A command that waits is ended at its
+// next wait, so one that prints before its work is done would lose the rest:
+// print when the work is done, as `start` and `stop` do.
+process.stdout.on("error", (e: NodeJS.ErrnoException) => {
+  if (e.code === "EPIPE") process.exit(0);
+  throw e;
+});
 const red = (s: string) => `\x1b[31m${s}\x1b[0m\n`;
 const green = (s: string) => out(`\x1b[32m${s}\x1b[0m\n`);
 const dim = (s: string) => out(`\x1b[2m${s}\x1b[0m\n`);
@@ -93,6 +122,28 @@ function isDir(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A program the human works in on this terminal, run to its end: its exit
+ * status, or 127 when it could not be started. A spawn that fails reports it
+ * as an error event, and with no listener bun printed that as a crash and then
+ * never exited, so the CLI held the terminal until the human killed it.
+ */
+function attached(argv: string[], opts: SpawnOptions = {}): Promise<number> {
+  return new Promise((resolve) => {
+    const c = spawn(argv[0]!, argv.slice(1), { stdio: "inherit", ...opts });
+    c.once("error", () => resolve(127));
+    c.once("exit", (code) => resolve(code ?? 128));
+  });
 }
 
 function loopDir(name: string | undefined): string {
@@ -126,15 +177,23 @@ function alive(pid: number): boolean {
  * this loop's directory at the end of the loop's command line, so the loop is
  * the process whose command line ends with it, and nothing else counts. A
  * literal match: a path is not a pattern.
+ *
+ * ralph.pid is the PID `ralph start` spawned, and ralph.lock the one the loop
+ * wrote itself once it had passed its checks. Two starts at once both write
+ * ralph.pid, and the last one written can be the loop the lock refused, so the
+ * loop that runs was once "stopped" to `ralph status` and "not running" to
+ * `ralph stop`. Either file can name the loop.
  */
 function pidOf(dir: string, bashToo = false): string | null {
-  const pid = read(join(dir, "ralph.pid")).trim();
-  if (!/^\d+$/.test(pid) || !alive(Number(pid))) return null;
-  const cmd = commandLineSync(pid);
-  if (!endsWithArg(cmd, dir)) return null;
-  if (markThen(cmd, LOOP_MARK)) return pid;
-  // The bash harness this replaced ran `bash <harness>/ralph.sh <dir>`.
-  if (bashToo && cmd.includes("ralph") && cmd.includes(".sh ")) return pid;
+  for (const file of ["ralph.pid", "ralph.lock"]) {
+    const pid = read(join(dir, file)).trim();
+    if (!/^\d+$/.test(pid) || !alive(Number(pid))) continue;
+    const cmd = commandLineSync(pid);
+    if (!endsWithArg(cmd, dir)) continue;
+    if (markThen(cmd, LOOP_MARK)) return pid;
+    // The bash harness this replaced ran `bash <harness>/ralph.sh <dir>`.
+    if (bashToo && cmd.includes("ralph") && cmd.includes(".sh ")) return pid;
+  }
   return null;
 }
 
@@ -181,6 +240,20 @@ function stateLine(dir: string): string {
   if (!pid) return "\x1b[2mstopped\x1b[0m";
   const up = upTimeSync(pid);
   return `\x1b[32mrunning\x1b[0m  PID ${pid}  up ${up}`;
+}
+
+/**
+ * Under a stopped loop, what its last run left running when it was killed
+ * outright: the agent goes on unbounded, and "stopped" alone gave nobody a
+ * reason to run the `ralph stop` that ends it. Asks, never stops.
+ */
+function leftOver(dir: string): void {
+  if (pidOf(dir)) return;
+  const pid = orphanSync(join(dir, CHILD_FILE));
+  if (pid === null) return;
+  out(
+    `  \x1b[33mleft over   PID ${pid}, which its last run left running when it died, is still running — stop it: ${hint("ralph", "stop", basename(dir))}\x1b[0m\n`,
+  );
 }
 
 /**
@@ -267,6 +340,7 @@ function statusOne(dir: string): boolean {
   }
   const c = loopConf(dir);
   out(`${name.padEnd(20)} ${stateLine(dir)}\n`);
+  leftOver(dir);
   out(`  repo        ${c.repo || "?"}\n`);
   if (c.worktree) out(`  worktree    ${c.work} (ralph/${name})\n`);
   statusIterations(dir);
@@ -410,7 +484,7 @@ function cmdNew(args: string[]): void {
   }
   const repo = resolve(repoArg);
   if (!isDir(repo)) die(`no such directory: ${repoArg}`);
-  if (!isDir(join(repo, ".git"))) die(`not a git checkout: ${repo}`);
+  if (!isCheckout(repo)) die(`not a git checkout: ${repo}`);
   // A newline would end the comment the raw path sits in, in the template.
   if (repo.includes("\n")) die(`a repo path cannot hold a newline: ${JSON.stringify(repo)}`);
   const dir = join(HOME, name);
@@ -458,6 +532,11 @@ function booted(dir: string, pid: number, exited: () => boolean): boolean {
   return exited() || !alive(pid) || read(join(dir, "ralph.lock")).trim() === String(pid);
 }
 
+/** The loop has done its whole start, the worktree and SETUP_CMD included, and runs. */
+function started(dir: string, pid: number): boolean {
+  return read(join(dir, STARTED_FILE)).trim() === String(pid);
+}
+
 // Now and then bun on Linux never finishes loading the loop's modules: the
 // process sits in epoll with no child and no line of its own written, and a
 // loop that `ralph status` calls running does nothing for ever. So a start is
@@ -467,6 +546,29 @@ function booted(dir: string, pid: number, exited: () => boolean): boolean {
 const BOOT_WAIT = Number(process.env.RALPH_TEST_BOOT_WAIT) || 30;
 const BOOT_TRIES = 3;
 
+/**
+ * The loop exited before its start was done: a setting it could not read, a
+ * file missing, another loop holding the lock, a worktree it could not make or
+ * a SETUP_CMD that failed. It says why in ralph.log, in its own lines since
+ * `from` (bytes), and a loop that runs is the reason when there is one.
+ * "started <name>" in green, exit status 0, is what this printed for every
+ * refusal there is, and the loop was gone before the human read it.
+ */
+function notStarted(dir: string, name: string, pid: number, from: number): never {
+  if (read(join(dir, "ralph.pid")).trim() === String(pid)) rmSync(join(dir, "ralph.pid"), { force: true });
+  const other = pidOf(dir);
+  if (other) die(`already running as PID ${other}`);
+  let text = "";
+  try {
+    const all = readFileSync(join(dir, "ralph.log"));
+    text = all.subarray(all.length >= from ? from : 0).toString("utf8");
+  } catch {}
+  const said = splitLines(text)
+    .filter((l) => /^\[[^\]]*\] /.test(l))
+    .map((l) => `\n  ${l.slice(l.indexOf("] ") + 2)}`);
+  die(`${name} did not start:${said.join("") || ` see ${join(dir, "ralph.log")}`}`);
+}
+
 async function cmdStart(name?: string): Promise<void> {
   const dir = loopDir(name);
   if (!isDir(dir)) die(`no such loop: ${name}`);
@@ -475,19 +577,34 @@ async function cmdStart(name?: string): Promise<void> {
   if (running) die(`already running as PID ${running}`);
   const log = new Log(join(dir, "ralph.log"));
   for (let attempt = 1; ; attempt++) {
+    const from = log.size();
+    // Not stdout: every line the loop logs goes there too, for a loop run by
+    // hand in a terminal, and here that made ralph.out a second ralph.log that
+    // nothing rotates. stderr is what bun says on its own, a crash, in no log.
     const fd = openSync(join(dir, "ralph.out"), "a");
-    const child = spawn(process.execPath, [LOOP_ENTRY, dir], { detached: true, windowsHide: true, stdio: ["ignore", fd, fd] });
+    const child = spawn(process.execPath, [LOOP_ENTRY, dir], { detached: true, windowsHide: true, stdio: ["ignore", "ignore", fd] });
     closeSync(fd);
     child.unref();
     const pid = child.pid!;
-    let exited = false;
-    child.once("exit", () => {
-      exited = true;
-    });
+    let exitedNow = false;
+    child.once("exit", () => (exitedNow = true));
+    const exited = () => exitedNow;
     writeFileSync(join(dir, "ralph.pid"), `${pid}\n`);
-    for (let waited = 0; waited < BOOT_WAIT * 10 && !booted(dir, pid, () => exited); waited++) await Bun.sleep(100);
-    if (booted(dir, pid, () => exited)) {
+    for (let waited = 0; waited < BOOT_WAIT * 10 && !booted(dir, pid, exited); waited++) await Bun.sleep(100);
+    if (booted(dir, pid, exited)) {
+      // The lock is not the end of a start: the worktree and SETUP_CMD come
+      // after it, and a loop that refuses one of them is gone a moment later.
+      // Wait BOOT_WAIT seconds more for the loop to say its start is done; a
+      // long SETUP_CMD outlasts that, and then the line below says so.
+      const gone = () => exited() || !alive(pid);
+      for (let waited = 0; waited < BOOT_WAIT * 10 && !started(dir, pid) && !gone(); waited++) await Bun.sleep(100);
+      if (!started(dir, pid) && gone()) notStarted(dir, name!, pid, from);
       green(`started ${name} as PID ${pid}`);
+      if (!started(dir, pid)) {
+        dim(
+          `  still starting after ${BOOT_WAIT}s (a new worktree runs SETUP_CMD first), so it can still fail: ${hint("ralph", "tail", name!)}`,
+        );
+      }
       dim(`  ${hint("ralph", "status", name!)}   ${hint("ralph", "tail", name!)}   ${hint("ralph", "stop", name!)}`);
       return;
     }
@@ -505,7 +622,19 @@ async function cmdStart(name?: string): Promise<void> {
 async function cmdStop(name?: string): Promise<void> {
   const dir = loopDir(name);
   const pid = pidOf(dir);
-  if (!pid) die(`${name} is not running`);
+  if (!pid) {
+    // A loop killed outright (kill -9, the OOM killer, bun crashing) runs no
+    // handler, and its agent goes on in a group of its own with nothing left to
+    // bound it, ITER_TIMEOUT included. This said "not running" and left it
+    // writing into the checkout until the next `ralph start`.
+    const orphan = await reapOrphan(join(dir, CHILD_FILE));
+    if (orphan === null) die(`${name} is not running`);
+    const said = `PID ${orphan}, which its last run left running when it died, was still running; stopped it and its process group`;
+    // The file alone: Log.line writes to stdout too, which is the line below.
+    new Log(join(dir, "ralph.log")).raw(`[${stamp()}] ralph stop: ${said}\n`);
+    green(`${name} was not running, but ${said}`);
+    return;
+  }
   // TERM lets the loop take down the agent's whole process group (tests, dev
   // servers, MCP servers) and log where it stopped. That can take a few
   // seconds, so wait before reaching for SIGKILL. Windows has no TERM, so
@@ -552,12 +681,25 @@ function cmdStatus(name?: string): void {
   if (!found) dim(`no loops in ${HOME} — ralph new <name> <repo>`);
 }
 
-function cmdLog(name?: string, n = "40"): void {
+/**
+ * The [n] of `log`, `results` and `review`: a whole number of 1 or more, or
+ * the command refuses. parseInt read `-50` (tail's habit) as -50, so the
+ * command printed nothing and review said "nothing yet" over shipped commits;
+ * `1e3` as 1; `0` and `abc` as the default. Every one of them exited 0.
+ */
+function count(cmd: string, arg: string | undefined, fallback: number): number {
+  if (arg === undefined) return fallback;
+  if (!/^\d+$/.test(arg) || Number(arg) < 1)
+    die(`n is how many to show, a whole number of 1 or more, not ${JSON.stringify(arg)} — usage: ralph ${cmd} <name> [n]`);
+  return Number(arg);
+}
+
+function cmdLog(name?: string, nArg?: string): void {
+  const k = count("log", nArg, 40);
   const dir = loopDir(name);
   const files = logFiles(dir);
   if (!files.length) die(`no log yet for ${name}`);
   const all = splitLines(files.map(read).join(""));
-  const k = Number.parseInt(n, 10) || 40;
   out(
     all
       .slice(Math.max(0, all.length - k))
@@ -571,8 +713,7 @@ async function cmdTail(name?: string): Promise<void> {
   if (IS_WIN) return follow(join(dir, "ralph.log"));
   // -F, not -f: a rotation renames the file this is following, and -f would
   // then sit on the old one, silent, for the rest of the run.
-  const c = spawn("tail", ["-F", join(dir, "ralph.log")], { stdio: "inherit" });
-  await new Promise((r) => c.once("exit", r));
+  await attached(["tail", "-F", join(dir, "ralph.log")]);
 }
 
 /**
@@ -627,9 +768,9 @@ async function follow(file: string): Promise<never> {
  * commits it shipped, the ones the gates threw away (kept under refs/ralph/),
  * and, when it does not push, what is waiting on ralph/<name> to be merged.
  */
-function cmdReview(name?: string, nArg = "10"): void {
+function cmdReview(name?: string, nArg?: string): void {
+  const n = count("review", nArg, 10);
   const dir = loopDir(name);
-  const n = Number.parseInt(nArg, 10) || 10;
   if (!existsSync(join(dir, "config.json"))) {
     if (existsSync(join(dir, "config.sh")))
       die(`${name} keeps its settings in config.sh — convert them first: ${hint("ralph", "migrate", name!)}`);
@@ -674,19 +815,28 @@ function cmdReview(name?: string, nArg = "10"): void {
   // Newest first, by the epoch the harness put in the refname — numerically,
   // and across both kinds: sorting by name put every reverted above every
   // dropped, so a loop with many reverts never showed a dropped commit at all.
-  out("\nReverted or dropped by the gates, kept under refs/ralph/\n");
-  const refs = splitLines(git(c.work, "for-each-ref", "--format=%(refname)", "refs/ralph/reverted/", "refs/ralph/dropped/").out);
-  const epoch = (r: string) => Number.parseInt(r.split("/")[3] ?? "", 10) || 0;
-  refs.sort((a, b) => epoch(b) - epoch(a) || (a < b ? 1 : a > b ? -1 : 0));
-  let listed = 0;
-  for (const ref of refs.slice(0, n)) {
-    const l = git(c.work, "log", "-1", `--format=  %h  %s  (${ref.slice("refs/".length)})`, ref);
-    if (l.code === 0) {
-      out(l.out);
-      listed++;
+  // Only this loop's: the refs belong to the repository, which other loops
+  // may share. The ones an older version kept name no loop, so they get a
+  // heading of their own, and only when there are any.
+  const listRefs = (refs: string[]): number => {
+    let listed = 0;
+    for (const ref of sortRefs(refs).slice(0, n)) {
+      const l = git(c.work, "log", "-1", `--format=  %h  %s  (${ref.slice("refs/".length)})`, ref);
+      if (l.code === 0) {
+        out(l.out);
+        listed++;
+      }
     }
+    return listed;
+  };
+  const refsOf = (...prefixes: string[]) => splitLines(git(c.work, "for-each-ref", "--format=%(refname)", ...prefixes).out);
+  out(`\nReverted or dropped by the gates, kept under refs/ralph/${name}/\n`);
+  if (!listRefs(refsOf(refPrefix(name!, "reverted"), refPrefix(name!, "dropped")))) dim("  nothing");
+  const legacy = refsOf(...LEGACY_REFS).filter(isLegacyRef);
+  if (legacy.length) {
+    out("\nKept under refs/ralph/ by an older version, for any loop on this repository\n");
+    listRefs(legacy);
   }
-  if (!listed) dim("  nothing");
 
   if (c.worktree && c.push !== true) {
     const base = git(c.work, "rev-parse", "-q", "--verify", `origin/${c.branch}`).code === 0 ? `origin/${c.branch}` : c.branch;
@@ -705,11 +855,11 @@ function cmdReview(name?: string, nArg = "10"): void {
   dim(`look closer: ${hint("git", "-C", c.work)} show <sha>     every verdict: ${hint("ralph", "results", name!)}`);
 }
 
-function cmdResults(name?: string, nArg = "20"): void {
+function cmdResults(name?: string, nArg?: string): void {
+  const n = count("results", nArg, 20);
   const dir = loopDir(name);
   const file = join(dir, "results.tsv");
   if (!existsSync(file)) die(`no results yet for ${name}`);
-  const n = Number.parseInt(nArg, 10) || 20;
   const { header, rows } = readResults(file);
   const table = [header.split("\t"), ...rows.slice(Math.max(0, rows.length - n))];
   const widths: number[] = [];
@@ -727,7 +877,15 @@ function cmdResults(name?: string, nArg = "20"): void {
  */
 function cmdSteer(name?: string, ...words: string[]): void {
   const text = words.join(" ");
-  if (!text) die('usage: ralph steer <name> "what to do instead"');
+  if (!/\S/.test(text)) die('usage: ralph steer <name> "what to do instead"');
+  // One list item however many lines the text has: its later lines indented
+  // under the first, so none of them can be a heading of PROMPT.md. A `## Why`
+  // in the text once ended the Steering section, and the reviewer's brief,
+  // which takes that section up to the next heading, lost the rest of it.
+  const said = text.split(/\r?\n/);
+  while (!/\S/.test(said[0]!)) said.shift();
+  while (!/\S/.test(said.at(-1)!)) said.pop();
+  const entry = said.map((l, i) => (i === 0 ? l : /\S/.test(l) ? `  ${l}` : "")).join("\n");
   const dir = loopDir(name);
   const promptFile = join(dir, "PROMPT.md");
   if (!existsSync(promptFile)) die(`no such loop: ${name}`);
@@ -745,13 +903,11 @@ function cmdSteer(name?: string, ...words: string[]): void {
   for (const line of splitLines(read(promptFile))) {
     lines.push(line);
     if (!seen && line.includes(MARK)) {
-      lines.push("", `- [${stampMinutes()}] ${text}`);
+      lines.push("", `- [${stampMinutes()}] ${entry}`);
       seen = true;
     }
   }
-  const tmp = `${promptFile}.tmp.${process.pid}`;
-  writeFileSync(tmp, lines.map((l) => `${l}\n`).join(""));
-  renameSync(tmp, promptFile);
+  rewrite(promptFile, lines.map((l) => `${l}\n`).join(""));
   appendFileSync(join(dir, "STEER.md"), `${text}\n`);
   green(`steered ${name} — the running iteration sees it at its next tool call, and every later one reads it from PROMPT.md`);
 }
@@ -764,15 +920,31 @@ async function cmdSetup(): Promise<never> {
   if (problem) die(problem);
   const skill = join(HARNESS, "skills/ralph-new/SKILL.md");
   const prompt = `Set up a ralph loop on the repository in this directory, following the ralph-new instructions in your system prompt. The ralph CLI is ${join(HARNESS, "bin/ralph")}.`;
-  const c = spawn(claude, ["--append-system-prompt-file", skill, prompt], { stdio: "inherit", cwd: process.cwd() });
-  const code = await new Promise<number>((r) => c.once("exit", (n) => r(n ?? 1)));
-  process.exit(code);
+  process.exit(await attached([claude, "--append-system-prompt-file", skill, prompt], { cwd: process.cwd() }));
 }
 
+/**
+ * PROMPT.md in the human's editor. EDITOR is shell text, as git and every other
+ * tool that reads it takes it: `code --wait` and `emacsclient -t` are a program
+ * and its flags, and spawned as the name of one program they never started.
+ * bash reads the text from the environment under a constant script, and the
+ * file goes there too, so the loop's path is never part of a command line. The
+ * default, and an EDITOR that is the path of a program, are that program, as
+ * they always were: a shell would split a path at a space and, on Windows, eat
+ * its backslashes.
+ */
 async function cmdEdit(name?: string): Promise<void> {
-  const dir = loopDir(name);
-  const c = spawn(process.env.EDITOR || (IS_WIN ? "notepad" : "vi"), [join(dir, "PROMPT.md")], { stdio: "inherit" });
-  await new Promise((r) => c.once("exit", r));
+  const file = join(loopDir(name), "PROMPT.md");
+  if (!existsSync(file)) die(`no loop called ${name} in ${HOME}`);
+  const editor = process.env.EDITOR || (IS_WIN ? "notepad" : "vi");
+  let code: number;
+  if (!process.env.EDITOR || (/[\\/]/.test(editor) && isFile(editor))) {
+    code = await attached([editor, file]);
+  } else {
+    const sh = shellCommand(`eval "$RALPH_EDITOR"' "$RALPH_EDIT_FILE"'`);
+    code = await attached(sh.argv, { env: { ...process.env, ...sh.env, RALPH_EDITOR: editor, RALPH_EDIT_FILE: file } });
+  }
+  if (code !== 0) die(`the editor, ${JSON.stringify(editor)}, exited ${code}`);
 }
 
 function cmdMigrate(name?: string): void {
@@ -804,6 +976,7 @@ function cmdHelp(): void {
     const flags: string[] = [];
     if (kind === "sh") flags.push("needs ralph migrate");
     if (pidOf(dir)) flags.push("running");
+    else if (orphanSync(join(dir, CHILD_FILE)) !== null) flags.push("stopped, but left a process running");
     loops.push(`${d}${flags.length ? ` (${flags.join(", ")})` : ""}`);
   }
   if (loops.length) out(`\nYour loops: ${loops.join(", ")}\n`);

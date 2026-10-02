@@ -7,7 +7,7 @@ its turn. Write both files for a stranger, because every reader is one.
 ## The job
 
 <Two or three sentences. Name the outcome the loop is chasing, not the steps. If the
-outcome is a finite list of tasks, say so and set QUIET_STOP in config.sh — a loop
+outcome is a finite list of tasks, say so and set QUIET_STOP in config.json — a loop
 that can finish should be allowed to.>
 
 ## Done looks like

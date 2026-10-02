@@ -6,7 +6,7 @@
 // Every other prompt is denied, as it is in a --dangerously-skip-permissions run.
 //
 // JSON-RPC over stdio, one message per line. Exits when stdin ends.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, statSync } from "node:fs";
 
 const PLAN_FILE = process.env.RALPH_PLAN_FILE;
 
@@ -16,9 +16,28 @@ function reply(id: Msg["id"], result: unknown): void {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
 }
 
+/**
+ * Keep the plan for the loop's log. The loop empties the file before each run,
+ * so text already there is an earlier plan of this run: a rule goes between
+ * the two, and each ends with a newline. Appended as it came, a second plan's
+ * heading was glued to the first plan's last line. The file is only a record,
+ * so a write that fails costs the record and never the approval: a throw here
+ * once meant no answer at all, and the agent waiting on one.
+ */
+function record(plan: string): void {
+  if (!PLAN_FILE) return;
+  try {
+    let before = 0;
+    try {
+      before = statSync(PLAN_FILE).size;
+    } catch {}
+    appendFileSync(PLAN_FILE, `${before > 0 ? "\n---\n\n" : ""}${plan.endsWith("\n") ? plan : `${plan}\n`}`);
+  } catch {}
+}
+
 function decide(tool: string, input: Record<string, unknown>): object {
   if (tool === "ExitPlanMode") {
-    if (PLAN_FILE && typeof input.plan === "string") appendFileSync(PLAN_FILE, input.plan);
+    if (typeof input.plan === "string") record(input.plan);
     return {
       behavior: "allow",
       updatedInput: input,

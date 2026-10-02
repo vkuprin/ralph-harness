@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { delimiter } from "node:path";
 import {
   Fx,
   IS_WIN,
@@ -13,9 +14,12 @@ import {
   setup,
   sleeperGone,
   statuses,
+  term,
   TEMPLATE_CONFIG,
   until,
   writeConfig,
+  waitProc,
+  sq,
   ROOT,
 } from "../helpers/index.ts";
 
@@ -213,6 +217,69 @@ describe("CLI: usage, and a status with nothing to show", () => {
   });
 });
 
+// A reader that has read enough closes the pipe: `head -1`, `grep -q`, a pager
+// the human quits. That once ended the CLI with a stack trace and exit status 1,
+// after it had done its work, so `ralph status | grep -q running` under
+// pipefail called a running loop not running. Here the reader has closed the
+// pipe before the CLI starts, so every write meets a broken pipe and none can
+// slip into the pipe's buffer first. Not on Windows, where nobody has watched
+// what a broken pipe from Git Bash looks like to bun.
+describe.skipIf(IS_WIN)("a reader that stops reading ends the CLI quietly, with its own exit status", () => {
+  const home = fx.p("home-pipe");
+  const app = fx.p("app-pipe");
+  const ran = new Map<string, { code: number; err: string }>();
+  const cases = [
+    ["status"],
+    ["status", "piped"],
+    ["results", "piped"],
+    ["review", "piped"],
+    ["log", "piped"],
+    ["help"],
+    ["new", "fresh", app],
+    ["results", "nosuch"],
+  ];
+
+  /** The CLI writing into a pipe its reader has already closed: its exit status and stderr. */
+  const closedReader = (args: string[]) => {
+    const flag = fx.p(`pipe-closed-${ran.size}`);
+    const err = fx.p(`pipe-err-${ran.size}`);
+    const script = `{ while [ ! -e "$1" ]; do sleep 0.05; done; shift 2; "$@"; } 2>"$2" | { exec 0<&-; : >"$1"; }
+echo "\${PIPESTATUS[0]}"`;
+    const r = fx.sh(["bash", "-c", script, "_", flag, err, cliPath(), ...args], { env: { RALPH_HOME: home } });
+    return { code: Number(r.out.trim()), err: read(err) };
+  };
+
+  setup(() => {
+    fx.makeRepo(app, fx.p("remote-pipe.git"));
+    const loop = join(home, "piped");
+    mkdirSync(loop, { recursive: true });
+    writeConfig(loop, { REPO: app });
+    writeFileSync(join(loop, "ralph.log"), "[2026-01-01 10:00] === iteration 1 ===\n".repeat(100));
+    const head = fx.git(app, "rev-parse", "HEAD");
+    writeFileSync(
+      join(loop, "results.tsv"),
+      `time\titer\tbefore\tafter\tstatus\tsecs\treason\n${`2026-01-01 10:00:00\t1\t${head}\t${head}\tkeep\t3\t-\n`.repeat(100)}`,
+    );
+    for (const args of cases) ran.set(args.join(" "), closedReader(args));
+  });
+
+  for (const args of cases.slice(0, -1)) {
+    const label = args.slice(0, 2).join(" ");
+    test(`ralph ${label} exits 0 and prints no error`, () => {
+      expect(ran.get(args.join(" "))).toEqual({ code: 0, err: "" });
+    });
+  }
+  test("ralph new still made the loop nobody read about", () => {
+    expect(existsSync(join(home, "fresh/config.json"))).toBe(true);
+  });
+  // Guard: a fix that sets every exit status to 0 would pass all of the above.
+  test("a command that fails still says so, on stderr, with status 1", () => {
+    const r = ran.get("results nosuch")!;
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("no results yet for nosuch");
+  });
+});
+
 // Windows makes a symlink only with Developer Mode or as an administrator, and
 // installs the CLI as npm's ralph.cmd, which runs bin/ralph with bun, instead.
 describe.skipIf(IS_WIN)("CLI through a symlink on PATH", () => {
@@ -355,6 +422,8 @@ describe("ralph new --set writes settings into config.json", () => {
       repo: ["--set", "REPO=/elsewhere"],
       flag: ["--push", "pr"],
       bare: ["--set", "NOEQUALS"],
+      // Each compiles alone; joined by | they do not.
+      limits: ["--set", "RATE_LIMIT_RE=(?<x>limit)", "--set", "RATE_LIMIT_EXTRA_RE=\\k<y>"],
     })) {
       refused[what] = fx.cli(home, ["new", `no-${what}`, app, ...args]);
     }
@@ -389,7 +458,7 @@ describe("ralph new --set writes settings into config.json", () => {
     expect(text).toContain('"LIVE_STEER": true,');
     expect(text).toContain('  "PR_MERGE_POLL": 5,\n}');
   });
-  for (const what of ["unknown", "type", "method", "repo", "flag", "bare"]) {
+  for (const what of ["unknown", "type", "method", "repo", "flag", "bare", "limits"]) {
     test(`a refused --set (${what}) leaves no loop behind`, () => {
       expect(refused[what]!.code).not.toBe(0);
       expect(existsSync(join(home, `no-${what}`))).toBe(false);
@@ -401,6 +470,7 @@ describe("ralph new --set writes settings into config.json", () => {
     expect(both(refused.method!)).toContain('"merge", "squash" or "rebase"');
     expect(both(refused.repo!)).toContain("REPO is the <repo-path> argument");
     expect(both(refused.flag!)).toContain('not "--push"');
+    expect(both(refused.limits!)).toContain("RATE_LIMIT_RE and RATE_LIMIT_EXTRA_RE must make a regular expression as one pattern");
   });
 });
 
@@ -480,6 +550,71 @@ describe("ralph new refuses a name the harness cannot use", () => {
   });
   test("and a name with a dot runs on its own branch and keeps its commit", () => {
     expect(statuses(join(home, "plain.name"))).toBe("keep");
+  });
+});
+
+describe("ralph new takes every checkout git works in", () => {
+  // .git is a directory only in a plain clone. In a linked worktree, a
+  // submodule and a clone made with --separate-git-dir it is a file naming
+  // the real one. The loop has always run in all three; ralph new refused them
+  // as "not a git checkout", so a loop on any of them could not be scaffolded.
+  const home = fx.p("home-kinds");
+  const app = fx.p("app-kinds");
+  const R = fx.p("remote-kinds.git");
+  const kinds = {
+    linked: fx.p("linked-kinds"),
+    sub: fx.p("super-kinds/sub"),
+    separate: fx.p("separate-kinds"),
+  };
+  const made: Record<string, { code: number; out: string }> = {};
+  let plainDir = { code: 0, out: "", err: "" };
+  let subDir = { code: 0, out: "", err: "" };
+
+  setup(async () => {
+    fx.makeRepo(app, R);
+    fx.git(app, "worktree", "add", "-q", kinds.linked, "-b", "feature");
+    fx.sh(["git", "init", "-q", "-b", "main", fx.p("super-kinds")]);
+    fx.sh(["git", "-C", fx.p("super-kinds"), "-c", "protocol.file.allow=always", "submodule", "-q", "add", R, "sub"]);
+    fx.sh(["git", "clone", "-q", "--separate-git-dir", fx.p("separate-kinds.git"), R, kinds.separate]);
+    for (const [name, repo] of Object.entries(kinds)) {
+      const r = fx.cli(home, ["new", name, repo]);
+      made[name] = { code: r.code, out: both(r) };
+      if (r.code !== 0) continue;
+      patchConfig(join(home, name), TAME);
+      // Twice: the restart finds the worktree there and has to take it as
+      // this loop's own.
+      const S = fx.stub(`stub-kinds-${name}`, ["commit", "commit"]);
+      await fx.runLoop(join(home, name), S);
+      await fx.runLoop(join(home, name), S);
+    }
+
+    // What is still not a checkout: a directory git knows nothing of, and a
+    // directory inside a checkout, which the loop refuses at its start.
+    mkdirSync(fx.p("plain-kinds"));
+    plainDir = fx.cli(home, ["new", "plaindir", fx.p("plain-kinds")]);
+    mkdirSync(join(app, "inner"));
+    subDir = fx.cli(home, ["new", "subdir", join(app, "inner")]);
+  });
+
+  for (const name of Object.keys(kinds)) {
+    test(`a ${name} checkout is scaffolded`, () => {
+      expect(made[name]!.out).toContain("created");
+      expect(made[name]!.code).toBe(0);
+    });
+    test(`and the ${name} loop runs in a worktree of its own, keeps its commit, and runs there again after a restart`, () => {
+      expect(statuses(join(home, name))).toBe("keep keep");
+      expect(read(join(home, name, "ralph.log"))).toContain(`on ralph/${name}`);
+    });
+  }
+  test("a directory git knows nothing of is still refused, and nothing is left for it", () => {
+    expect(plainDir.code).not.toBe(0);
+    expect(both(plainDir)).toContain("not a git checkout");
+    expect(existsSync(join(home, "plaindir"))).toBe(false);
+  });
+  test("so is a directory inside a checkout, which the loop would refuse at every start", () => {
+    expect(subDir.code).not.toBe(0);
+    expect(both(subDir)).toContain("not a git checkout");
+    expect(existsSync(join(home, "subdir"))).toBe(false);
   });
 });
 
@@ -590,6 +725,112 @@ describe("the commands ralph prints back are ones a shell will run", () => {
   });
 });
 
+describe("every command the harness prints reads back as the argv it names", () => {
+  // Every hint the CLI and the loop print, collected in one place, for a loop
+  // name holding what a shell reads as syntax and git still takes in a branch,
+  // in a repo whose path holds a space. Each is handed to a shell the way a
+  // paste would be, and what the shell passes on must be the argv the hint
+  // names. zsh as well where it is installed: it is macOS's login shell, and it
+  // reads a word starting with `=` as the path of a command (`=x` is
+  // `command -v x`, or "x not found"), which bash does not. Windows refuses
+  // `|` and `"` in a file name, and the loop name is a directory.
+  const shells = ["bash", ...(Bun.which("zsh") ? ["zsh"] : [])];
+  const names = [IS_WIN ? "n&b;c$e`f'g" : "n&b;c|d$e`f'g\"h", "=x"];
+  const BRANCH = "rel&x'y";
+  const found: { where: string; text: string; argv: string[] }[][] = [];
+
+  /** On the first line holding `before`, the text after it, up to the last `upTo` or the end of the line. */
+  const cut = (output: string, before: string, upTo?: string): string => {
+    // eslint-disable-next-line no-control-regex -- the escape that starts a colour
+    for (const line of output.replace(/\x1b\[[0-9;]*m/g, "").split("\n")) {
+      const at = line.indexOf(before);
+      if (at < 0) continue;
+      const rest = line.slice(at + before.length);
+      const end = upTo === undefined ? -1 : rest.lastIndexOf(upTo);
+      return end < 0 ? rest : rest.slice(0, end);
+    }
+    return "";
+  };
+  /** The words `shell` passes on when `text` is pasted after a command. */
+  const readBack = (shell: string, text: string): string[] =>
+    fx
+      .sh([shell, "-c", `printf '%s\\0' ${text}\nwait`])
+      .out.split("\0")
+      .slice(0, -1);
+
+  setup(async () => {
+    for (const [i, name] of names.entries()) {
+      const hints: { where: string; text: string; argv: string[] }[] = [];
+      found.push(hints);
+      const add = (where: string, text: string, argv: string[]) => hints.push({ where, text, argv });
+      const app = fx.p(`hints-${i}`, "my app");
+      const home = fx.p(`home-hints-${i}`);
+      mkdirSync(fx.p(`hints-${i}`));
+      fx.makeRepo(app, fx.p(`remote-hints-${i}.git`));
+
+      add("ralph new", cut(fx.cli(home, ["new", name, app]).out, "3. "), ["ralph", "start", name]);
+      const push = fx.cli(home, ["new", `${name}-push`, app, "--set", "PUSH=true", "--set", `BRANCH=${BRANCH}`]).err;
+      add("ralph new, refusing PUSH true", cut(push, " — add ", " to mean it"), ["--set", `PUSH_CONFIRM=${BRANCH}`]);
+      add("ralph new, offering a pull request", cut(push, " to mean it, or ", " to land"), ["--set", "PUSH=pr"]);
+
+      patchConfig(join(home, name), TAME);
+      const started = fx.cli(home, ["start", name], { STUB_DIR: fx.stub(`stub-hints-${i}`, ["commit"]) }).out;
+      const verbs = `ralph status${cut(started, "  ralph status")}`.split("   ");
+      add("ralph start: status", verbs[0] ?? "", ["ralph", "status", name]);
+      add("ralph start: tail", verbs[1] ?? "", ["ralph", "tail", name]);
+      add("ralph start: stop", verbs[2] ?? "", ["ralph", "stop", name]);
+      await waitStopped(home, name);
+
+      const review = fx.cli(home, ["review", name]).out;
+      add("ralph review: merge them", cut(review, "merge them: "), ["git", "-C", app, "merge", `ralph/${name}`]);
+      add("ralph review: look closer", cut(review, "look closer: ", " show <sha>"), [
+        "git",
+        "-C",
+        fx.p(`hints-${i}`, `my app-ralph-${name}`),
+      ]);
+      add("ralph review: every verdict", cut(review, "every verdict: "), ["ralph", "results", name]);
+
+      // The same name, as a loop the bash harness wrote.
+      const shHome = fx.p(`home-hints-sh-${i}`);
+      const legacy = join(shHome, name);
+      mkdirSync(legacy, { recursive: true });
+      writeFileSync(join(legacy, "config.sh"), `REPO=${sq(app)}\nMAX_ITER=1\n`);
+      await fx.runLoop(legacy, fx.stub(`stub-hints-sh-${i}`, ["commit"]));
+      add("the loop, on config.sh", cut(read(join(legacy, "ralph.log")), "convert them: "), ["ralph", "migrate", name]);
+      add("ralph start, on config.sh", cut(fx.cli(shHome, ["start", name]).err, "convert them first: "), ["ralph", "migrate", name]);
+      add("ralph status, on config.sh", cut(fx.cli(shHome, ["status"]).out, "convert them: ", ")"), ["ralph", "migrate", name]);
+      add("ralph review, on config.sh", cut(fx.cli(shHome, ["review", name]).err, "convert them first: "), ["ralph", "migrate", name]);
+      // A bash-era loop still running on it: its command line names ralph.sh
+      // and ends with the loop directory.
+      const busy = Bun.spawn(["bash", "-c", "while :; do sleep 0.2; done", join(fx.T, "ralph.sh"), legacy], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      await waitProc(busy.pid, legacy);
+      writeFileSync(join(legacy, "ralph.pid"), `${busy.pid}\n`);
+      add("ralph migrate, refusing a running loop", cut(fx.cli(shHome, ["migrate", name]).err, "stop it first: "), ["ralph", "stop", name]);
+      busy.kill("SIGKILL");
+      await busy.exited;
+      add("ralph migrate", cut(fx.cli(shHome, ["migrate", name]).out, "check it, then: "), ["ralph", "start", name]);
+    }
+  });
+
+  test("every place that prints a command was reached", () => {
+    for (const hints of found) {
+      expect(hints.length).toBe(15);
+      for (const h of hints) expect(`${h.where}: ${h.text}`).not.toBe(`${h.where}: `);
+    }
+  });
+  for (const [i, name] of names.entries()) {
+    for (const shell of shells) {
+      test(`for a loop named ${name}, ${shell} reads every hint back as the argv it names`, () => {
+        const want = found[i]!.map((h) => ({ where: h.where, argv: h.argv }));
+        expect(found[i]!.map((h) => ({ where: h.where, argv: readBack(shell, h.text) }))).toEqual(want);
+      });
+    }
+  }
+});
+
 describe("ralph start does not believe a loop that never finished starting", () => {
   // Bun on Linux now and then never finishes loading the loop: no line of its
   // own, no child, a PID that `ralph status` calls running. RALPH_TEST_BOOT_HANG
@@ -640,5 +881,365 @@ describe("ralph start does not believe a loop that never finished starting", () 
     const q = read(join(quick, "ralph.log"));
     expect(q).toContain("=== iteration 1");
     expect(q).not.toContain("had not started");
+  });
+});
+
+/**
+ * A loop `ralph stop` did not stop, stopped as the handler would: TERM first, so
+ * the agent's process group goes with it, and KILL only if TERM was not heard.
+ */
+async function stopFor(dir: string, pid: number): Promise<void> {
+  if (!pid || !alive(pid)) return;
+  term(dir, null, pid);
+  if (!(await until(() => !alive(pid), 20))) process.kill(pid, "SIGKILL");
+}
+
+describe("ralph start says so when the loop did not start", () => {
+  // The loop refuses a setting it cannot read by exiting before it runs. `ralph
+  // start` printed "started <name> as PID n" in green and exited 0 for every
+  // refusal there is, and the loop was gone before the human read the line.
+  const home = fx.p("home-refused");
+  const app = fx.p("app-refused");
+  const cases: { name: string; spoil: (dir: string) => void; why: string }[] = [
+    { name: "unknown", spoil: (d) => patchConfig(d, { NOPE_KEY: 1 }), why: "NOPE_KEY is not a setting this harness knows" },
+    // These two crashed the loop before its log existed, and it read as started.
+    { name: "proto", spoil: (d) => patchConfig(d, { toString: 1 }), why: "toString is not a setting this harness knows" },
+    {
+      name: "limits",
+      spoil: (d) => patchConfig(d, { RATE_LIMIT_RE: "(?<x>limit)", RATE_LIMIT_EXTRA_RE: "\\k<y>" }),
+      why: "must make a regular expression as one pattern",
+    },
+    // The frozen-file check read git's stdout alone, so a FROZEN that git
+    // refuses, or that names nothing in the worktree, kept every commit.
+    {
+      name: "frozen",
+      spoil: (d) => patchConfig(d, { WORKTREE: true, FROZEN: ["measure.sh", ""] }),
+      why: "the frozen-file check cannot run",
+    },
+    {
+      name: "absolute",
+      spoil: (d) => patchConfig(d, { WORKTREE: true, FROZEN: [join(app, "measure.sh")] }),
+      why: "FROZEN holds the absolute path",
+    },
+    { name: "badjson", spoil: (d) => writeFileSync(join(d, "config.json"), "{not json\n"), why: "does not parse" },
+    { name: "noprompt", spoil: (d) => rmSync(join(d, "PROMPT.md")), why: "loop is missing PROMPT.md" },
+    { name: "nogit", spoil: (d) => patchConfig(d, { REPO: fx.p("not-a-repo") }), why: "REPO is not a git checkout" },
+    { name: "push", spoil: (d) => patchConfig(d, { WORKTREE: true, PUSH: true }), why: '"PUSH_CONFIRM": "main"' },
+    { name: "hours", spoil: (d) => patchConfig(d, { ACTIVE_HOURS: "25-99" }), why: "ACTIVE_HOURS=25-99" },
+    // These four refuse after the lock, while the loop sets up its worktree.
+    // `ralph start` stopped waiting at the lock, so each printed "started" and
+    // exited 0, and the loop was gone 130ms later.
+    { name: "nobranch", spoil: (d) => patchConfig(d, { WORKTREE: true, BRANCH: "trunk" }), why: "cannot create worktree" },
+    {
+      name: "setupfail",
+      spoil: (d) => patchConfig(d, { WORKTREE: true, SETUP_CMD: "exit 3" }),
+      why: "SETUP_CMD failed; removed the new worktree",
+    },
+    {
+      name: "foreign",
+      spoil: (d) => {
+        fx.makeRepo(fx.p("other-refused"), fx.p("remote-other-refused.git"));
+        patchConfig(d, { WORKTREE: true, WORKTREE_DIR: fx.p("other-refused") });
+      },
+      why: "refusing to reset a checkout this loop does not own",
+    },
+    {
+      name: "fulldir",
+      spoil: (d) => {
+        mkdirSync(fx.p("full-refused"));
+        writeFileSync(fx.p("full-refused", "notes.txt"), "mine\n");
+        patchConfig(d, { WORKTREE: true, WORKTREE_DIR: fx.p("full-refused") });
+      },
+      why: "cannot create worktree",
+    },
+  ];
+  const ran: Record<string, { code: number; out: string; err: string; pidLeft: boolean; agent: boolean }> = {};
+  let ok = { code: -1, out: "", err: "" };
+  let okFinished = false;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-refused.git"));
+    mkdirSync(fx.p("not-a-repo"));
+    for (const c of cases) {
+      const S = fx.stub(`stub-refused-${c.name}`, ["commit"]);
+      fx.cli(home, ["new", c.name, app]);
+      patchConfig(join(home, c.name), TAME);
+      c.spoil(join(home, c.name));
+      const r = fx.cli(home, ["start", c.name], { STUB_DIR: S });
+      // The refusal is the loop's first second; one that started anyway runs an
+      // iteration, which is time enough to see it.
+      await Bun.sleep(300);
+      ran[c.name] = { ...r, pidLeft: existsSync(join(home, c.name, "ralph.pid")), agent: existsSync(join(S, "agent_calls")) };
+    }
+    const S = fx.stub("stub-refused-ok", ["nothing"]);
+    fx.cli(home, ["new", "fine", app]);
+    patchConfig(join(home, "fine"), TAME);
+    ok = fx.cli(home, ["start", "fine"], { STUB_DIR: S });
+    okFinished = await until(() => read(join(home, "fine", "ralph.log")).includes("ralph finished"), 30);
+  });
+
+  for (const c of cases) {
+    test(`${c.name}: the start fails, and says why in the loop's words`, () => {
+      const r = ran[c.name]!;
+      expect(r.out).not.toContain("started");
+      expect(r.err).toContain(`${c.name} did not start`);
+      expect(r.err).toContain(c.why);
+      expect(r.code).not.toBe(0);
+    });
+    test(`${c.name}: no agent ran, and no ralph.pid is left naming the process that refused`, () => {
+      expect(ran[c.name]!.agent).toBe(false);
+      expect(ran[c.name]!.pidLeft).toBe(false);
+    });
+  }
+  test("a loop that starts still says started, and exits 0", () => {
+    expect(ok.code).toBe(0);
+    expect(ok.out).toContain("started fine as PID");
+    expect(ok.out).not.toContain("still starting");
+    expect(ok.err).toBe("");
+    expect(okFinished).toBe(true);
+  });
+});
+
+describe("ralph start does not wait out a long SETUP_CMD", () => {
+  // `ralph start` waits for the loop's whole start, the worktree's SETUP_CMD
+  // included, but only BOOT_WAIT seconds past the lock: an `npm ci` can take
+  // minutes, and the loop is not refusing anything while it runs.
+  const home = fx.p("home-setupslow");
+  const app = fx.p("app-setupslow");
+  const loop = join(home, "slowsetup");
+  let r = { code: -1, out: "", err: "" };
+  let secs = 0;
+  let startedThen = true;
+  let finished = false;
+  let S = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-setupslow.git"));
+    S = fx.stub("stub-setupslow", ["nothing"]);
+    fx.cli(home, ["new", "slowsetup", app]);
+    patchConfig(loop, { ...TAME, WORKTREE: true, SETUP_CMD: "sleep 8" });
+    const t0 = Date.now();
+    r = fx.cli(home, ["start", "slowsetup"], { STUB_DIR: S, RALPH_TEST_BOOT_WAIT: "2" });
+    secs = (Date.now() - t0) / 1000;
+    startedThen = existsSync(join(loop, ".started"));
+    finished = await until(() => read(join(loop, "ralph.log")).includes("ralph finished"), 60);
+  });
+
+  test("it says started, and that the loop is still starting, before the setup is done", () => {
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("started slowsetup as PID");
+    expect(r.out).toContain("still starting after 2s");
+    expect(startedThen).toBe(false);
+    expect(secs).toBeLessThan(8);
+  });
+  test("and the loop goes on to run once its setup is done", () => {
+    expect(finished).toBe(true);
+    expect(read(join(S, "agent_calls")).trim()).toBe("1");
+  });
+});
+
+describe("a running loop whose ralph.pid names somebody else is still the running loop", () => {
+  // Two `ralph start` at once both pass the "already running" check, both spawn
+  // a loop and both write ralph.pid; the lock lets one run. Measured five times:
+  // both printed "started", and once ralph.pid named the one the lock refused,
+  // so `ralph status` said stopped and `ralph stop` "not running" about a loop
+  // that ran on. The loop's own ralph.lock names it all along.
+  const home = fx.p("home-lostpid");
+  const app = fx.p("app-lostpid");
+  const loop = join(home, "lost");
+  let S = "";
+  let lock = 0;
+  let status = "";
+  let again = { code: -1, out: "", err: "" };
+  let stop = { code: -1, out: "", err: "" };
+  let loopGone = false;
+  let agentGone = false;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-lostpid.git"));
+    S = fx.stub("stub-lostpid", ["sleep"]);
+    fx.cli(home, ["new", "lost", app]);
+    patchConfig(loop, { ...TAME, ITER_TIMEOUT: 600 });
+    fx.cli(home, ["start", "lost"], { STUB_DIR: S });
+    try {
+      await until(() => read(join(S, "sleeper.pid")).trim() !== "", 20);
+      lock = Number(read(join(loop, "ralph.lock")).trim());
+      // A PID that was a process a moment ago and is not one now.
+      const gone = Bun.spawn(["true"]);
+      await gone.exited;
+      writeFileSync(join(loop, "ralph.pid"), `${gone.pid}\n`);
+      status = fx.cli(home, ["status", "lost"]).out;
+      again = fx.cli(home, ["start", "lost"], { STUB_DIR: S });
+      stop = fx.cli(home, ["stop", "lost"]);
+      loopGone = await until(() => !alive(lock), 20);
+      agentGone = sleeperGone(join(S, "sleeper.pid"));
+    } finally {
+      await stopFor(loop, lock);
+    }
+  });
+
+  test("ralph status calls it running, under the PID that holds the lock", () => {
+    expect(lock).toBeGreaterThan(0);
+    expect(status).toContain("running");
+    expect(status).toContain(`PID ${lock}`);
+  });
+  test("ralph start refuses it as already running, and starts nothing", () => {
+    expect(again.out).not.toContain("started");
+    expect(again.err).toContain(`already running as PID ${lock}`);
+    expect(again.code).not.toBe(0);
+    expect(read(join(S, "agent_calls")).trim()).toBe("1");
+  });
+  test("ralph stop stops it, and the agent with it", () => {
+    expect(stop.code).toBe(0);
+    expect(stop.out).toContain(`stopped lost (PID ${lock})`);
+    expect(loopGone).toBe(true);
+    expect(agentGone).toBe(true);
+  });
+});
+
+describe("two ralph start at once: one loop runs, and one start says so", () => {
+  const home = fx.p("home-twice");
+  const app = fx.p("app-twice");
+  const loop = join(home, "twice");
+  let S = "";
+  let starts: { code: number; out: string; err: string }[] = [];
+  let lock = 0;
+  let status = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-twice.git"));
+    S = fx.stub("stub-twice", ["sleep", "sleep"]);
+    fx.cli(home, ["new", "twice", app]);
+    patchConfig(loop, { ...TAME, ITER_TIMEOUT: 600 });
+    const argv = IS_WIN ? [process.execPath, cliPath(), "start", "twice"] : [cliPath(), "start", "twice"];
+    const one = () => {
+      const p = Bun.spawn(argv, { env: fx.env({ RALPH_HOME: home, STUB_DIR: S }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      return (async () => ({ code: await p.exited, out: await new Response(p.stdout).text(), err: await new Response(p.stderr).text() }))();
+    };
+    try {
+      starts = await Promise.all([one(), one()]);
+      await until(() => read(join(S, "sleeper.pid")).trim() !== "", 20);
+      lock = Number(read(join(loop, "ralph.lock")).trim());
+      status = fx.cli(home, ["status", "twice"]).out;
+    } finally {
+      fx.cli(home, ["stop", "twice"]);
+      await stopFor(loop, lock);
+    }
+  });
+
+  test("exactly one says started, under the PID that holds the lock", () => {
+    const started = starts.filter((s) => s.out.includes("started twice as PID"));
+    expect(started.length).toBe(1);
+    expect(started[0]!.code).toBe(0);
+    expect(started[0]!.out).toContain(`as PID ${lock}`);
+  });
+  test("the other fails, saying it is already running", () => {
+    const other = starts.find((s) => !s.out.includes("started"));
+    expect(other?.err).toContain(`already running as PID ${lock}`);
+    expect(other?.code).not.toBe(0);
+  });
+  test("ralph status shows the loop that runs", () => {
+    expect(status).toContain(`PID ${lock}`);
+  });
+});
+
+// EDITOR is shell text to every tool that reads it: `code --wait`, `subl -w`
+// and `emacsclient -t` are a program and its flags. `ralph edit` spawned the
+// whole value as the name of one program, so each of those printed a stack
+// trace and then held the terminal until the human killed it; so did an editor
+// that is not installed.
+describe("ralph edit reads EDITOR as git does, a command and not a program's name", () => {
+  const app = fx.p("app-edit");
+  const home = fx.p("home edit");
+  const cwd = fx.p("cwd-edit");
+  const editor = fx.p("ed bin", "fake-ed");
+  // Shell syntax in the name, so its path holds it too: the path must reach the
+  // editor as it is, and never be read by a shell. Windows refuses `"` in a
+  // file name, and the loop name is a directory: there `ralph new` failed, and
+  // every case after it with it.
+  const name = IS_WIN ? `ed'$(touch\${IFS}pwned)` : `ed'"$(touch\${IFS}pwned)`;
+  const prompt = join(home, name, "PROMPT.md");
+  const onPath = `${fx.p("ed bin")}${delimiter}${fx.env().PATH}`;
+  let newRc = -1;
+  const ran: Record<string, { code: number; out: string; err: string }> = {};
+
+  /** `ralph edit` with these EDITOR and arguments; a hang reads as code -1. */
+  const edit = (key: string, editorValue: string, args: string[], extra: Record<string, string> = {}) => {
+    try {
+      ran[key] = fx.sh([cliPath(), "edit", ...args], {
+        cwd,
+        env: { RALPH_HOME: home, EDITOR: editorValue, ED_RECORD: fx.p(`record-${key}`), PATH: onPath, ...extra },
+        timeout: 20,
+      });
+    } catch (e) {
+      ran[key] = { code: -1, out: "", err: String(e) };
+    }
+  };
+  /** What the editor was handed, one argument a line, or null when it never ran. */
+  const record = (key: string) =>
+    existsSync(fx.p(`record-${key}`))
+      ? read(fx.p(`record-${key}`))
+          .split("\n")
+          .slice(0, -1)
+      : null;
+
+  setup(() => {
+    fx.makeRepo(app, fx.p("remote-edit.git"));
+    mkdirSync(cwd);
+    mkdirSync(fx.p("ed bin"));
+    writeFileSync(editor, '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$ED_RECORD"\nexit "${ED_RC:-0}"\n');
+    chmodSync(editor, 0o755);
+    newRc = fx.cli(home, ["new", name, app]).code;
+    edit("flags", `${sq(editor)} --wait -n`, [name]);
+    if (!IS_WIN) {
+      edit("path", editor, [name]);
+      // A path that names no program it can start: the spawn itself fails.
+      writeFileSync(fx.p("ed bin", "not-a-program"), "");
+      edit("noexec", fx.p("ed bin", "not-a-program"), [name]);
+    }
+    edit("missing", "no-such-editor-ralph --wait", [name]);
+    edit("fails", "fake-ed", [name], { ED_RC: "3" });
+    edit("nosuch", "fake-ed", ["nosuch"]);
+  });
+
+  test("the loop it edits exists", () => {
+    expect(newRc).toBe(0);
+    expect(existsSync(prompt)).toBe(true);
+  });
+  test("an EDITOR with flags gets its flags, then the path of PROMPT.md", () => {
+    expect(ran.flags!.code).toBe(0);
+    expect(record("flags")).toEqual(["--wait", "-n", prompt]);
+  });
+  test.skipIf(IS_WIN)("an EDITOR that is the path of a program, a space in it, still runs that program", () => {
+    expect(ran.path!.code).toBe(0);
+    expect(record("path")).toEqual([prompt]);
+  });
+  test("an editor that is not installed is a short error, not a stack trace and a hang", () => {
+    const r = ran.missing!;
+    expect(r.code).toBeGreaterThan(0);
+    expect(r.err).toContain("no-such-editor-ralph");
+    expect(r.out + r.err).not.toContain("child_process");
+    expect(r.out + r.err).not.toMatch(/^\s+at /m);
+  });
+  test.skipIf(IS_WIN)("an EDITOR naming a file that is no program is a short error too", () => {
+    const r = ran.noexec!;
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("not-a-program");
+    expect(r.out + r.err).not.toContain("child_process");
+  });
+  test("an editor that fails makes ralph edit fail, and says so", () => {
+    expect(record("fails")).toEqual([prompt]);
+    expect(ran.fails!.code).toBe(1);
+    expect(ran.fails!.err).toContain("exited 3");
+  });
+  test("a loop that does not exist is refused, and no editor opens on a file nobody reads", () => {
+    expect(ran.nosuch!.code).toBe(1);
+    expect(ran.nosuch!.err).toContain("no loop called nosuch");
+    expect(record("nosuch")).toBeNull();
+    expect(existsSync(join(home, "nosuch"))).toBe(false);
+  });
+  test("no shell ever read the loop's path", () => {
+    expect(existsSync(join(cwd, "pwned"))).toBe(false);
+    expect(existsSync(join(home, "pwned"))).toBe(false);
   });
 });

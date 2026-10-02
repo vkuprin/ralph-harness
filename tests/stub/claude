@@ -6,7 +6,7 @@
 // stdin is kept as prompt.agent.N or prompt.review.N and every argv as
 // argv.agent.N or argv.review.N, one argument per line, so tests can inspect them.
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { humanEnv, human as humanIn, humanOut as humanOutIn } from "./human.ts";
 
@@ -152,11 +152,45 @@ switch (mode) {
     appendFileSync("measure.sh", "# edited\n");
     commit("frozen");
     break;
+  case "break-diff":
+    // edits the frozen file, then sets a config value git diff and git log
+    // refuse, which rev-parse, merge-base and reset never read
+    appendFileSync("measure.sh", "# edited\n");
+    commit("break-diff");
+    git("config", "diff.renames", "bogus");
+    break;
   case "cheat":
     // commits a failing change, then quietly defangs the check without committing it
     writeFileSync("BAD", "");
     commit("cheat");
     writeFileSync("measure.sh", "#!/bin/sh\nexit 0\n");
+    break;
+  case "cheat-locked":
+    // the cheat, then a worktree git cannot write in, so the reset that
+    // throws the defanged check away fails
+    writeFileSync("BAD", "");
+    commit("cheat-locked");
+    writeFileSync("measure.sh", "#!/bin/sh\nexit 0\n");
+    chmodSync(".", 0o555);
+    break;
+  case "cheat-fsmonitor":
+    // the cheat, behind an fsmonitor hook that tells git no file changed, so
+    // the reset believes measure.sh is already what HEAD holds
+    writeFileSync("BAD", "");
+    commit("cheat-fsmonitor");
+    writeFileSync(join(d, "fsmonitor"), "#!/bin/sh\nprintf 'token\\0'\n");
+    chmodSync(join(d, "fsmonitor"), 0o755);
+    git("config", "core.fsmonitor", join(d, "fsmonitor"));
+    git("status");
+    writeFileSync("measure.sh", "#!/bin/sh\nexit 0\n");
+    break;
+  case "nest":
+    // a commit, and a repository of its own inside the worktree, the way an
+    // agent leaves a clone it looked at; git clean -fd steps around those
+    commit("nest");
+    mkdirSync("dep");
+    git("init", "-q", "dep");
+    writeFileSync(join("dep", "x"), "");
     break;
   case "sleep":
     await nap("999");
@@ -231,6 +265,19 @@ switch (mode) {
       out.push(line);
       if (line.startsWith("## Needs a decision")) {
         out.push("", `- the staging key is not in the vault: only a human can settle this one "$(touch ${d}/OWNED)"`);
+      }
+    }
+    writeFileSync(progress(), out.join("\n"));
+    break;
+  }
+  case "decide-nul": {
+    // The same, with a NUL byte in the question: an agent that pasted output
+    // it read from a binary file. An environment variable cannot hold one.
+    const out: string[] = [];
+    for (const line of readFileSync(progress(), "utf8").split("\n")) {
+      out.push(line);
+      if (line.startsWith("## Needs a decision")) {
+        out.push("", "- the dump says PK\u0003\u0004\u0000\u0000 at offset 0: is this file ours?");
       }
     }
     writeFileSync(progress(), out.join("\n"));
@@ -359,20 +406,28 @@ switch (mode) {
     git("commit", "-qm", `stub: conflicting (agent call ${n})`);
     break;
   }
-  case "plan-approve": {
+  case "plan-approve":
+  case "plan-twice": {
     // PLAN_FIRST: Claude Code sends the approval prompts of a -p run to the
     // --permission-prompt-tool. The stub starts the MCP server the way the
     // --mcp-config says, asks it about ExitPlanMode and about a Bash call,
     // and records the answers, then commits as the approved plan would.
+    // plan-twice plans again later in the same run (back in plan mode), the
+    // first plan with no newline at its end.
     const cfg = JSON.parse(readFileSync(argv[argv.indexOf("--mcp-config") + 1] ?? "", "utf8")).mcpServers.ralph;
     const call = (id: number, tool: string, input: object) =>
       JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "approve", arguments: { tool_name: tool, input } } });
+    const plans =
+      mode === "plan-twice"
+        ? [call(3, "ExitPlanMode", { plan: "1. read the code" }), call(5, "ExitPlanMode", { plan: "## Revised\n1. fix it\n" })]
+        : [call(3, "ExitPlanMode", { plan: "stub plan: edit work.txt\n" })];
     const input = [
       JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }),
       JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
       JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
-      call(3, "ExitPlanMode", { plan: "stub plan: edit work.txt\n" }),
+      plans[0],
       call(4, "Bash", { command: "rm -rf build" }),
+      ...plans.slice(1),
     ].join("\n");
     const r = spawnSync(cfg.command, cfg.args, { input: `${input}\n`, encoding: "utf8", env: { ...process.env, ...cfg.env } });
     writeFileSync(join(d, `approve.${n}`), r.stdout ?? "");

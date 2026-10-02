@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { Fx, count, join, noProc, read, rows, setup, statuses, writeConfig } from "../helpers/index.ts";
+import { Fx, IS_WIN, alive, count, join, noProc, read, rows, setup, statuses, until, writeConfig } from "../helpers/index.ts";
 
 const fx = new Fx("logs");
 
@@ -139,6 +139,49 @@ describe("rotated logs past ralph.log.9", () => {
   });
 });
 
+describe("LOG_KEEP 0 throws away every older log, not only the one it rotates", () => {
+  // The template says "0 kept throws the old log away", and that lowering
+  // LOG_KEEP prunes the files above the new number at the next rotation. At 0
+  // the pruning was skipped: ralph.log.1 and up, left by a higher setting, stayed
+  // for good, `ralph log` and `ralph status` read their stale lines as this
+  // loop's, and every rotation said "the 0 before this one are ralph.log.1 and
+  // up" about files it had not kept.
+  const app = fx.p("app-log0");
+  const home = fx.p("home-log0");
+  const D = join(home, "zero");
+  let logOut = "";
+  let status = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-log0.git"));
+    const S = fx.stub("stub-log0", ["nothing"]);
+    fx.makeLoop(D, app, { MAX_ITER: 6, LOG_MAX_BYTES: 200, LOG_KEEP: 0 });
+    writeFileSync(join(D, "ralph.log.1"), "[2026-01-01 00:00:00] === iteration 1 ===\nSTALE-ONE from when LOG_KEEP was higher\n");
+    writeFileSync(join(D, "ralph.log.3"), "[2026-01-01 00:00:00] === iteration 2 ===\nSTALE-THREE from when LOG_KEEP was higher\n");
+    await fx.runLoop(D, S, { env: { RALPH_HOME: home } });
+    logOut = fx.cli(home, ["log", "zero", "1000"]).out;
+    status = fx.cli(home, ["status", "zero"]).out;
+  });
+
+  test("the run rotated at all, so the checks below mean something", () => {
+    expect(read(join(D, "ralph.log"))).toContain("log rotated at ");
+  });
+  test("no older log is left", () => {
+    expect(logFiles(D).map((f) => f.slice(D.length + 1))).toEqual(["ralph.log"]);
+  });
+  test("ralph log no longer shows lines from before", () => {
+    expect(logOut).not.toContain("STALE-");
+  });
+  test("status counts no iteration of 2026-01-01", () => {
+    expect(status).not.toContain("2026-01-01");
+    const run = /iterations\s+(\d+) run/.exec(status);
+    expect(Number(run?.[1])).toBe(count(read(join(D, "ralph.log")), /=== iteration/));
+  });
+  test("the rotation does not say it kept files", () => {
+    expect(read(join(D, "ralph.log"))).not.toContain("are ralph.log.1 and up");
+  });
+});
+
 describe("refs/ralph/ is a safety net, not a leak", () => {
   // Every reverted or dropped iteration saved its commits under refs/ralph/,
   // and nothing ever removed one. A ref is also the only thing keeping those
@@ -154,9 +197,9 @@ describe("refs/ralph/ is a safety net, not a leak", () => {
   let gcOk = false;
   let stillThere = true;
 
-  // `ralph review` sorted these by refname, and refs/ralph/reverted/ sorts
-  // above refs/ralph/dropped/, so a loop with more reverts than the listing
-  // shows never showed a dropped commit at all.
+  // `ralph review` sorted these by refname, and refs/ralph/<name>/reverted/
+  // sorts above refs/ralph/<name>/dropped/, so a loop with more reverts than
+  // the listing shows never showed a dropped commit at all.
   const mixed = fx.p("app-mixed");
   const home = fx.p("home-refs");
   let review = "";
@@ -168,7 +211,7 @@ describe("refs/ralph/ is a safety net, not a leak", () => {
     await fx.runLoop(loop, S);
     refsGone = rows(loop)[0]?.[3] ?? "";
     keptRefs = fx
-      .git(W, "for-each-ref", "--format=%(refname)", "refs/ralph/reverted/")
+      .git(W, "for-each-ref", "--format=%(refname)", "refs/ralph/refs/reverted/")
       .split("\n")
       .filter((l) => l !== "");
     keptSubjects = fx.git(W, "log", "--no-walk", "--format=%s", ...keptRefs);
@@ -183,10 +226,10 @@ describe("refs/ralph/ is a safety net, not a leak", () => {
     writeConfig(join(home, "mixed"), { REPO: mixed });
     for (let i = 1; i <= 12; i++) {
       fx.git(mixed, "commit", "-q", "--allow-empty", "-m", `gate rejected this one (${i})`);
-      fx.git(mixed, "update-ref", `refs/ralph/reverted/${1758400000 + i}-${i}`, "HEAD");
+      fx.git(mixed, "update-ref", `refs/ralph/mixed/reverted/${1758400000 + i}-${i}`, "HEAD");
     }
     fx.git(mixed, "commit", "-q", "--allow-empty", "-m", "a rebase conflict dropped this");
-    fx.git(mixed, "update-ref", "refs/ralph/dropped/1758500000", "HEAD");
+    fx.git(mixed, "update-ref", "refs/ralph/mixed/dropped/1758500000", "HEAD");
     fx.git(mixed, "reset", "-q", "--hard", "HEAD~13");
     review = fx.cli(home, ["review", "mixed"]).out;
   });
@@ -194,7 +237,7 @@ describe("refs/ralph/ is a safety net, not a leak", () => {
   test("five iterations were reverted, so the checks below mean something", () => {
     expect(statuses(loop)).toBe("revert:verify revert:verify revert:verify revert:verify revert:verify");
   });
-  test("refs/ralph/reverted/ is bounded by REF_KEEP", () => {
+  test("refs/ralph/<name>/reverted/ is bounded by REF_KEEP", () => {
     expect(keptRefs.length).toBe(2);
   });
   test("the newest thrown-away commits are the ones kept", () => {
@@ -219,7 +262,88 @@ describe("refs/ralph/ is a safety net, not a leak", () => {
     const all = review.split("\n");
     const from = all.findIndex((l) => l.includes("Reverted or dropped"));
     expect(from).toBeGreaterThanOrEqual(0);
-    expect((all[from + 2] ?? "").replace(/.* {2}/, "")).toBe("(ralph/reverted/1758400012-12)");
+    expect((all[from + 2] ?? "").replace(/.* {2}/, "")).toBe("(ralph/mixed/reverted/1758400012-12)");
+  });
+});
+
+describe("loops that share a repository keep their own thrown-away commits", () => {
+  // A ref was refs/ralph/<kind>/<epoch>-<iteration>, with no loop in it, and a
+  // ref belongs to the repository, not to a worktree. So a loop's REF_KEEP let
+  // go of every other loop's thrown-away commits, and `ralph review` listed them
+  // all as its own. Measured: b, with REF_KEEP 0 ("keeps every ref"), reverted
+  // two commits; a, with REF_KEEP 1, reverted two more; b's two were gone.
+  const home = fx.p("home-shared");
+  const app = fx.p("app-shared");
+  const A = join(home, "a");
+  const B = join(home, "b");
+  let aShas: string[] = [];
+  let bShas: string[] = [];
+  let legacy = "";
+  let reviewA = "";
+  let reviewB = "";
+  const saved = (sha: string) => fx.git(app, "for-each-ref", "--format=%(refname)", "--points-at", sha);
+  const short = (sha: string) => sha.slice(0, 7);
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-shared.git"));
+    // What an older version saved, with no loop in the name.
+    fx.git(app, "commit", "-q", "--allow-empty", "-m", "an older version threw this away");
+    legacy = fx.git(app, "rev-parse", "HEAD");
+    fx.git(app, "update-ref", "refs/ralph/reverted/1758400000-1", legacy);
+    // What a loop named "reverted" saves: under the old prefix, and not old.
+    fx.git(app, "commit", "-q", "--allow-empty", "-m", "a loop named reverted threw this away");
+    fx.git(app, "update-ref", "refs/ralph/reverted/reverted/1758400001-1", "HEAD");
+    fx.git(app, "reset", "-q", "--hard", "HEAD~2");
+    fx.makeLoop(B, app, { WORKTREE: true, MAX_ITER: 2, REF_KEEP: 0, VERIFY_CMD: "./measure.sh" });
+    fx.makeLoop(A, app, { WORKTREE: true, MAX_ITER: 2, REF_KEEP: 1, VERIFY_CMD: "./measure.sh" });
+    // The two stubs make the same change with the same message on the same
+    // parent, so commits made in one second were one commit: on a fast CI
+    // runner b and a shared a SHA, and the checks below read b's ref as a's.
+    // The date is pinned so that would happen every time; the author is what
+    // tells the two loops' commits apart.
+    const as = (who: string) => ({
+      env: { GIT_AUTHOR_NAME: who, GIT_AUTHOR_DATE: "1790902711 +0000", GIT_COMMITTER_DATE: "1790902711 +0000" },
+    });
+    await fx.runLoop(B, fx.stub("stub-shared-b", ["commit-bad", "commit-bad"]), as("loop b"));
+    await fx.runLoop(A, fx.stub("stub-shared-a", ["commit-bad", "commit-bad"]), as("loop a"));
+    aShas = rows(A).map((r) => r[3] ?? "");
+    bShas = rows(B).map((r) => r[3] ?? "");
+    reviewA = fx.cli(home, ["review", "a"]).out;
+    reviewB = fx.cli(home, ["review", "b"]).out;
+  });
+
+  test("both loops reverted both of their commits, so the checks below mean something", () => {
+    expect(statuses(A)).toBe("revert:verify revert:verify");
+    expect(statuses(B)).toBe("revert:verify revert:verify");
+    expect(new Set([...aShas, ...bShas, ""]).size).toBe(5);
+  });
+  test("a loop that keeps every ref still has them after another loop pruned its own", () => {
+    for (const sha of bShas) expect(saved(sha)).not.toBe("");
+  });
+  test("each loop's refs carry its name", () => {
+    for (const sha of bShas) expect(saved(sha)).toStartWith("refs/ralph/b/reverted/");
+    expect(saved(aShas[1]!)).toStartWith("refs/ralph/a/reverted/");
+  });
+  test("the pruning loop kept its own newest REF_KEEP and let go of the rest", () => {
+    expect(saved(aShas[0]!)).toBe("");
+    expect(saved(aShas[1]!)).not.toBe("");
+  });
+  test("a ref an older version saved is not pruned, since no loop can tell it is its own", () => {
+    expect(saved(legacy)).toBe("refs/ralph/reverted/1758400000-1");
+  });
+  test("review lists a loop's own thrown-away commits and not the other loop's", () => {
+    expect(reviewA).toContain(short(aShas[1]!));
+    for (const sha of bShas) expect(reviewA).not.toContain(short(sha));
+    for (const sha of bShas) expect(reviewB).toContain(short(sha));
+    for (const sha of aShas) expect(reviewB).not.toContain(short(sha));
+  });
+  test("review lists an older version's refs under a heading of their own", () => {
+    for (const review of [reviewA, reviewB]) {
+      const at = review.indexOf("older version");
+      expect(at).toBeGreaterThan(review.indexOf("Reverted or dropped"));
+      expect(review.slice(at)).toContain("an older version threw this away");
+      expect(review).not.toContain("a loop named reverted");
+    }
   });
 });
 
@@ -253,5 +377,74 @@ describe("the harness's own errors reach the log a human is told to read", () =>
   });
   test("ralph log shows it", () => {
     expect(logOut).toContain("cannot lock ref");
+  });
+});
+
+describe("ralph.out, which nothing rotates, is not a second copy of the log", () => {
+  // Every line the loop logs goes to stdout as well, so a loop run by hand in a
+  // terminal hears it, and `ralph start` pointed that stdout at ralph.out. So
+  // ralph.out held ralph.log over again, and nothing rotates it or removes it:
+  // ten iterations whose VERIFY_CMD ended on a 200 KB line (a JSON reporter
+  // prints its whole report as one) left ralph.log near its limit and 2,003,804
+  // bytes in ralph.out, growing by every iteration's verdict for as long as the
+  // loop ran. What bun prints of its own accord, a crash, is in no log, so that
+  // still goes to ralph.out.
+  const home = fx.p("home-out");
+  const D = join(home, "out");
+  const C = join(home, "crash");
+  const big = 50_000;
+  let started = "";
+  let out = "";
+  let crashOut = "";
+
+  /** `ralph start`, what it said, and the PID it said it started. */
+  function start(name: string, stub: string): { said: string; pid: number } {
+    const said = fx.cli(home, ["start", name], { STUB_DIR: stub }).out;
+    return { said, pid: Number(/as PID (\d+)/.exec(said)?.[1]) };
+  }
+
+  setup(async () => {
+    fx.makeRepo(fx.p("app-out"), fx.p("remote-out.git"));
+    const S = fx.stub("stub-out", ["commit", "commit", "commit", "commit"]);
+    fx.makeLoop(D, fx.p("app-out"), {
+      WORKTREE: true,
+      MAX_ITER: 4,
+      LOG_MAX_BYTES: 20000,
+      LOG_KEEP: 1,
+      VERIFY_CMD: `echo first; head -c ${big} /dev/zero | tr '\\0' x; echo; exit 1`,
+    });
+    const run = start("out", S);
+    started = run.said;
+    await until(() => rows(D).length === 4, 120);
+    await until(() => !alive(run.pid), 30);
+    out = read(join(D, "ralph.out"));
+
+    if (IS_WIN) return;
+    fx.makeRepo(fx.p("app-crash"), fx.p("remote-crash.git"));
+    fx.makeLoop(C, fx.p("app-crash"), { MAX_ITER: 3, QUIET_SLEEP: 600 });
+    // One quiet iteration, then the loop sleeps with no child of its own.
+    const crash = start("crash", fx.stub("stub-crash", ["nothing"])).pid;
+    await until(() => rows(C).length === 1, 60);
+    process.kill(crash, "SIGSEGV");
+    await until(() => !alive(crash), 30);
+    crashOut = read(join(C, "ralph.out"));
+  });
+
+  test("the loop ran under ralph start, and verify failed every iteration", () => {
+    expect(started).toContain("started out as PID");
+    expect(rows(D).map((r) => r[4])).toEqual(["revert:verify", "revert:verify", "revert:verify", "revert:verify"]);
+  });
+  test("the log has what the loop said", () => {
+    expect(allLogs(D)).toContain("verify exited 1");
+  });
+  test("ralph.out holds no line of the log", () => {
+    expect(out).not.toContain("=== iteration");
+    expect(out).not.toContain("verify exited");
+  });
+  test("ralph.out stays small however long the loop runs", () => {
+    expect(out.length).toBeLessThan(1000);
+  });
+  test.skipIf(IS_WIN)("what bun prints when the loop crashes still lands in ralph.out", () => {
+    expect(crashOut).toContain("Bun");
   });
 });

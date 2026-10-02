@@ -52,7 +52,11 @@ if (process.platform === "win32") {
   }
   (globalThis as { ralphStubBin?: string }).ralphStubBin = bin;
 }
-const sleeper = spawn("sleep", ["999"], { stdio: "ignore" });
+// `sleep 9999` still holds the text `sleep 999` that the checks look for, and
+// it outlives the suite. A `sleep 999` lasts under 17 minutes: one Windows run
+// reached meta.test.ts after 18, by when the stranger had ended on its own and
+// the checks that it was there went red.
+const sleeper = spawn("sleep", ["9999"], { stdio: "ignore" });
 const soak = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", join(dir, "home-soak-decoy")], {
   stdio: "ignore",
 });

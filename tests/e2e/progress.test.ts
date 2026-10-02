@@ -1,6 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { Fx, ROOT, count, join, num, read, setup, statuses } from "../helpers/index.ts";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { relative } from "node:path";
+import { Fx, IS_WIN, ROOT, count, join, num, read, setup, statuses } from "../helpers/index.ts";
 
 const fx = new Fx("progress");
 
@@ -275,3 +287,159 @@ function entries(...files: string[]): number[] {
     .map((l) => Number(l.replace(/.*iteration /, "")))
     .sort((a, b) => a - b);
 }
+
+describe.skipIf(IS_WIN)("a PROMPT.md or PROGRESS.md linked in from elsewhere stays a link", () => {
+  // The loop reads both files through a symlink like any file, so a human may
+  // keep the job and the notes somewhere of their own and link them in. Two
+  // writers rewrote theirs by renaming a new file over the path, which put a
+  // copy where the link was: `ralph steer` on PROMPT.md, and the entry cap on
+  // PROGRESS.md. The steer never reached the file the human edits, no later
+  // edit of that file reached the loop, and a PROMPT.md kept at 0600 came back
+  // 0644. Measured before the fix: the link a plain file after one steer, the
+  // linked file without the steer, and the mode 0644.
+  const app = fx.p("app-link");
+  const home = fx.p("home-link");
+  const D = join(home, "lnk");
+  const kept = fx.p("kept-link");
+  const STEER = "read the linked prompt";
+  let S = "";
+  let steerRc = -1;
+  let promptLinked = false;
+  let promptMode = 0;
+  let promptHasSteer = false;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-link.git"));
+    fx.makeLoop(D, app, { MAX_ITER: 1, PROGRESS_KEEP: 8 });
+    fx.fresh(kept);
+    mkdirSync(kept);
+    renameSync(join(D, "PROMPT.md"), join(kept, "PROMPT.md"));
+    chmodSync(join(kept, "PROMPT.md"), 0o600);
+    symlinkSync(join(kept, "PROMPT.md"), join(D, "PROMPT.md"));
+    seedLog(kept);
+    rmSync(join(D, "PROGRESS.md"));
+    // A relative link, so the rewrite resolves it from the loop directory and
+    // not from wherever the harness happens to run.
+    symlinkSync(relative(D, join(kept, "PROGRESS.md")), join(D, "PROGRESS.md"));
+
+    steerRc = fx.cli(home, ["steer", "lnk", STEER]).code;
+    promptLinked = lstatSync(join(D, "PROMPT.md")).isSymbolicLink();
+    // Through the link: before the fix this was the copy the steer left.
+    promptMode = statSync(join(D, "PROMPT.md")).mode & 0o777;
+    promptHasSteer = read(join(kept, "PROMPT.md")).includes(STEER);
+
+    S = fx.stub("stub-link", ["nothing"]);
+    await fx.runLoop(D, S);
+  });
+
+  test("the steer is taken", () => {
+    expect(steerRc).toBe(0);
+  });
+  test("ralph steer leaves PROMPT.md a link", () => {
+    expect(promptLinked).toBe(true);
+  });
+  test("the steer is in the file the link points at", () => {
+    expect(promptHasSteer).toBe(true);
+  });
+  test("and the file the loop reads keeps its mode", () => {
+    expect(promptMode).toBe(0o600);
+  });
+  test("the agent read the job, steer and all, through the link", () => {
+    expect(read(join(S, "prompt.agent.1"))).toContain(STEER);
+  });
+  test("the entry cap ran", () => {
+    expect(read(join(D, "ralph.log"))).toContain("moved 4 old Log entries");
+  });
+  test("and left PROGRESS.md a link", () => {
+    expect(lstatSync(join(D, "PROGRESS.md")).isSymbolicLink()).toBe(true);
+  });
+  test("it trimmed the file the link points at to the eight entries it keeps", () => {
+    expect(count(read(join(kept, "PROGRESS.md")), /^### /)).toBe(8);
+  });
+  test("and no entry is lost", () => {
+    expect(entries(join(kept, "PROGRESS.md"), join(D, "PROGRESS-archive.md"))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+  test("no temporary file is left beside either file", () => {
+    expect(readdirSync(kept).sort()).toEqual(["PROGRESS.md", "PROMPT.md"]);
+    expect(readdirSync(D).filter((f) => f.includes(".tmp."))).toEqual([]);
+  });
+});
+
+describe("a heading that only starts with a section's name is another section", () => {
+  // The harness found its sections by prefix, so `## Login flow` was the Log.
+  // Measured with eight entries under PROGRESS_KEEP 8: with the notes above the
+  // Log, the cap moved three real entries to the archive ("moved 3 old Log
+  // entries"); with them below it, it moved the agent's three notes; with only
+  // `## Logging` it never said the cap was doing nothing. The reviewer, handed
+  // `## The job`, got `## The jobs table` along with it.
+  const app = fx.p("app-heading");
+  const above = fx.p("loops/heading-above");
+  const below = fx.p("loops/heading-below");
+  const nolog = fx.p("loops/heading-nolog");
+  const review = fx.p("loops/heading-review");
+  const login = "## Login flow\n\n### step 1: the form\n\nform\n\n### step 2: the session\n\nsession\n\n### step 3: logout\n\nlogout\n\n";
+  const head = () => {
+    const tpl = readFileSync(join(ROOT, "template/PROGRESS.md"), "utf8").split("\n");
+    return `${tpl
+      .slice(
+        0,
+        tpl.findIndex((l) => l.startsWith("## Log")),
+      )
+      .join("\n")}\n`;
+  };
+  const log = () => {
+    let s = "## Log\n\n";
+    for (let i = 8; i >= 1; i--) s += `### 2026-01-0${i} 10:00 — iteration ${i}\n\nentry ${i}\n\n`;
+    return s;
+  };
+  const steps = (dir: string) => count(read(join(dir, "PROGRESS.md")), /^### step/);
+  const archived = (dir: string) => readdirSync(dir).includes("PROGRESS-archive.md");
+  let S = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-heading.git"));
+    const N = fx.stub("stub-heading", ["nothing"]);
+    for (const [dir, text] of [
+      [above, head() + login + log()],
+      [below, head() + log() + login],
+      [nolog, `${head()}## Logging\n\n### what we log\n\nnotes\n\n### where it goes\n\nnotes\n\n`],
+    ] as const) {
+      fx.makeLoop(dir, app, { MAX_ITER: 1, PROGRESS_KEEP: 8 });
+      writeFileSync(join(dir, "PROGRESS.md"), text);
+      await fx.runLoop(dir, N);
+    }
+    S = fx.stub("stub-heading-review", ["commit"], ["ACCEPT"]);
+    fx.makeLoop(review, app, { WORKTREE: true, PUSH: false, REVIEW: true, MAX_ITER: 1, ITER_TIMEOUT: 30 });
+    writeFileSync(
+      join(review, "PROMPT.md"),
+      "# jobs\n\n## The job\n\nFix the login form.\n\n## The jobs table\n\nJOBS-TABLE-NOTES: the columns, for the agent alone\n\n## Done looks like\n\nthe login works\n",
+    );
+    await fx.runLoop(review, S);
+  });
+
+  test("notes above the Log are not counted, and no entry moves", () => {
+    // The step notes hold no iteration number.
+    expect(entries(join(above, "PROGRESS.md")).filter(Number.isFinite)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(archived(above)).toBe(false);
+    expect(read(join(above, "ralph.log"))).not.toContain("progress cap: moved");
+  });
+  test("and the notes themselves stay", () => {
+    expect(steps(above)).toBe(3);
+  });
+  test("notes below the Log stay in PROGRESS.md", () => {
+    expect(steps(below)).toBe(3);
+    expect(archived(below)).toBe(false);
+    expect(read(join(below, "ralph.log"))).not.toContain("progress cap: moved");
+  });
+  test("a file with only a longer heading has no Log, and the log says the cap does nothing", () => {
+    expect(read(join(nolog, "ralph.log"))).toContain("no '### ' entries under a '## Log' heading");
+  });
+  test("the reviewer is handed the job, and not the section after it whose name starts the same", () => {
+    const p = read(join(S, "prompt.review.1"));
+    expect(p).toContain("Fix the login form.");
+    expect(p).not.toContain("JOBS-TABLE-NOTES");
+  });
+  test("the reviewed commit was kept", () => {
+    expect(statuses(review)).toBe("keep");
+  });
+});

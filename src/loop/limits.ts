@@ -1,4 +1,5 @@
 import { stampMinutes } from "../lib/clock.ts";
+import { plain } from "../lib/text.ts";
 
 // resetAt: the moment the limit in a message resets, from the text claude
 // prints — "hit your session limit · resets 9:10am (Europe/Paris)", "resets Mon
@@ -119,9 +120,9 @@ export function resetAt(message: string, now: number): Reset | null {
   return { epoch, at: stampMinutes(new Date(epoch * 1000)) };
 }
 
-/** Whether any of `lines` reads as a limit, and the last one that does. */
+/** Whether any of `lines` reads as a limit, and the last one that does, as plain text. */
 export function limitLine(lines: string[], pattern: RegExp): string | null {
   let found: string | null = null;
   for (const l of lines) if (pattern.test(l)) found = l;
-  return found;
+  return found === null ? null : plain(found);
 }

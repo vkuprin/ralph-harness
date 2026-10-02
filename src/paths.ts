@@ -32,6 +32,46 @@ export function endsWithArg(cmd: string, word: string): boolean {
 /** Where the loop answers `ralph stop` on Windows, which has no TERM to send it. */
 export const STOP_FILE = "ralph.stop";
 
+/** Where the loop names the bounded command it is running, for the next start if it dies first. */
+export const CHILD_FILE = ".child";
+
+/** Where the loop writes its PID once its start is done (worktree, setup), which `ralph start` waits for. */
+export const STARTED_FILE = ".started";
+
+/**
+ * Where loop `name` keeps the commits a gate threw away, `ns` being "reverted"
+ * or "dropped": refs/ralph/<name>/<ns>/<epoch>-<iteration>. A prefix for
+ * for-each-ref, and a literal one: git refuses `* ? [ \` in a branch, so in a
+ * loop's name too.
+ */
+export function refPrefix(name: string, ns: string): string {
+  return `refs/ralph/${name}/${ns}/`;
+}
+
+/**
+ * Where an older version kept them, for every loop on the repository alike:
+ * refs/ralph/<ns>/<epoch>-<iteration>. A loop named "reverted" keeps its own
+ * one level further down, so only a ref with nothing after <ns>/ but the epoch
+ * is one of these.
+ */
+export const LEGACY_REFS = ["refs/ralph/reverted/", "refs/ralph/dropped/"];
+export const isLegacyRef = (ref: string) => LEGACY_REFS.some((p) => ref.startsWith(p) && !ref.slice(p.length).includes("/"));
+
+/** Newest first, by the epoch in the last part of the name, numerically. */
+export function sortRefs(refs: string[]): string[] {
+  const epoch = (r: string) => Number.parseInt(r.slice(r.lastIndexOf("/") + 1), 10) || 0;
+  return refs.sort((a, b) => epoch(b) - epoch(a) || (a < b ? 1 : a > b ? -1 : 0));
+}
+
+/**
+ * The loop's exit status for a start it refused before taking ralph.lock: a
+ * setting or a file it could not read, or another loop holding the lock.
+ * Nothing after the lock exits with it (a worktree it cannot use exits 1, as a
+ * loop that ran and stopped does), so `ralph start` reads it as "did not
+ * start" whenever it comes.
+ */
+export const REFUSED = 2;
+
 export function ralphHome(): string {
   return process.env.RALPH_HOME || join(homedir(), ".claude/ralph");
 }

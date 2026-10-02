@@ -9,9 +9,10 @@ import { TEMPLATE } from "../paths.ts";
 // loops it was written for hold plain assignments — `KEY=value`, quoted the
 // three ways bash quotes, several to a line, and `KEY=( … )` word lists — and
 // that is what this reads. Anything else (a `$` expansion, a backtick, `$'…'`,
-// `+=`, a command, a glob in a list) is refused with the line it is on,
-// because guessing at what bash would have made of it is how a converted loop
-// ends up with a setting nobody wrote. A human converts that line by hand.
+// `+=`, a command, a glob or a brace in a list, a `~` bash would have
+// expanded) is refused with the line it is on, because guessing at what bash
+// would have made of it is how a converted loop ends up with a setting nobody
+// wrote. A human converts that line by hand.
 
 type Value = string | string[];
 
@@ -38,15 +39,44 @@ export function assignments(text: string): Assignment[] {
     throw new Refused(`${why}, in: ${lineOf(text, at)}`);
   };
   const isBreak = (ch: string | undefined) => ch === undefined || ch === " " || ch === "\t" || ch === "\n" || ch === ";";
+  // A backslash before a newline is gone before bash reads a word, so it
+  // neither ends nor starts one. One that ends the file is not: bash 3.2 reads
+  // on into whatever its caller runs next.
+  const atEnd = "a backslash at the very end of the file, which each bash reads differently";
+  const isJoin = (at: number) => {
+    if (text[at] !== "\\" || text[at + 1] !== "\n") return false;
+    if (at + 2 >= text.length) refuse(atEnd, at);
+    return true;
+  };
 
   /** One word from i: quoting applied. Stops at an unquoted break (or `)` in a list). */
   const word = (key: string, inList: boolean, first: boolean): { text: string; extends: boolean } => {
     let s = "";
     let ext = false;
     const start = i;
+    // Where bash expands a ~: at the start of a word, and in a plain
+    // assignment after an unquoted ':' too (`PATH=a:~/bin`).
+    let tilde = true;
+    // In a list, bash 3.2 also reads a word that starts with a bare `name=` as
+    // an assignment, and expands a ~ after its '=' or after a ':' that follows
+    // (`(a=~/b)`, `(a=b:~/c)`). bash 5 keeps those, so neither is converted.
+    let bare = inList;
+    let named = false;
+    let afterName = false;
     while (i < text.length) {
       const ch = text[i]!;
       if (isBreak(ch) || (inList && ch === ")")) break;
+      if (isJoin(i)) {
+        i += 2;
+        continue;
+      }
+      if (ch === "~" && tilde) refuse("a ~ that bash would have expanded");
+      if (ch === "~" && afterName) refuse("a ~ after name= in a list, which bash 3.2 expands and bash 5 does not");
+      tilde = !inList && ch === ":";
+      const nameEnds = bare && ch === "=" && s !== "";
+      bare = bare && (/[A-Za-z_]/.test(ch) || (s !== "" && /[0-9]/.test(ch)));
+      if (nameEnds) named = true;
+      afterName = nameEnds || (named && ch === ":");
       if (ch === "'") {
         const end = text.indexOf("'", i + 1);
         if (end < 0) refuse("a quote that never closes");
@@ -78,11 +108,11 @@ export function assignments(text: string): Assignment[] {
         if (i >= text.length) refuse("a quote that never closes", start);
         i++;
       } else if (ch === "\\") {
-        if (text[i + 1] === "\n") i += 2;
-        else {
-          s += text[i + 1] ?? "";
-          i += 2;
-        }
+        // bash 3.2 drops a backslash at the very end of the file, bash 5.3
+        // keeps it, and the bash of a macOS CI runner left the setting unset.
+        if (i + 1 >= text.length) refuse(atEnd);
+        s += text[i + 1];
+        i += 2;
       } else if (ch === "$") {
         refuse(text[i + 1] === "'" ? "a $'…' string" : "a $ expansion, which this converter does not evaluate");
       } else if (ch === "`") {
@@ -91,8 +121,8 @@ export function assignments(text: string): Assignment[] {
         refuse("shell syntax where a value belongs");
       } else if (inList && "*?[".includes(ch)) {
         refuse("a glob in a list, which bash would have expanded");
-      } else if (ch === "~" && s === "" && i === start) {
-        refuse("a ~ that bash would have expanded");
+      } else if (inList && ch === "{") {
+        refuse("a { in a list, which bash may have expanded as a brace (a{b,c} is two words)");
       } else {
         s += ch;
         i++;
@@ -105,6 +135,10 @@ export function assignments(text: string): Assignment[] {
     const ch = text[i]!;
     if (ch === " " || ch === "\t" || ch === "\n" || ch === ";") {
       i++;
+      continue;
+    }
+    if (isJoin(i)) {
+      i += 2;
       continue;
     }
     if (ch === "#") {
@@ -122,7 +156,7 @@ export function assignments(text: string): Assignment[] {
       i++;
       const list: string[] = [];
       for (;;) {
-        while (i < text.length && " \t\n".includes(text[i]!)) i++;
+        while (i < text.length && (" \t\n".includes(text[i]!) || isJoin(i))) i += isJoin(i) ? 2 : 1;
         if (text[i] === "#") {
           const end = text.indexOf("\n", i);
           i = end < 0 ? text.length : end;
@@ -131,9 +165,15 @@ export function assignments(text: string): Assignment[] {
         if (i >= text.length) refuse("a list that never closes");
         if (text[i] === ")") {
           i++;
+          // `FROZEN=(a)#b` is not a list to bash but the one word "(a)#b".
+          if (!isBreak(text[i])) refuse(`${JSON.stringify(text[i])} right after the ) that closes a list`);
           break;
         }
+        const at = i;
         list.push(word(key, true, false).text);
+        // A word that read nothing stopped on a ; (to bash, a syntax error),
+        // and reading on from the same place would never end.
+        if (i === at) refuse("shell syntax where a value belongs");
       }
       out.push({ key, value: list, extends: false });
     } else {

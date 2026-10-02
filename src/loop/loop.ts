@@ -1,13 +1,14 @@
-import { accessSync, constants, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { accessSync, constants, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { hour, nowSec, stampMinutes } from "../lib/clock.ts";
-import { type Config, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
+import { type Config, defaults, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
+import { isCheckout, rewrite, sameDir } from "../lib/files.ts";
 import type { Log } from "../lib/log.ts";
 import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
 import { shq } from "../lib/shq.ts";
-import { chomp, headBytes, lastNonBlank, section, splitLines, tailLines } from "../lib/text.ts";
-import { APPROVE_PLAN, STEER_HOOK } from "../paths.ts";
+import { chomp, headBytes, lastNonBlank, section, splitLines, stripEscapes, tailLines } from "../lib/text.ts";
+import { APPROVE_PLAN, CHILD_FILE, REFUSED, STEER_HOOK, refPrefix, sortRefs } from "../paths.ts";
 import { type Window, inWindow, parseHours } from "./active-hours.ts";
 import { addCost, addTokens, claudeText } from "./cost.ts";
 import { resetAt, limitLine, type Reset } from "./limits.ts";
@@ -23,6 +24,9 @@ import { ARCHIVE_HEADER, capProgress, decisions, injectProgress } from "./progre
 // If it moved and WORKTREE is on, the harness checks the new commits (frozen
 // files, VERIFY_CMD, an optional read-only reviewer), resets the ones that
 // fail, and pushes the rest itself. The agent commits; it never pushes.
+
+/** The most of a notification RALPH_MESSAGE carries, in bytes: a phone screen holds less. */
+const MESSAGE_MAX = 4000;
 
 /**
  * The first of `names` in `dir` that is not a regular file this process can
@@ -90,6 +94,19 @@ export function reviewerArgs(c: Config, dir: string): string[] {
   ];
 }
 
+/**
+ * One git setting for a child, added after the ones the user's environment
+ * already gives through GIT_CONFIG_COUNT/KEY_n/VALUE_n. Writing it at index 0
+ * with a count of 1 would drop every one of those: a core.hooksPath holding a
+ * secret scanner, a safe.directory in a container. A count git cannot read
+ * makes every git command fail, the harness's own included, so it is not
+ * worth keeping and the setting goes at 0.
+ */
+function gitConfigEnv(count: string | undefined, key: string, value: string): Record<string, string> {
+  const n = count && /^\d+$/.test(count) ? Number(count) : 0;
+  return { GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: key, [`GIT_CONFIG_VALUE_${n}`]: value };
+}
+
 /** The MCP server behind PLAN_FIRST's --permission-prompt-tool; the plan it approves lands in `.plan.md`. */
 export function planMcpConfig(dir: string): object {
   return {
@@ -151,6 +168,12 @@ export class Loop {
   private landWaiting = false;
   /** The loop has ended by itself: a pull request opened from here on is not a draft. */
   private ended = false;
+  /**
+   * This process holds ralph.lock. Before it does, .child may name the command
+   * of a loop that is running, so a command run before then (a refusal's
+   * notifier) does not write it.
+   */
+  holdsLock = false;
   /** The last iteration's commits that VERIFY_CMD failed, for the next prompt. */
   private verifyFailed: { before: string; after: string; tail: string } | null = null;
 
@@ -197,16 +220,33 @@ export class Loop {
     return (await this.git(args, opts)).code === 0;
   }
 
-  private bounded(secs: number, argv: string[], opts: { stdin?: string; out: string; err?: string; env?: Record<string, string> }) {
+  /**
+   * `git fetch <args>`, bounded like the pushes. A connection that stalls (a
+   * VPN gone, a credential helper waiting on a browser nobody sees) does not
+   * fail by itself, and the loop sat in its fetch for good, logging nothing
+   * while `ralph status` said running.
+   */
+  private async fetch(args: string[], cwd?: string): Promise<boolean> {
+    const r = await this.bounded(300, ["git", "fetch", "-q", ...args], { out: this.log.file, cwd });
+    if (r.timedOut) this.log.line(`git fetch ${args.join(" ")} timed out after 300s`);
+    return r.rc === 0 && !r.timedOut;
+  }
+
+  private bounded(
+    secs: number,
+    argv: string[],
+    opts: { stdin?: string; out: string; err?: string; env?: Record<string, string>; cwd?: string },
+  ) {
     return runBounded(secs, argv, {
       ...opts,
       env: opts.env ? { ...process.env, ...opts.env } : undefined,
       pollGapMax: this.cfg.POLL_GAP_MAX,
+      mark: this.holdsLock ? this.p(CHILD_FILE) : undefined,
     });
   }
 
   /** A *_CMD setting, bounded: the user's own text, run by bash. */
-  private shell(secs: number, command: string, opts: { out: string; env?: Record<string, string> }) {
+  private shell(secs: number, command: string, opts: { out: string; env?: Record<string, string>; cwd?: string }) {
     const sh = shellCommand(command);
     return this.bounded(secs, sh.argv, { ...opts, env: { ...opts.env, ...sh.env } });
   }
@@ -238,7 +278,12 @@ export class Loop {
         RALPH_LOOP: this.name,
         RALPH_DIR: this.dir,
         RALPH_ITER: String(this.iter),
-        RALPH_MESSAGE: message,
+        // A variable holds no NUL byte, and the system refuses one past its
+        // size limit (128 KiB a variable on Linux, 1 MiB for the whole
+        // environment on macOS). A question the agent pasted binary output
+        // into, or a VERIFY_CMD whose last line is a report printed as one
+        // line of JSON, reached here whole and the notifier never ran.
+        RALPH_MESSAGE: headBytes(message.split("\0").join(" "), MESSAGE_MAX),
       },
     });
     if (r.timedOut) this.log.line(`notify: ${event} timed out after ${secs}s and its process group was killed`);
@@ -258,14 +303,33 @@ export class Loop {
 
   // ------------------------------------------------------------ git
 
-  private async cleanTree(): Promise<void> {
+  /**
+   * Make the worktree what HEAD holds: "" when git did, otherwise what failed.
+   * The gates run on the files on disk, so a clean that did not happen means
+   * the gates judge the agent's uncommitted edits. Measured, each of these
+   * kept a commit whose own check failed: a reset into a directory the agent
+   * made read-only, which exits 128 and leaves the edit, and an fsmonitor hook
+   * the agent configured, which tells git that no file changed. `clean` needs
+   * -f twice to remove a repository of its own inside the worktree, such as a
+   * clone the agent looked at. `git status` is not asked afterwards: a
+   * repository holding README and readme shows one modified after every reset
+   * on a case-insensitive disk, and asking would stop that loop for good.
+   */
+  private async cleanTree(): Promise<string> {
     const gitdir = resolve(process.cwd(), await this.gitOut(["rev-parse", "--git-dir"]));
     if (existsSync(join(gitdir, "rebase-merge")) || existsSync(join(gitdir, "rebase-apply"))) {
       await this.git(["rebase", "--abort"], { quiet: true });
     }
     rmSync(join(gitdir, "index.lock"), { force: true });
-    await this.git(["reset", "-q", "--hard", "HEAD"]);
-    await this.git(["clean", "-qfd"]);
+    const git = (...args: string[]) => run(["git", "-c", "core.fsmonitor=false", ...args]);
+    for (const args of [
+      ["reset", "-q", "--hard", "HEAD"],
+      ["clean", "-qffd"],
+    ]) {
+      const r = await git(...args);
+      if (r.code !== 0) return `git ${args[0]} exited ${r.code}: ${splitLines(r.stderr).find((l) => /\S/.test(l)) ?? ""}`;
+    }
+    return "";
   }
 
   /**
@@ -280,34 +344,68 @@ export class Loop {
   }
 
   /**
-   * Keep a commit the gates threw away under refs/ralph/<ns>/, so a human can
-   * still get it back, and let go of the oldest beyond REF_KEEP: a ref is the
-   * only thing keeping such a commit reachable, so unbounded these stop `git
-   * gc` from ever reclaiming it. Oldest by the epoch in the name, numerically.
+   * Keep a commit the gates threw away under refs/ralph/<name>/<ns>/, so a
+   * human can still get it back, and let go of the oldest beyond REF_KEEP: a
+   * ref is the only thing keeping such a commit reachable, so unbounded these
+   * stop `git gc` from ever reclaiming it. Oldest by the epoch in the name,
+   * numerically. The loop's name is in the ref because refs belong to the
+   * repository, which other loops share: without it a loop pruned theirs too.
+   * Refs an older version saved (refs/ralph/<ns>/<epoch>-<iter>) name no loop,
+   * so no loop prunes them; `ralph review` lists them on their own.
    */
   private async saveRef(ns: string, commit: string): Promise<void> {
-    await this.git(["update-ref", `refs/ralph/${ns}/${nowSec()}-${this.iter}`, commit], { quiet: true });
+    const prefix = refPrefix(this.name, ns);
+    await this.git(["update-ref", `${prefix}${nowSec()}-${this.iter}`, commit], { quiet: true });
     if (!(this.cfg.REF_KEEP >= 1)) return;
-    const refs = splitLines(await this.gitOut(["for-each-ref", "--format=%(refname)", `refs/ralph/${ns}/`]));
-    const epoch = (r: string) => Number.parseInt(r.split("/")[3] ?? "", 10) || 0;
-    refs.sort((a, b) => epoch(b) - epoch(a) || (a < b ? 1 : a > b ? -1 : 0));
+    const refs = splitLines(await this.gitOut(["for-each-ref", "--format=%(refname)", prefix]));
+    sortRefs(refs);
     for (const ref of refs.slice(this.cfg.REF_KEEP)) await this.git(["update-ref", "-d", ref]);
   }
 
-  /** The repository a checkout belongs to, as a physical path, or "". */
-  private async gitHome(path: string): Promise<string> {
-    const r = await this.git(["-C", path, "rev-parse", "--git-common-dir"], { quiet: true });
-    const common = r.stdout.trim();
-    if (r.code !== 0 || !common) return "";
-    try {
-      // .native: on Windows the JS realpath leaves an 8.3 short name as it is,
-      // and git names the same directory by its long name, so C:\Users\RUNNER~1
-      // and C:\Users\runneradmin read as two repositories and the worktree was
-      // refused as one this loop does not own.
-      return realpathSync.native(resolve(path, common));
-    } catch {
-      return "";
+  /**
+   * Whether two checkouts belong to one repository: the directory each one's
+   * git keeps its objects in is the same. A repository git cannot name belongs
+   * to nobody. When both came back unknown and unknown matched unknown, which
+   * bun's realpath made of every path holding a backslash, a stranger's
+   * checkout passed as this loop's worktree and was reset and cleaned.
+   */
+  private async sameRepo(a: string, b: string): Promise<boolean> {
+    const common = async (path: string) => {
+      const r = await this.git(["-C", path, "rev-parse", "--git-common-dir"], { quiet: true });
+      const dir = r.stdout.trim();
+      return r.code === 0 && dir ? resolve(path, dir) : "";
+    };
+    const [x, y] = [await common(a), await common(b)];
+    return x !== "" && y !== "" && sameDir(x, y);
+  }
+
+  /**
+   * Why the checkout already at WORK is not this loop's worktree, or "" when
+   * it is. One of the same repository is not enough: the harness resets and
+   * cleans WORK and checks ralph/<name> out there. Measured with WORKTREE_DIR
+   * set to REPO itself, to a folder inside REPO, and to another loop's
+   * worktree: each passed, and after one iteration the uncommitted edit and
+   * the untracked files there were gone, the checkout was left on
+   * ralph/<name>, and the agent's commit, never judged, stayed on the branch
+   * that had been out (main, or the other loop's ralph/c, which that loop
+   * pushes). A detached HEAD passes: a loop killed in sync's rebase leaves
+   * one, and so does an agent that checked out an old commit; the reset puts
+   * the branch back.
+   */
+  private async notOurs(WORK: string, branch: string): Promise<string> {
+    const { REPO } = this.cfg;
+    if (!(await this.sameRepo(WORK, REPO))) return `${WORK} is not a worktree of ${REPO}`;
+    const top = await this.gitOut(["-C", WORK, "rev-parse", "--show-toplevel"], { quiet: true });
+    if (!top || !sameDir(top, WORK)) return `${WORK} is a folder inside the checkout ${top}, not a worktree of its own`;
+    if (sameDir(WORK, REPO)) return `${WORK} is REPO itself, the checkout the worktree keeps the loop out of`;
+    const dir = async (flag: string) => resolve(WORK, await this.gitOut(["-C", WORK, "rev-parse", flag], { quiet: true }));
+    if (sameDir(await dir("--git-dir"), await dir("--git-common-dir"))) return `${WORK} is the main checkout of ${REPO}'s repository`;
+    const head = await this.git(["-C", WORK, "symbolic-ref", "-q", "HEAD"], { quiet: true });
+    const ref = head.stdout.trim();
+    if (head.code === 0 && ref !== `refs/heads/${branch}`) {
+      return `${WORK} has ${ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref} checked out, not ${branch}`;
     }
+    return "";
   }
 
   private async setupWorktree(): Promise<void> {
@@ -315,46 +413,70 @@ export class Loop {
     const branch = `ralph/${this.name}`;
     this.work = WORKTREE_DIR || join(dirname(REPO), `${basename(REPO)}-ralph-${this.name}`);
     const WORK = this.work;
+    // There from before a new worktree is made until its SETUP_CMD has passed.
+    // A start stopped or killed in between left the worktree and its branch in
+    // place, and the next one took the reuse path, which never ran setup: the
+    // agent worked for good in a checkout its setup had never finished.
+    const pending = this.p(".setup-pending");
+    const again = SETUP_CMD !== "" && existsSync(pending);
+    let setup = again;
     if (await this.gitOk(["-C", WORK, "rev-parse", "--is-inside-work-tree"], { quiet: true })) {
       // Everything the harness does in WORK resets and cleans it, so WORK has
-      // to be this REPO's own worktree and not merely some checkout that
+      // to be this loop's own worktree and not merely some checkout that
       // happens to sit where WORKTREE_DIR points.
-      if ((await this.gitHome(WORK)) === (await this.gitHome(REPO))) return;
-      await this.refuse(`${WORK} is not a worktree of ${REPO} — refusing to reset a checkout this loop does not own`);
-    }
-    await this.git(["-C", REPO, "worktree", "prune"]);
-    if (await this.gitOk(["-C", REPO, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])) {
-      // Reuse the branch as it is. `worktree add -B` would reset it and lose kept work.
-      if (!(await this.gitOk(["-C", REPO, "worktree", "add", "-q", WORK, branch], { toLog: true }))) {
-        await this.refuse(`cannot create worktree ${WORK}`);
+      const theirs = await this.notOurs(WORK, branch);
+      if (theirs) await this.refuse(`${theirs} — refusing to reset a checkout this loop does not own`);
+      if (!setup) {
+        rmSync(pending, { force: true });
+        return;
       }
     } else {
-      let base = BRANCH;
-      if (await this.gitOk(["-C", REPO, "fetch", "-q", "origin", BRANCH], { toLog: true })) base = `origin/${BRANCH}`;
-      if (!(await this.gitOk(["-C", REPO, "worktree", "add", "-q", "-b", branch, WORK, base], { toLog: true }))) {
-        await this.refuse(`cannot create worktree ${WORK} from ${base}`);
-      }
-      if (SETUP_CMD) {
-        this.log.line(`setup: ${SETUP_CMD}`);
-        const sh = shellCommand(SETUP_CMD);
-        const r = await run(sh.argv, { cwd: WORK, env: { ...process.env, ...sh.env }, outTo: this.log.file, errTo: this.log.file });
-        if (r.code !== 0) {
-          // The branch goes with the worktree. Keeping it sent the next start
-          // down the reuse path above, which never runs SETUP_CMD, so the loop
-          // ran for good in a worktree its own setup had never prepared.
-          await this.git(["-C", REPO, "worktree", "remove", "--force", WORK], { quiet: true });
-          await this.git(["-C", REPO, "branch", "-q", "-D", branch], { quiet: true });
-          await this.refuse(`SETUP_CMD failed; removed the new worktree and branch ${branch}, so the next start runs setup again`);
+      await this.git(["-C", REPO, "worktree", "prune"]);
+      if (await this.gitOk(["-C", REPO, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])) {
+        // Reuse the branch as it is. `worktree add -B` would reset it and lose kept work.
+        if (!(await this.gitOk(["-C", REPO, "worktree", "add", "-q", WORK, branch], { toLog: true }))) {
+          await this.refuse(`cannot create worktree ${WORK}`);
         }
+      } else {
+        let base = BRANCH;
+        if (await this.fetch(["origin", BRANCH], REPO)) base = `origin/${BRANCH}`;
+        if (SETUP_CMD) writeFileSync(pending, "");
+        if (!(await this.gitOk(["-C", REPO, "worktree", "add", "-q", "-b", branch, WORK, base], { toLog: true }))) {
+          rmSync(pending, { force: true });
+          await this.refuse(`cannot create worktree ${WORK} from ${base}`);
+        }
+        setup = SETUP_CMD !== "";
       }
     }
-    if ((await this.gitHome(WORK)) !== (await this.gitHome(REPO))) await this.refuse(`worktree ${WORK} is not usable`);
+    if (setup) {
+      if (again) this.log.line(`SETUP_CMD did not finish the last time ${WORK} was set up, so it runs again`);
+      this.log.line(`setup: ${SETUP_CMD}`);
+      // In a group of its own, like every command the loop waits on, so a stop
+      // ends what the setup started (npm under bash) and not only the shell.
+      // Unbounded: it holds no work a gate has yet to judge.
+      const r = await this.shell(Infinity, SETUP_CMD, { out: this.log.file, cwd: WORK });
+      if (r.rc !== 0) {
+        // The branch goes with the worktree. Keeping it sent the next start
+        // down the reuse path above, which never runs SETUP_CMD, so the loop
+        // ran for good in a worktree its own setup had never prepared.
+        await this.git(["-C", REPO, "worktree", "remove", "--force", WORK], { quiet: true });
+        await this.git(["-C", REPO, "branch", "-q", "-D", branch], { quiet: true });
+        rmSync(pending, { force: true });
+        await this.refuse(`SETUP_CMD failed; removed the new worktree and branch ${branch}, so the next start runs setup again`);
+      }
+    }
+    rmSync(pending, { force: true });
+    if (!(await this.sameRepo(WORK, REPO))) await this.refuse(`worktree ${WORK} is not usable`);
     this.log.line(`worktree ${WORK} on ${branch}`);
   }
 
   /** The last HEAD the harness judged. */
   private async markGated(): Promise<void> {
-    writeFileSync(this.p(".gated-head"), `${await this.gitOut(["rev-parse", "HEAD"])}\n`);
+    this.gated(await this.gitOut(["rev-parse", "HEAD"]));
+  }
+
+  private gated(sha: string): void {
+    writeFileSync(this.p(".gated-head"), `${sha}\n`);
   }
 
   /**
@@ -379,44 +501,124 @@ export class Loop {
       after: judged,
       status: "drop:interrupted",
       secs: 0,
-      reason: "commits from an interrupted iteration were never judged; saved under refs/ralph/dropped/",
+      reason: `commits from an interrupted iteration were never judged; saved under ${refPrefix(this.name, "dropped")}`,
     });
-    this.log.line(`start: ${head} was never judged (an iteration was interrupted); reset to ${judged}, saved under refs/ralph/dropped/`);
+    this.log.line(
+      `start: ${head} was never judged (an iteration was interrupted); reset to ${judged}, saved under ${refPrefix(this.name, "dropped")}`,
+    );
   }
 
   // ------------------------------------------------------------ start
 
-  async start(): Promise<void> {
+  /**
+   * Every refusal a config can earn, before the loop takes ralph.lock: a loop
+   * that holds the lock has passed them, which is what `ralph start` waits for.
+   * `ralph start` used to wait for the lock and then print "started" for a loop
+   * about to refuse its settings. Nothing here may need the lock.
+   */
+  async check(): Promise<void> {
     const c = this.cfg;
     const file = "config.json";
-    if (!c.REPO) await this.refuse(`ralph: ${file} must set REPO`, 2);
-    if (!existsSync(join(c.REPO, ".git"))) await this.refuse(`ralph: REPO is not a git checkout: ${c.REPO}`, 2);
+    if (!c.REPO) await this.refuse(`ralph: ${file} must set REPO`, REFUSED);
+    if (!isCheckout(c.REPO)) await this.refuse(`ralph: REPO is not a git checkout: ${c.REPO}`, REFUSED);
     if (c.ACTIVE_HOURS) {
       const w = parseHours(c.ACTIVE_HOURS);
-      if (typeof w === "string") await this.refuse(w, 2);
+      if (typeof w === "string") await this.refuse(w, REFUSED);
       else this.window = w;
     }
     if (!(c.ACTIVE_POLL >= 1)) c.ACTIVE_POLL = 300;
+    // 0 turns QUIET_STOP, ERROR_STOP and CHURN_AT off, so ITER_TIMEOUT 0 reads
+    // as no timeout; it was a kill on the spot instead, of every agent before it
+    // ran and of every VERIFY_CMD before it judged a commit already paid for. No
+    // bound is not on offer either: below 1 is the default, as for every other
+    // timeout here, and set before the prompt tells the agent what it is.
+    for (const key of ["ITER_TIMEOUT", "VERIFY_TIMEOUT"] as const) {
+      if (c[key] >= 1) continue;
+      const d = defaults(this.dir)[key];
+      this.log.line(`${key} ${c[key]} is not a timeout; using the default ${d}s`);
+      c[key] = d;
+    }
     // PR_MERGE merges the pull request PUSH="pr" opens from the worktree's
     // branch. Without both there is no such pull request, and a loop that was
     // meant to land its work would quietly leave it wherever it ends up.
     if (c.PR_MERGE && !(c.WORKTREE && c.PUSH === "pr")) {
       await this.refuse(
         `ralph: PR_MERGE merges the pull request that PUSH "pr" opens, so it needs WORKTREE true and PUSH "pr" (this config has WORKTREE ${c.WORKTREE}, PUSH ${JSON.stringify(c.PUSH)})`,
-        2,
+        REFUSED,
       );
+    }
+    // The frozen-file check stops the loop when git cannot run it, which is
+    // after an agent has been paid for; say so before the first one instead.
+    if (c.WORKTREE && c.FROZEN.length) {
+      const frozen = await this.frozenProblem();
+      if (frozen) await this.refuse(`ralph: ${frozen}`, REFUSED);
     }
     // Every iteration would exit 127 and back off, for ever, with no word about why.
     const claude = claudeProblem();
-    if (claude) await this.refuse(`ralph: ${claude}`, 2);
+    if (claude) await this.refuse(`ralph: ${claude}`, REFUSED);
     const push = pushProblem(c);
     if (push) {
       await this.refuse(
         `ralph: ${push} — set "PUSH_CONFIRM": ${JSON.stringify(c.BRANCH)} in config.json to mean it, or PUSH "pr" to land through a pull request`,
-        2,
+        REFUSED,
       );
     }
+  }
 
+  /**
+   * Why the frozen-file check cannot read FROZEN, or "". git judges the
+   * entries, with the command the gate runs, against the empty tree, so a
+   * repository with no commit yet is asked too. An absolute path names a file
+   * in REPO, which git takes here, but the gate runs in the worktree, where the
+   * same path is outside the repository and git refuses it.
+   */
+  private async frozenProblem(): Promise<string> {
+    const { REPO, FROZEN } = this.cfg;
+    const abs = FROZEN.find((f) => isAbsolute(f));
+    if (abs !== undefined) {
+      return `FROZEN holds the absolute path ${JSON.stringify(abs)}, and the frozen-file check runs in the worktree, where it names nothing — write it relative to the top of the repository`;
+    }
+    const empty = (await run(["git", "hash-object", "-t", "tree", "--stdin"], { cwd: REPO, input: "" })).stdout.trim();
+    const d = await run(["git", "diff", "--name-only", empty, empty, "--", ...FROZEN], { cwd: REPO });
+    if (d.code === 0) return "";
+    return `the frozen-file check cannot run, so FROZEN would guard nothing: git diff exited ${d.code}: ${lastNonBlank(splitLines(d.stderr))}`;
+  }
+
+  /**
+   * Say once what the config asks a gate to guard and no gate will, as a
+   * LAND_OK_CMD that holds nothing is said: the start line's `verify=yes
+   * review=1` reads as if they ran. Every gate runs in the worktree, so without
+   * one VERIFY_CMD, REVIEW and FROZEN judge nothing. And git reads a FROZEN
+   * entry as a path, case and all, so one that names no file git tracks stops
+   * only a commit that adds it: `Measure.sh` or `mesure.sh` let an edit of
+   * measure.sh ship. Logged, not refused: a loop written for an older version
+   * without WORKTREE ran this way, and freezing a file that must never be
+   * created is a choice.
+   */
+  private async unguarded(): Promise<void> {
+    const c = this.cfg;
+    if (!c.WORKTREE) {
+      const named = [c.VERIFY_CMD ? "VERIFY_CMD" : "", c.REVIEW ? "REVIEW" : "", c.FROZEN.length ? "FROZEN" : ""].filter(Boolean);
+      if (named.length) {
+        this.log.line(
+          `WORKTREE false: ${named.join(", ")} judge nothing — every gate runs in the worktree, so each commit lands in ${c.REPO} unjudged`,
+        );
+      }
+      return;
+    }
+    for (const f of c.FROZEN) {
+      const ls = await this.git(["ls-files", "-z", "--", f], { quiet: true });
+      if (ls.code !== 0 || ls.stdout !== "") continue;
+      const near = (await this.git(["ls-files", "-z", "--", `:(icase)${f}`], { quiet: true })).stdout.split("\0")[0];
+      this.log.line(
+        `FROZEN: ${JSON.stringify(f)} matches no file in the worktree, so the frozen-file check stops only a commit that adds one — ${near ? `git compares case, and ${JSON.stringify(near)} is there` : "name a file that is there, relative to the top of the repository"}`,
+      );
+    }
+  }
+
+  /** What a start does once the lock is this process's: the remote, gh, the worktree. */
+  async start(): Promise<void> {
+    const c = this.cfg;
     // PUSH with nowhere to push: every sync would fetch, fail and copy git's
     // complaint into the log. Say it once and keep the commits local.
     if (this.harnessPushes() && !(await this.gitOk(["-C", c.REPO, "remote", "get-url", "origin"], { quiet: true }))) {
@@ -446,6 +648,7 @@ export class Loop {
       await this.refuse(`cannot enter the work directory ${this.work}`);
     }
     if (c.WORKTREE) await this.dropUnjudged();
+    await this.unguarded();
 
     if (c.LIVE_STEER) {
       writeFileSync(this.p(".agent-settings.json"), `${JSON.stringify(agentSettings())}\n`);
@@ -468,13 +671,14 @@ export class Loop {
     writeFileSync(this.p(".decision-seen"), seen.map((l) => `${l}\n`).join(""));
 
     for (;;) {
-      await this.waitForActiveHours();
-      this.iter++;
-      if (this.iter > c.MAX_ITER) {
-        this.iter--; // this one never ran; do not count it
+      // Before the window: a loop whose last iteration ended as the window
+      // closed has nothing left to wait for.
+      if (this.iter >= c.MAX_ITER) {
         this.stop(`hit MAX_ITER=${c.MAX_ITER}`);
         break;
       }
+      await this.waitForActiveHours();
+      this.iter++;
       // Half a prompt is not a prompt, and an agent handed one under
       // --dangerously-skip-permissions does something with it.
       const gone = this.missing("PROMPT.md", "PROGRESS.md");
@@ -520,8 +724,15 @@ export class Loop {
     const c = this.cfg;
     this.log.rotate(c.LOG_MAX_BYTES, c.LOG_KEEP);
     if (c.WORKTREE) {
+      // Before the agent too: it would work, and be judged, on top of what
+      // the last one left.
+      const unclean = await this.cleanTree();
+      if (unclean) {
+        this.stop(`could not clean the worktree before iteration ${this.iter} (${unclean}) — fix it by hand`, true);
+        this.iter--;
+        return false;
+      }
       if (this.harnessPushes()) await this.sync();
-      else await this.cleanTree();
     }
     // The same text already sits in PROMPT.md's Steering section, which this
     // iteration reads; the live file is only for the iteration in flight.
@@ -557,11 +768,7 @@ export class Loop {
       // setting from the environment to every repository the process touches,
       // so naming the remote would also break a push to an unrelated `origin`.
       const pushUrl = await this.gitOut(["remote", "get-url", "--push", "origin"], { quiet: true });
-      if (pushUrl) {
-        env.GIT_CONFIG_COUNT = "1";
-        env.GIT_CONFIG_KEY_0 = "url.no-push://disabled.pushInsteadOf";
-        env.GIT_CONFIG_VALUE_0 = pushUrl;
-      }
+      if (pushUrl) Object.assign(env, gitConfigEnv(process.env.GIT_CONFIG_COUNT, "url.no-push://disabled.pushInsteadOf", pushUrl));
     }
 
     const offset = this.log.size();
@@ -593,15 +800,21 @@ export class Loop {
 
     let status = "";
     let reason = "";
+    let unchecked = "";
     if (c.WORKTREE) {
       // Gates judge what was committed. Anything left uncommitted is thrown
       // away first, so an uncommitted edit to a frozen file cannot help a
-      // commit pass.
-      await this.cleanTree();
+      // commit pass, and a tree that could not be cleaned is not judged.
+      const unclean = await this.cleanTree();
       const branch = await this.gitOut(["rev-parse", "--abbrev-ref", "HEAD"], { quiet: true });
+      // History first: a deleted branch leaves no HEAD to reset to, and that
+      // is the agent leaving the branch, not a tree git could not write.
       if (branch !== `ralph/${this.name}` || !(await this.gitOk(["merge-base", "--is-ancestor", before, "HEAD"], { quiet: true }))) {
         status = "revert:history";
         reason = `the agent left ralph/${this.name} or rewrote its history`;
+      } else if (unclean) {
+        status = "revert:unclean";
+        reason = `could not clean the worktree: ${unclean}`;
       }
     }
     const after = await this.gitOut(["rev-parse", "HEAD"]);
@@ -625,13 +838,23 @@ export class Loop {
         status = "quiet";
       }
     } else if (!status && c.WORKTREE) {
-      const touched = c.FROZEN.length
-        ? splitLines(await this.gitOut(["diff", "--name-only", before, "HEAD", "--", ...c.FROZEN]))
+      // A check git could not run is not a pass. git refuses a pathspec it
+      // cannot read with nothing on stdout, and reading stdout alone kept every
+      // commit, the ones that edited a frozen file too.
+      let touched = "";
+      if (c.FROZEN.length) {
+        const d = await run(["git", "diff", "--name-only", before, "HEAD", "--", ...c.FROZEN]);
+        if (d.code !== 0) unchecked = `git diff exited ${d.code}: ${lastNonBlank(splitLines(d.stderr))}`;
+        else
+          touched = splitLines(d.stdout)
             .map((f) => `${f} `)
-            .join("")
-        : "";
-      const v = touched ? null : await this.verify();
-      if (touched) {
+            .join("");
+      }
+      const v = touched || unchecked ? null : await this.verify();
+      if (unchecked) {
+        status = "revert:frozen";
+        reason = `could not check the frozen files: ${unchecked}`;
+      } else if (touched) {
         status = "revert:frozen";
         reason = `touched frozen files: ${touched}`;
       } else if (v !== null) {
@@ -676,6 +899,20 @@ export class Loop {
       }
     }
     record(this.results, this.iter, { before, after, status, secs: took, reason, cost, tokens });
+    // Judged, and remembered as judged in the same tick as the row, before
+    // anything below awaits. A stop during the notifications once left
+    // .gated-head at `before`, and the next start set aside a commit its own
+    // keep row called kept, as never judged, and the log never said shipped.
+    if (status.startsWith("keep")) {
+      if (c.WORKTREE) this.gated(after);
+      this.log.line(`iteration ${this.iter} shipped ${after} in ${took}s${reason ? ` (${reason})` : ""}`);
+    }
+    if (unchecked) {
+      // It fails the same way next time, and every agent after this one would
+      // be paid for and then reset.
+      this.stop(`the frozen-file check could not run (${unchecked}); reset to ${before} — fix FROZEN in config.json`, true);
+      return false;
+    }
 
     // A limit streak clears the moment claude answers again, whatever the
     // verdict of that iteration is. Said once, at the end of the streak.
@@ -690,8 +927,6 @@ export class Loop {
       this.quiet = 0;
       this.trouble = 0;
       this.errors = 0;
-      if (c.WORKTREE) await this.markGated();
-      this.log.line(`iteration ${this.iter} shipped ${after} in ${took}s${reason ? ` (${reason})` : ""}`);
       if (this.harnessPushes()) await this.sync();
     } else if (status === "quiet") {
       this.quiet++;
@@ -702,7 +937,7 @@ export class Loop {
         this.stop(`${c.QUIET_STOP} consecutive iterations shipped nothing`);
         return false;
       }
-      await nap(c.QUIET_SLEEP);
+      await this.pause(c.QUIET_SLEEP);
     } else if (status === "ratelimit") {
       this.limits++;
       const reset: Reset | null = c.LIMIT_RESET ? resetAt(reason, nowSec()) : null;
@@ -728,17 +963,17 @@ export class Loop {
         this.stop(`${c.ERROR_STOP} consecutive iterations failed`);
         return false;
       }
-      await nap(this.troubleSleep());
+      await this.pause(this.troubleSleep());
     } else if (status.startsWith("revert:")) {
       this.trouble++;
       this.errors = 0;
       this.log.line(`iteration ${this.iter} reverted to ${before}: ${status} — ${reason}`);
       await this.streakNotice(status, reason);
-      await nap(this.troubleSleep());
+      await this.pause(this.troubleSleep());
     }
 
     this.capProgress();
-    await nap(c.STEP_SLEEP);
+    await this.pause(c.STEP_SLEEP);
     return true;
   }
 
@@ -795,6 +1030,17 @@ export class Loop {
       if (left > this.cfg.ACTIVE_POLL) left = this.cfg.ACTIVE_POLL;
       await nap(left);
     }
+  }
+
+  /**
+   * The pause between this iteration and the next. After the last there is no
+   * next, so nothing to space out: the loop ends at once, and PR_MERGE does not
+   * wait behind a backoff. A limit is not this: it gives back its iteration
+   * (`iter--`), so its wait comes before one that will run.
+   */
+  private async pause(s: number): Promise<void> {
+    if (this.iter >= this.cfg.MAX_ITER) return;
+    await nap(s);
   }
 
   /** Consecutive failures double the pause, up to an hour. */
@@ -860,9 +1106,7 @@ export class Loop {
     const archive = this.p("PROGRESS-archive.md");
     if (!existsSync(archive)) writeFileSync(archive, ARCHIVE_HEADER);
     writeFileSync(archive, this.read(archive) + r.archived);
-    const tmp = `${file}.tmp.${process.pid}`;
-    writeFileSync(tmp, r.kept);
-    renameSync(tmp, file);
+    rewrite(file, r.kept);
     this.log.line(`progress cap: moved ${r.entries - keep} old Log entries to PROGRESS-archive.md`);
   }
 
@@ -906,9 +1150,9 @@ export class Loop {
     return false;
   }
 
-  /** The last 40 lines of a command's output, at most its last 4000 bytes: what a prompt can carry. */
+  /** The last 40 lines of a command's output, at most its last 4000 bytes, without escape codes: what a prompt can carry. */
   private lastLines(file: string): string {
-    const tail = tailLines(this.read(file), 40)
+    const tail = tailLines(stripEscapes(this.read(file)), 40)
       .map((l) => `${l}\n`)
       .join("");
     return chomp(
@@ -1094,7 +1338,9 @@ export class Loop {
         s += `\nAfter your turn the harness runs VERIFY_CMD on your commits — \`${c.VERIFY_CMD}\`, for up to ${c.VERIFY_TIMEOUT}s — and resets them if it fails. It runs whatever you did, so do not run the whole of it yourself: run the tests that cover what you changed, and leave the full run to the harness.\n`;
       }
     }
-    if (c.FROZEN.length) s += `\nFrozen, never edit: ${c.FROZEN.join(" ")}. A commit that touches any of them is reset.\n`;
+    // Without the worktree no gate runs, and the agent is not told one does.
+    if (c.FROZEN.length)
+      s += `\nFrozen, never edit: ${c.FROZEN.join(" ")}.${c.WORKTREE ? " A commit that touches any of them is reset." : ""}\n`;
 
     const e = c.ESCALATE_AFTER;
     if (e > 0 && this.trouble >= e * 2) {
@@ -1146,9 +1392,23 @@ export class Loop {
     // The messages first, so the cap cannot cut them: they are where a commit
     // claims what it measured, and the reviewer cannot reach git itself — in a
     // worktree .git is a file pointing into a repository outside its reach.
-    const messages = (await this.git(["log", "--reverse", "--format=commit %H%n%n%B", `${before}..HEAD`])).stdout;
-    const stat = (await this.git(["diff", "--stat", before, "HEAD"])).stdout;
-    const diff = (await this.git(["diff", before, "HEAD"])).stdout;
+    const shown = [
+      await this.git(["log", "--reverse", "--format=commit %H%n%n%B", `${before}..HEAD`]),
+      await this.git(["diff", "--stat", before, "HEAD"]),
+      await this.git(["diff", before, "HEAD"]),
+    ];
+    // git that cannot show the commits prints nothing, and a reviewer handed
+    // nothing still answers: its ACCEPT is of an empty diff.
+    const failed = shown.find((r) => r.code !== 0);
+    if (failed) {
+      return {
+        status: "unavailable",
+        reason: `git could not show the commits (exit ${failed.code}), so there was nothing to review`,
+        cost,
+        tokens,
+      };
+    }
+    const [messages, stat, diff] = shown.map((r) => r.stdout);
     writeFileSync(this.p("review.diff"), Buffer.from(`${messages}\n${stat}\n${diff}`).subarray(0, 200000));
     const prompt = this.read(this.p("PROMPT.md"));
     // A PROMPT.md written without that heading is still the job. Better the
@@ -1305,15 +1565,26 @@ VERDICT: REJECT: <one sentence saying why>
     await this.markGated();
   }
 
+  /**
+   * A rebase and a verify on a tree git could not clean would judge what is
+   * left in it, so sync waits; the clean before the next iteration stops the
+   * loop if it fails again.
+   */
+  private async syncClean(): Promise<boolean> {
+    const unclean = await this.cleanTree();
+    if (unclean) this.log.line(`sync: could not clean the worktree (${unclean}), not syncing this time`);
+    return !unclean;
+  }
+
   private async fetchUpstream(): Promise<boolean> {
-    if (await this.gitOk(["fetch", "-q", "origin", this.cfg.BRANCH], { toLog: true })) return true;
+    if (await this.fetch(["origin", this.cfg.BRANCH])) return true;
     this.log.line("sync: fetch failed, not pushing this time");
     return false;
   }
 
   private async syncOnce(): Promise<void> {
     const upstream = `origin/${this.cfg.BRANCH}`;
-    await this.cleanTree();
+    if (!(await this.syncClean())) return;
     // Round again after a wait for LAND_OK_CMD: BRANCH may have moved meanwhile,
     // and what is pushed has to be rebased and verified on what it now holds.
     for (;;) {
@@ -1333,9 +1604,9 @@ VERDICT: REJECT: <one sentence saying why>
             after: await this.gitOut(["rev-parse", "HEAD"]),
             status: "drop:conflict",
             secs: 0,
-            reason: `rebase onto ${upstream} conflicted; unpushed commits dropped, saved under refs/ralph/dropped/`,
+            reason: `rebase onto ${upstream} conflicted; unpushed commits dropped, saved under ${refPrefix(this.name, "dropped")}`,
           });
-          this.log.line("sync: rebase conflicted, dropped unpushed commits (saved under refs/ralph/dropped/)");
+          this.log.line(`sync: rebase conflicted, dropped unpushed commits (saved under ${refPrefix(this.name, "dropped")})`);
           return;
         }
         const v = await this.verify();
@@ -1349,7 +1620,7 @@ VERDICT: REJECT: <one sentence saying why>
             reason: `after rebase onto ${upstream}: ${v}`,
           });
           await this.git(["reset", "-q", "--hard", upstream]);
-          this.log.line("sync: rebased commits failed verify, dropped them (saved under refs/ralph/dropped/)");
+          this.log.line(`sync: rebased commits failed verify, dropped them (saved under ${refPrefix(this.name, "dropped")})`);
           return;
         }
       }
@@ -1420,7 +1691,7 @@ VERDICT: REJECT: <one sentence saying why>
 
   private async syncPr(): Promise<void> {
     const upstream = `origin/${this.cfg.BRANCH}`;
-    await this.cleanTree();
+    if (!(await this.syncClean())) return;
     if (!(await this.fetchUpstream())) return;
     // Nothing of the loop's own that BRANCH lacks: merged, or no work yet.
     if ((await this.gitOut(["rev-list", `${upstream}..HEAD`])) === "") {
@@ -1496,7 +1767,7 @@ VERDICT: REJECT: <one sentence saying why>
     }
     const pushedFile = this.p(".pr-pushed");
     if (remote && remote !== this.read(pushedFile).trim()) {
-      await this.git(["fetch", "-q", "origin", `+${ref}:refs/remotes/origin/ralph/${this.name}`], { toLog: true });
+      await this.fetch(["origin", `+${ref}:refs/remotes/origin/ralph/${this.name}`]);
       if (!(await this.gitOk(["merge-base", "--is-ancestor", remote, "HEAD"], { quiet: true }))) {
         await this.prBlocked(
           `foreign ${remote}`,

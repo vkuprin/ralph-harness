@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import {
   cliPath,
   count,
@@ -463,5 +463,226 @@ describe("PUSH true lands only on a branch the config names twice", () => {
   test("a new loop lands through a draft pull request unless told otherwise", () => {
     expect(readConfigValue(join(home, "plain", "config.json"), "PUSH")).toBe("pr");
     expect(readConfigValue(join(home, "plain", "config.json"), "PR_DRAFT")).toBe("true");
+  });
+});
+
+describe("a timeout of 0 or less is the default, not a kill on the spot", () => {
+  // 0 turns off QUIET_STOP, ERROR_STOP, CHURN_AT and PROGRESS_MAX_BYTES, so a
+  // reader takes ITER_TIMEOUT 0 for "no timeout". It killed every agent before
+  // it had run, and VERIFY_TIMEOUT 0 reverted every commit the agent was paid
+  // for as "verify timed out after 0s", iteration after iteration.
+  const it0 = fx.p("loops/it0");
+  const vt0 = fx.p("loops/vt0");
+  let Si = "";
+  let Sv = "";
+
+  setup(async () => {
+    fx.makeRepo(fx.p("app-it0"), fx.p("remote-it0.git"));
+    Si = fx.stub("stub-it0", ["commit"], ["ACCEPT"]);
+    fx.makeLoop(it0, fx.p("app-it0"), { WORKTREE: true, REVIEW: true, MAX_ITER: 1, ITER_TIMEOUT: 0 });
+    await fx.runLoop(it0, Si);
+
+    fx.makeRepo(fx.p("app-vt0"), fx.p("remote-vt0.git"));
+    Sv = fx.stub("stub-vt0", ["commit"]);
+    fx.makeLoop(vt0, fx.p("app-vt0"), { WORKTREE: true, MAX_ITER: 1, VERIFY_TIMEOUT: -1, VERIFY_CMD: "./measure.sh" });
+    await fx.runLoop(vt0, Sv);
+  });
+
+  test("ITER_TIMEOUT 0 lets the agent run and its commit is kept", () => {
+    expect(statuses(it0)).toBe("keep");
+  });
+  test("the agent and the reviewer each ran once", () => {
+    expect(read(join(Si, "agent_calls")).trim()).toBe("1");
+    expect(read(join(Si, "review_calls")).trim()).toBe("1");
+  });
+  test("the log says which timeout it runs with instead", () => {
+    expect(read(join(it0, "ralph.log"))).toContain("ITER_TIMEOUT 0 is not a timeout; using the default 7200s");
+  });
+  test("a VERIFY_TIMEOUT below 0 lets VERIFY_CMD run, and the commit is kept", () => {
+    expect(statuses(vt0)).toBe("keep");
+  });
+  test("and the agent is told the timeout VERIFY_CMD really has", () => {
+    expect(read(join(Sv, "prompt.agent.1"))).toContain("for up to 1800s");
+    expect(read(join(vt0, "ralph.log"))).toContain("VERIFY_TIMEOUT -1 is not a timeout; using the default 1800s");
+  });
+});
+
+describe.skipIf(IS_WIN)("a backslash in REPO does not make any checkout this loop's own", () => {
+  // The harness resets and cleans WORKTREE_DIR after every iteration, so it
+  // checks first that the checkout there belongs to REPO, by the repository
+  // each one's git lives in. Bun's realpath cannot open a path holding a
+  // backslash on macOS and Linux; both sides came back unknown, unknown
+  // matched unknown, and a stranger's checkout was taken as the loop's own.
+  const bs = fx.p("loops/bs");
+  const ok = fx.p("loops/bs-ok");
+  const stranger = fx.p("else\\where");
+
+  setup(async () => {
+    fx.makeRepo(fx.p("app\\bs"), fx.p("remote-bs.git"));
+    fx.fresh(stranger);
+    fx.sh(["git", "init", "-q", "-b", "main", stranger]);
+    writeFileSync(join(stranger, "precious.txt"), "keep\n");
+    fx.gitOk(stranger, "add", "-A");
+    fx.gitOk(stranger, "commit", "-qm", "not ralph's work");
+    writeFileSync(join(stranger, "untracked.txt"), "scratch\n");
+    const S = fx.stub("stub-bs", ["commit"]);
+    fx.makeLoop(bs, fx.p("app\\bs"), { WORKTREE: true, MAX_ITER: 1, WORKTREE_DIR: stranger });
+    await fx.runLoop(bs, S);
+
+    // The same REPO with a worktree of its own still runs, at the start and
+    // again after a restart, which finds the worktree already there.
+    fx.makeRepo(fx.p("app\\ok"), fx.p("remote-bs-ok.git"));
+    const So = fx.stub("stub-bs-ok", ["commit", "commit"]);
+    fx.makeLoop(ok, fx.p("app\\ok"), { WORKTREE: true, MAX_ITER: 1 });
+    await fx.runLoop(ok, So);
+    await fx.runLoop(ok, So);
+  });
+
+  test("a stranger's checkout at WORKTREE_DIR is refused", () => {
+    expect(read(join(bs, "ralph.log"))).toContain("not a worktree of");
+    expect(existsSync(join(bs, "results.tsv"))).toBe(false);
+  });
+  test("its uncommitted file is still there", () => {
+    expect(existsSync(join(stranger, "untracked.txt"))).toBe(true);
+  });
+  test("and nothing was committed into it", () => {
+    expect(fx.git(stranger, "rev-list", "--count", "HEAD")).toBe("1");
+  });
+  test("REPO's own worktree is used, and found again after a restart", () => {
+    expect(statuses(ok)).toBe("keep keep");
+    expect(read(join(ok, "ralph.log"))).not.toContain("not a worktree of");
+  });
+});
+
+describe("a WORKTREE_DIR that is a checkout of REPO but not this loop's worktree is refused", () => {
+  // Belonging to REPO's repository was the whole check. REPO itself passed,
+  // and so did a folder inside it and another loop's worktree; one iteration
+  // then wiped the edit nobody had committed there, left the checkout on
+  // ralph/<name>, and kept the agent's commit, never judged, on the branch
+  // that had been out.
+  const cases: { name: string; dir: string; loop: string }[] = [];
+  /** The state a refusal must leave alone: what is out, and the unsaved work. */
+  const snap = (dir: string) => ({
+    head: fx.git(dir, "rev-parse", "HEAD"),
+    ref: fx.git(dir, "symbolic-ref", "-q", "HEAD"),
+    edit: read(join(dir, "work.txt")),
+    untracked: existsSync(join(dir, "notes.txt")),
+    count: fx.git(dir, "rev-list", "--count", "--all"),
+  });
+  const before = new Map<string, ReturnType<typeof snap>>();
+  const own = fx.p("loops/wd-own");
+
+  /** Unsaved work in `dir`, the loop run once with WORKTREE_DIR at it. */
+  async function point(name: string, repo: string, dir: string): Promise<void> {
+    writeFileSync(join(dir, "work.txt"), "an edit nobody committed\n");
+    writeFileSync(join(dir, "notes.txt"), "untracked notes\n");
+    const loop = fx.p(`loops/${name}`);
+    fx.makeLoop(loop, repo, { WORKTREE: true, MAX_ITER: 1, WORKTREE_DIR: dir });
+    before.set(name, snap(dir));
+    cases.push({ name, dir, loop });
+    await fx.runLoop(loop, fx.stub(`stub-${name}`, ["commit"]));
+  }
+
+  setup(async () => {
+    // REPO itself.
+    fx.makeRepo(fx.p("app-wd-repo"), fx.p("remote-wd-repo.git"));
+    await point("wd-repo", fx.p("app-wd-repo"), fx.p("app-wd-repo"));
+
+    // A folder inside REPO: git resets the whole checkout from there.
+    const inside = fx.p("app-wd-inside");
+    fx.makeRepo(inside, fx.p("remote-wd-inside.git"));
+    mkdirSync(join(inside, "src"));
+    writeFileSync(join(inside, "src", "x.txt"), "x\n");
+    fx.gitOk(inside, "add", "-A");
+    fx.gitOk(inside, "commit", "-qm", "src");
+    await point("wd-inside", inside, join(inside, "src"));
+
+    // Another loop's worktree, with that loop's commit on ralph/wd-first.
+    const shared = fx.p("app-wd-other");
+    fx.makeRepo(shared, fx.p("remote-wd-other.git"));
+    const first = fx.p("loops/wd-first");
+    fx.makeLoop(first, shared, { WORKTREE: true, MAX_ITER: 1 });
+    await fx.runLoop(first, fx.stub("stub-wd-first", ["commit"]));
+    await point("wd-other", shared, fx.p("app-wd-other-ralph-wd-first"));
+
+    // REPO is a linked worktree; WORKTREE_DIR is the main checkout, on a
+    // detached HEAD, so no branch name gives it away.
+    const main = fx.p("app-wd-main");
+    fx.makeRepo(main, fx.p("remote-wd-main.git"));
+    fx.gitOk(main, "worktree", "add", "-q", "-b", "feature", fx.p("app-wd-main-linked"));
+    fx.gitOk(main, "checkout", "-q", "--detach");
+    await point("wd-main", fx.p("app-wd-main-linked"), main);
+
+    // REPO itself again, as a linked worktree on a detached HEAD.
+    const self = fx.p("app-wd-self");
+    fx.makeRepo(self, fx.p("remote-wd-self.git"));
+    fx.gitOk(self, "worktree", "add", "-q", "--detach", fx.p("app-wd-self-linked"));
+    await point("wd-self", fx.p("app-wd-self-linked"), fx.p("app-wd-self-linked"));
+
+    // The loop's own worktree, found on a detached HEAD at the next start,
+    // as sync's rebase leaves it when the loop is killed during it.
+    fx.makeRepo(fx.p("app-wd-own"), fx.p("remote-wd-own.git"));
+    fx.makeLoop(own, fx.p("app-wd-own"), { WORKTREE: true, MAX_ITER: 1 });
+    const So = fx.stub("stub-wd-own", ["commit", "commit"]);
+    await fx.runLoop(own, So);
+    fx.gitOk(fx.p("app-wd-own-ralph-wd-own"), "checkout", "-q", "--detach");
+    await fx.runLoop(own, So);
+  });
+
+  test.each([
+    ["wd-repo", "is REPO itself"],
+    ["wd-inside", "is a folder inside the checkout"],
+    ["wd-other", "has ralph/wd-first checked out, not ralph/wd-other"],
+    ["wd-main", "is the main checkout of"],
+    ["wd-self", "is REPO itself"],
+  ])("%s: the start is refused, says why, and runs no agent", (name, why) => {
+    const c = cases.find((x) => x.name === name)!;
+    expect(read(join(c.loop, "ralph.log"))).toContain(why);
+    expect(read(join(c.loop, "ralph.log"))).toContain("refusing to reset a checkout this loop does not own");
+    expect(existsSync(join(c.loop, "results.tsv"))).toBe(false);
+    expect(existsSync(join(fx.p(`stub-${name}`), "prompt.agent.1"))).toBe(false);
+  });
+  test.each(["wd-repo", "wd-inside", "wd-other", "wd-main", "wd-self"])("%s: the checkout there is as it was", (name) => {
+    const c = cases.find((x) => x.name === name)!;
+    expect(snap(c.dir)).toEqual(before.get(name)!);
+    expect(fx.gitOk(c.dir, "show-ref", "--verify", "--quiet", `refs/heads/ralph/${name}`)).toBe(false);
+  });
+  test("the loop's own worktree on a detached HEAD is still its own", () => {
+    expect(read(join(own, "ralph.log"))).not.toContain("refusing");
+    expect(statuses(own).split(" ")).toHaveLength(2);
+  });
+});
+
+describe("a new loop's files send the reader to the settings file it has", () => {
+  // The template's PROMPT.md said "set QUIET_STOP in config.sh" long after the
+  // settings moved to config.json, so every loop `ralph new` wrote sent its
+  // human to a file the loop does not have and the harness does not read.
+  const home = fx.p("home-names");
+  const dir = join(home, "names");
+  const files: Record<string, string> = {};
+
+  setup(() => {
+    const app = fx.p("app-names");
+    fx.makeRepo(app, fx.p("remote-names.git"));
+    const r = fx.cli(home, ["new", "names", app]);
+    if (r.code !== 0) throw new Error(`ralph new failed: ${r.err}`);
+    for (const f of readdirSync(dir)) files[f] = read(join(dir, f));
+  });
+
+  test("no file of a new loop names config.sh, which the harness does not read", () => {
+    expect(Object.keys(files)).toContain("config.json");
+    expect(Object.keys(files).filter((f) => files[f]!.includes("config.sh"))).toEqual([]);
+  });
+  test("each setting its text says to set is in the file the text names", () => {
+    const pointers: string[] = [];
+    for (const f of ["PROMPT.md", "PROGRESS.md"]) {
+      for (const m of files[f]!.matchAll(/\b([A-Z][A-Z0-9_]{2,})\s+in\s+([\w.-]+\.(?:json|sh))\b/g)) {
+        const [key, file] = [m[1]!, m[2]!];
+        const settings = files[file] === undefined ? {} : (Bun.JSONC.parse(files[file]) as Record<string, unknown>);
+        pointers.push(`${f}: ${key} in ${file}${Object.hasOwn(settings, key) ? "" : " (not there)"}`);
+      }
+    }
+    expect(pointers.length).toBeGreaterThan(0);
+    expect(pointers.filter((p) => p.endsWith("(not there)"))).toEqual([]);
   });
 });

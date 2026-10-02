@@ -61,3 +61,74 @@ describe("decisions", () => {
     expect(decisions("# Progress\n")).toEqual([]);
   });
 });
+
+describe("a heading in a fenced code block is quoted text, not a heading", () => {
+  // Twelve entries against eight, and entry 4, the first to move, quotes a
+  // script whose comment is a `## `. Read as a heading it ended the Log: the
+  // cap moved half of entry 4 (log: "moved 1"), left `## build first` in
+  // PROGRESS.md as a real heading over a stray fence, and entries 1 to 3 sat
+  // under it for good, where no cap ever counted them again.
+  const snippet = "The script I ran:\n\n```bash\n## build first\nbun run build\n### and then\nbun test\n```\n\nIt passed.\n";
+  const text = (() => {
+    let s = "# Progress\n\n## Needs a decision\n\n- _(nothing yet)_\n\n## Log\n\n";
+    for (let i = 12; i >= 1; i--) s += `### entry ${i}\n\n${i === 4 ? snippet : `body ${i}\n`}\n`;
+    return s;
+  })();
+  const r = capProgress(text, 8);
+  test("every entry is counted, and only entries", () => {
+    expect(r.entries).toBe(12);
+  });
+  test("the four oldest move, whole", () => {
+    expect([...r.archived.matchAll(/^### entry (\d+)/gm)].map((m) => m[1])).toEqual(["1", "2", "3", "4"]);
+    expect(r.archived).toContain(`### entry 4\n\n${snippet}`);
+  });
+  test("PROGRESS.md keeps the newest eight and nothing of the snippet", () => {
+    expect([...r.kept!.matchAll(/^### entry (\d+)/gm)].map((m) => m[1])).toEqual(["12", "11", "10", "9", "8", "7", "6", "5"]);
+    expect(r.kept).not.toContain("build first");
+    expect(r.kept).not.toContain("```");
+  });
+  test("a fenced ## under Needs a decision does not hide the items after it", () => {
+    const p =
+      "## Needs a decision\n\n- run this and say if it is right:\n\n  ```\n## not a heading\n  ```\n\n- the key is missing\n\n## Log\n";
+    expect(decisions(p)).toContain("- the key is missing");
+  });
+});
+
+describe("a heading that only starts with a section's name is another section", () => {
+  // `## Login flow` read as `## Log`: its three `### step` notes were counted as
+  // Log entries. Above the Log, eight entries under PROGRESS_KEEP 8 read as
+  // eleven, and the three oldest real ones went to the archive. Below it, the
+  // notes themselves went.
+  const head = "# Progress\n\n## Needs a decision\n\n- _(nothing yet)_\n\n";
+  const login = "## Login flow\n\n### step 1\n\nform\n\n### step 2\n\nsession\n\n### step 3\n\nlogout\n\n";
+  const log = (n: number, heading = "## Log") => {
+    let s = `${heading}\n\n`;
+    for (let i = n; i >= 1; i--) s += `### entry ${i}\n\nbody ${i}\n\n`;
+    return s;
+  };
+  test("one above the Log is not counted, and no entry moves", () => {
+    expect(capProgress(head + login + log(8), 8)).toEqual({ entries: 8, kept: null, archived: "" });
+  });
+  test("one below the Log ends it, and its notes stay", () => {
+    expect(capProgress(head + log(8) + login, 8)).toEqual({ entries: 8, kept: null, archived: "" });
+  });
+  test("with entries to move, only Log entries move", () => {
+    const r = capProgress(head + login + log(10) + login, 8);
+    expect(r.entries).toBe(10);
+    expect([...r.archived.matchAll(/^### (.*)$/gm)].map((m) => m[1])).toEqual(["entry 1", "entry 2"]);
+    expect(count(r.kept!, /^### step/gm)).toBe(6);
+  });
+  test("a file with only a longer heading has no Log, so the cap says it does nothing", () => {
+    expect(capProgress(`${head}## Logging\n\n### what we log\n\n### where it goes\n\n`, 1).entries).toBe(0);
+  });
+  test("the Log heading may still say more after the name", () => {
+    for (const h of ["## Log (newest first)", "## Log: newest first", "## Log\r"]) {
+      expect([h, capProgress(head + log(10, h), 8).entries]).toEqual([h, 10]);
+    }
+  });
+  test("Needs a decision is read by its name as well", () => {
+    expect(decisions("## Needs a decision\n\n- one\n\n## Needs a decisions log\n\n- two\n")).toEqual(["- one"]);
+  });
+});
+
+const count = (text: string, re: RegExp) => (text.match(re) ?? []).length;

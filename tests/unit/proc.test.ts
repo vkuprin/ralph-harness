@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { etime, killGroup, run, runBounded, shellCommand } from "../../src/lib/proc.ts";
+import { etime, killGroup, orphanSync, parseEtime, reapOrphan, run, runBounded, shellCommand } from "../../src/lib/proc.ts";
 import { endsWithArg, markThen } from "../../src/paths.ts";
 
 const T = realpathSync(mkdtempSync(join(tmpdir(), "ralph-unit-proc.")));
+const IS_WIN = process.platform === "win32";
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0);
@@ -76,6 +78,30 @@ describe("runBounded", () => {
     expect(r).toEqual({ rc: 0, timedOut: false });
   });
 
+  test("names the command in its mark while it runs, and the mark goes when it ends", async () => {
+    // The command is bun, not sh: Git's sh on Windows knows itself by an MSYS
+    // PID, and the mark holds the one Windows gave it.
+    const mark = join(T, "f.mark");
+    const seen = join(T, "f.seen");
+    const script = join(T, "f.js");
+    writeFileSync(
+      script,
+      `const fs = require("fs"); fs.writeFileSync(process.env.SEEN, process.pid + "|" + fs.readFileSync(process.env.MARK, "utf8"));`,
+    );
+    const t0 = Math.floor(Date.now() / 1000);
+    const r = await runBounded(10, [process.execPath, script], {
+      out: join(T, "f.out"),
+      env: { ...process.env, MARK: mark, SEEN: seen },
+      pollGapMax: 60,
+      mark,
+    });
+    expect(r.rc).toBe(0);
+    const [own, pid, started] = readFileSync(seen, "utf8").split(/[| ]/);
+    expect(pid).toBe(own);
+    expect(Math.abs(Number(started) - t0)).toBeLessThanOrEqual(1);
+    expect(existsSync(mark)).toBe(false);
+  });
+
   test("a POLL_GAP_MAX of 0 is the default cap, not no cap", async () => {
     const clock = join(T, "clock0");
     writeFileSync(clock, "0");
@@ -100,17 +126,114 @@ describe("run", () => {
   });
 });
 
+// spawn throws, rather than erroring later, when the system will not start a
+// command at all. Thrown from a notifier, that ended the loop.
+describe("a command the system refuses to start exits 127, and never throws", () => {
+  const nul = { ...process.env, RALPH_TEST_VALUE: "a\0b" };
+
+  test("runBounded, with a NUL byte in its environment, and says why where its output goes", async () => {
+    const out = join(T, "refused.out");
+    writeFileSync(out, "before\n");
+    const r = await runBounded(10, ["sh", "-c", "exit 0"], { out, env: nul, pollGapMax: 60 });
+    expect(r).toEqual({ rc: 127, timedOut: false });
+    const text = readFileSync(out, "utf8");
+    expect(text.startsWith("before\nsh: could not start: ")).toBe(true);
+    expect(text).not.toContain("\0");
+    expect(text.split("\n").length).toBe(3);
+  });
+
+  test("runBounded, with a NUL byte in an argument", async () => {
+    const r = await runBounded(10, ["sh", "-c", "exit 0", "a\0b"], { out: join(T, "refused-arg.out"), pollGapMax: 60 });
+    expect(r).toEqual({ rc: 127, timedOut: false });
+  });
+
+  test("runBounded, and the next command still runs", async () => {
+    await runBounded(10, ["sh", "-c", "exit 0"], { out: join(T, "refused-next.out"), env: nul, pollGapMax: 60 });
+    const r = await runBounded(10, ["sh", "-c", "exit 5"], { out: join(T, "refused-next.out"), pollGapMax: 60 });
+    expect(r).toEqual({ rc: 5, timedOut: false });
+  });
+
+  // E2BIG: 128 KiB a variable on Linux, 1 MiB for argv and environment
+  // together on macOS. Windows sets no limit on an environment block.
+  test.skipIf(IS_WIN)("runBounded, with an environment past the system's size limit", async () => {
+    const out = join(T, "refused-big.out");
+    const r = await runBounded(10, ["sh", "-c", "exit 0"], {
+      out,
+      env: { ...process.env, RALPH_TEST_VALUE: "x".repeat(2_000_000) },
+      pollGapMax: 60,
+    });
+    expect(r).toEqual({ rc: 127, timedOut: false });
+    expect(readFileSync(out, "utf8")).toContain("E2BIG");
+  });
+
+  test("run, with the reason in its stderr", async () => {
+    const r = await run(["sh", "-c", "exit 0"], { env: nul });
+    expect(r.code).toBe(127);
+    expect(r.stdout).toBe("");
+    expect(r.stderr.startsWith("sh: could not start: ")).toBe(true);
+  });
+
+  test("run, with the reason in the file its stderr goes to", async () => {
+    const log = join(T, "refused-run.log");
+    const r = await run(["sh", "-c", "exit 0"], { env: nul, errTo: log, outTo: join(T, "refused-run.out") });
+    expect(r.code).toBe(127);
+    expect(readFileSync(log, "utf8").startsWith("sh: could not start: ")).toBe(true);
+  });
+});
+
 describe("killGroup", () => {
   test("ends a group whose leader ignores TERM", async () => {
+    // The leader and its child both ignore TERM, so only the KILL to the group
+    // ends either. The child writes its own PID once it runs, and the kill waits
+    // for that: a TERM that lands before the trap is set, or a tree still being
+    // forked, would test something else.
     const { spawn } = await import("node:child_process");
-    const c = spawn("sh", ["-c", "trap '' TERM; sleep 30"], { detached: true, stdio: "ignore" });
-    await Bun.sleep(100);
-    const t0 = Date.now();
-    await killGroup(c.pid!);
-    expect(Date.now() - t0).toBeLessThan(12_000);
-    await Bun.sleep(100);
-    expect(alive(c.pid!)).toBe(false);
-  }, 20_000);
+    const pidFile = join(T, "group-child.pid");
+    const script = join(T, "group-child.js");
+    writeFileSync(
+      script,
+      `process.on("SIGTERM", () => {}); require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 30000);`,
+    );
+    const slash = (p: string) => p.split("\\").join("/");
+    const c = spawn("sh", ["-c", `trap '' TERM; '${slash(process.execPath)}' '${slash(script)}' & wait`], {
+      detached: true,
+      stdio: "ignore",
+    });
+    // The leader is this test's child, a zombie until it is reaped here: ask
+    // whether it exited, not whether its PID answers.
+    const exited = new Promise<string>((resolve) => c.once("exit", (_code, signal) => resolve(signal ?? "exited")));
+    let child = 0;
+    let gone = false;
+    try {
+      for (let i = 0; i < 100 && !child; i++) {
+        await Bun.sleep(100);
+        try {
+          child = Number(readFileSync(pidFile, "utf8").trim());
+        } catch {}
+      }
+      expect(child).toBeGreaterThan(0);
+      const t0 = Date.now();
+      await killGroup(c.pid!);
+      expect(Date.now() - t0).toBeLessThan(12_000);
+      const how = await Promise.race([exited, Bun.sleep(5000).then(() => "still running")]);
+      // Only a KILL ends a leader that ignores TERM; Windows kills the tree with taskkill.
+      expect(how).toBe(process.platform === "win32" ? "exited" : "SIGKILL");
+      // The child is the leader's, not this test's, so once the leader is gone
+      // init reaps it, and its PID going quiet is the answer.
+      for (let i = 0; i < 50 && alive(child); i++) await Bun.sleep(100);
+      expect(alive(child)).toBe(false);
+      gone = true;
+    } finally {
+      // A failed check leaves nothing behind for the next test to trip on.
+      if (!gone) {
+        for (const pid of [-c.pid!, child]) {
+          try {
+            if (pid) process.kill(pid, "SIGKILL");
+          } catch {}
+        }
+      }
+    }
+  }, 30_000);
 });
 
 describe("etime", () => {
@@ -119,6 +242,113 @@ describe("etime", () => {
     expect(etime(3599)).toBe("59:59");
     expect(etime(3600)).toBe("01:00:00");
     expect(etime(2 * 86400 + 3 * 3600 + 4 * 60 + 5)).toBe("2-03:04:05");
+  });
+
+  test("reads back what it prints, and nothing else", () => {
+    for (const n of [0, 5, 59, 60, 3599, 3600, 86399, 86400, 2 * 86400 + 3 * 3600 + 4 * 60 + 5]) {
+      expect(parseEtime(`  ${etime(n)}\n`)).toBe(n);
+    }
+    for (const bad of ["", "5", "a:b", "1:2:3:4", "-01:02"]) expect(parseEtime(bad)).toBeNull();
+  });
+});
+
+describe.skipIf(IS_WIN)("reapOrphan", () => {
+  const now = () => Math.floor(Date.now() / 1000);
+
+  test("stops the group its mark names when the start matches", async () => {
+    const c = spawn("sh", ["-c", "sleep 30 & wait"], { detached: true, stdio: "ignore" });
+    // This test's child: ask whether it exited, not whether its PID answers.
+    const exited = new Promise<string>((resolve) => c.once("exit", (_code, signal) => resolve(signal ?? "exited")));
+    const mark = join(T, "g.mark");
+    writeFileSync(mark, `${c.pid} ${now()}\n`);
+    try {
+      expect(await reapOrphan(mark)).toBe(c.pid!);
+      expect(await Promise.race([exited, Bun.sleep(5000).then(() => "still running")])).toBe("SIGTERM");
+      expect(existsSync(mark)).toBe(false);
+    } finally {
+      try {
+        process.kill(-c.pid!, "SIGKILL");
+      } catch {}
+    }
+  }, 20_000);
+
+  test("leaves a process alone whose start is not the one recorded, and reads no garbage", async () => {
+    const c = spawn("sleep", ["30"], { stdio: "ignore" });
+    const exited = new Promise<string>((resolve) => c.once("exit", () => resolve("exited")));
+    const mark = join(T, "h.mark");
+    try {
+      writeFileSync(mark, `${c.pid} ${now() - 3600}\n`);
+      expect(await reapOrphan(mark)).toBeNull();
+      expect(existsSync(mark)).toBe(false);
+      for (const bad of [`${c.pid}\n`, `${c.pid} ${now()}`, `x ${now()}\n`, ""]) {
+        writeFileSync(mark, bad);
+        expect(await reapOrphan(mark)).toBeNull();
+      }
+      expect(await reapOrphan(join(T, "no-such.mark"))).toBeNull();
+      expect(await Promise.race([exited, Bun.sleep(500).then(() => "running")])).toBe("running");
+    } finally {
+      c.kill("SIGKILL");
+    }
+  });
+
+  test("keeps a mark written while it waited for the group to go", async () => {
+    // A group that takes a second to go after TERM, and a loop that starts in
+    // that second and marks its own agent: `ralph stop` reaping beside a
+    // `ralph start`. The mark is the new agent's, which the next start needs.
+    const c = spawn("sh", ["-c", "trap 'sleep 1; exit 0' TERM; while :; do sleep 0.1; done"], { detached: true, stdio: "ignore" });
+    const mark = join(T, "w.mark");
+    writeFileSync(mark, `${c.pid} ${now()}\n`);
+    try {
+      const reaped = reapOrphan(mark);
+      await Bun.sleep(300);
+      const theirs = `1 ${now()}\n`;
+      writeFileSync(mark, theirs);
+      expect(await reaped).toBe(c.pid!);
+      expect(readFileSync(mark, "utf8")).toBe(theirs);
+    } finally {
+      try {
+        process.kill(-c.pid!, "SIGKILL");
+      } catch {}
+    }
+  }, 20_000);
+});
+
+describe.skipIf(IS_WIN)("orphanSync", () => {
+  const now = () => Math.floor(Date.now() / 1000);
+
+  test("names what reapOrphan would stop, and leaves it and its mark alone", async () => {
+    const c = spawn("sleep", ["30"], { stdio: "ignore" });
+    const exited = new Promise<string>((resolve) => c.once("exit", () => resolve("exited")));
+    const mark = join(T, "o.mark");
+    const text = `${c.pid} ${now()}\n`;
+    writeFileSync(mark, text);
+    try {
+      expect(orphanSync(mark)).toBe(c.pid!);
+      expect(await Promise.race([exited, Bun.sleep(500).then(() => "running")])).toBe("running");
+      expect(readFileSync(mark, "utf8")).toBe(text);
+    } finally {
+      c.kill("SIGKILL");
+    }
+  });
+
+  test("not a process whose start is not the one recorded, nor garbage", async () => {
+    const c = spawn("sleep", ["30"], { stdio: "ignore" });
+    const exited = new Promise<string>((resolve) => c.once("exit", () => resolve("exited")));
+    const mark = join(T, "p.mark");
+    try {
+      for (const bad of [`${c.pid} ${now() - 3600}\n`, `${c.pid}\n`, `${c.pid} ${now()}`, `x ${now()}\n`, ""]) {
+        writeFileSync(mark, bad);
+        expect(orphanSync(mark)).toBeNull();
+        expect(readFileSync(mark, "utf8")).toBe(bad);
+      }
+      expect(orphanSync(join(T, "no-such.mark"))).toBeNull();
+      c.kill("SIGKILL");
+      expect(await exited).toBe("exited");
+      writeFileSync(mark, `${c.pid} ${now()}\n`);
+      expect(orphanSync(mark)).toBeNull();
+    } finally {
+      c.kill("SIGKILL");
+    }
   });
 });
 
