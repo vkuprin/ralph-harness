@@ -91,6 +91,19 @@ export function reviewerArgs(c: Config, dir: string): string[] {
   ];
 }
 
+/**
+ * One git setting for a child, added after the ones the user's environment
+ * already gives through GIT_CONFIG_COUNT/KEY_n/VALUE_n. Writing it at index 0
+ * with a count of 1 would drop every one of those: a core.hooksPath holding a
+ * secret scanner, a safe.directory in a container. A count git cannot read
+ * makes every git command fail, the harness's own included, so it is not
+ * worth keeping and the setting goes at 0.
+ */
+function gitConfigEnv(count: string | undefined, key: string, value: string): Record<string, string> {
+  const n = count && /^\d+$/.test(count) ? Number(count) : 0;
+  return { GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: key, [`GIT_CONFIG_VALUE_${n}`]: value };
+}
+
 /** The MCP server behind PLAN_FIRST's --permission-prompt-tool; the plan it approves lands in `.plan.md`. */
 export function planMcpConfig(dir: string): object {
   return {
@@ -714,11 +727,7 @@ export class Loop {
       // setting from the environment to every repository the process touches,
       // so naming the remote would also break a push to an unrelated `origin`.
       const pushUrl = await this.gitOut(["remote", "get-url", "--push", "origin"], { quiet: true });
-      if (pushUrl) {
-        env.GIT_CONFIG_COUNT = "1";
-        env.GIT_CONFIG_KEY_0 = "url.no-push://disabled.pushInsteadOf";
-        env.GIT_CONFIG_VALUE_0 = pushUrl;
-      }
+      if (pushUrl) Object.assign(env, gitConfigEnv(process.env.GIT_CONFIG_COUNT, "url.no-push://disabled.pushInsteadOf", pushUrl));
     }
 
     const offset = this.log.size();

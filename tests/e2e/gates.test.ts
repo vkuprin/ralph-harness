@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { Fx, IS_WIN, count, join, read, rows, setup, sleeperGone, sq, statuses } from "../helpers/index.ts";
 
 const fx = new Fx("gates");
@@ -124,6 +124,57 @@ describe("gates, verdicts and pushes (WORKTREE=1 PUSH=1 REVIEW=1)", () => {
   test("review shows what the gates threw away", () => {
     expect(review.slice(review.indexOf("Reverted or dropped"))).toContain("stub: bad");
   });
+});
+
+describe("the user's own GIT_CONFIG_* settings reach the agent while the harness pushes", () => {
+  // The harness adds its push block to the agent's environment as a
+  // GIT_CONFIG_KEY_n. Written at index 0 with a count of 1, it dropped every
+  // setting the user's environment gave that way: here a core.hooksPath whose
+  // pre-commit hook records itself, and a second key that hook reads, so a
+  // block written over index 1 shows too.
+  for (const push of [true, "pr"] as const) {
+    const tag = push === true ? "main" : "pr";
+    const app = fx.p(`app-env-${tag}`);
+    const remote = fx.p(`remote-env-${tag}.git`);
+    const loop = fx.p(`loops/env-${tag}`);
+    const hooks = fx.p(`hooks-env-${tag}`);
+    const ran = fx.p(`hook-ran-${tag}`);
+    let S = "";
+
+    setup(async () => {
+      fx.makeRepo(app, remote);
+      mkdirSync(hooks);
+      writeFileSync(join(hooks, "pre-commit"), `#!/bin/sh\necho "hook $(git config --get ralphprobe.marker)" >> ${sq(ran)}\n`);
+      chmodSync(join(hooks, "pre-commit"), 0o755);
+      S = fx.stub(`stub-env-${tag}`, ["push-attempt"]);
+      fx.makeLoop(loop, app, { WORKTREE: true, PUSH: push, PUSH_CONFIRM: "main", MAX_ITER: 1 });
+      await fx.runLoop(loop, S, {
+        remote,
+        env: {
+          GIT_CONFIG_COUNT: "2",
+          GIT_CONFIG_KEY_0: "core.hooksPath",
+          GIT_CONFIG_VALUE_0: hooks,
+          GIT_CONFIG_KEY_1: "ralphprobe.marker",
+          GIT_CONFIG_VALUE_1: "seen",
+        },
+      });
+    });
+
+    test(`PUSH ${tag}: the commit is kept`, () => {
+      expect(statuses(loop)).toBe("keep");
+    });
+    test(`PUSH ${tag}: the user's hook ran for the agent's commit, and read the user's second setting`, () => {
+      // Twice: the agent's commit in the worktree, and its probe commit in a
+      // repository of its own.
+      expect(read(ran)).toBe("hook seen\nhook seen\n");
+    });
+    test(`PUSH ${tag}: the agent's own push to origin still failed`, () => {
+      expect(read(join(S, "push-attempt.rc")).trim()).not.toBe("0");
+    });
+    test(`PUSH ${tag}: the agent can still push in a repository of its own`, () => {
+      expect(read(join(S, "push-other.rc")).trim()).toBe("0");
+    });
+  }
 });
 
 describe("escalation and the PROGRESS.md cap", () => {
