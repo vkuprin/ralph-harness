@@ -37,7 +37,7 @@ function sedRange(text: string, start: RegExp, end?: RegExp): string {
 async function within(run: LoopRun, secs: number): Promise<number | "timeout"> {
   const r = await Promise.race([run.done, Bun.sleep(secs * 1000).then(() => "timeout" as const)]);
   if (r === "timeout") {
-    run.proc.kill();
+    run.kill();
     await run.done;
   }
   return r;

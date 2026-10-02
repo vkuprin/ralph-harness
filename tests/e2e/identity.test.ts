@@ -206,7 +206,7 @@ describe.skipIf(IS_WIN)("ralph stop on a loop killed without its handler stops t
     const first = fx.startLoop(dead, S);
     await until(() => read(join(S, "sleeper.pid")).trim() !== "", 30);
     agent = Number(fx.sh(["ps", "-o", "ppid=", "-p", read(join(S, "sleeper.pid")).trim()]).out.trim());
-    first.proc.kill("SIGKILL");
+    first.kill("SIGKILL");
     await first.done;
     outlived = !sleeperGone(join(S, "sleeper.pid"));
     stop = fx.cli(home, ["stop", "dead"]);
@@ -225,7 +225,7 @@ describe.skipIf(IS_WIN)("ralph stop on a loop killed without its handler stops t
       liveStop = fx.cli(home, ["stop", "live"]);
       liveAgentRunning = !sleeperGone(join(L, "sleeper.pid"));
     } finally {
-      term(live, second.proc);
+      term(live, second);
       await second.done;
     }
   });

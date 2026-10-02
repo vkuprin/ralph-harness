@@ -86,10 +86,10 @@ describe("a signal during a nap ends the loop at once", () => {
     await until(() => read(join(loop, "ralph.log")).includes("shipped nothing"), 30);
     await Bun.sleep(300);
     const t0 = Date.now();
-    term(loop, run.proc);
+    term(loop, run);
     code = await Promise.race([run.done, Bun.sleep(15000).then(() => -1)]);
     took = Date.now() - t0;
-    if (code === -1) run.proc.kill("SIGKILL");
+    if (code === -1) run.kill("SIGKILL");
   });
 
   test("TERM in the middle of a 600s nap ends the loop within seconds", () => {
@@ -144,7 +144,7 @@ describe("after the last iteration the loop ends, it does not wait first", () =>
         ended[name] = await Promise.race([run.done, Bun.sleep(60_000).then(() => "timeout" as const)]);
         took[name] = Date.now() - t0;
         if (ended[name] === "timeout") {
-          run.proc.kill("SIGKILL");
+          run.kill("SIGKILL");
           await run.done;
         }
       }),
@@ -510,7 +510,7 @@ describe.skipIf(IS_WIN)("a loop killed without its handler: the next start stops
     const first = fx.startLoop(loop, S);
     await until(() => read(join(S, "sleeper.pid")).trim() !== "", 30);
     agent = Number(fx.sh(["ps", "-o", "ppid=", "-p", read(join(S, "sleeper.pid")).trim()]).out.trim());
-    first.proc.kill("SIGKILL");
+    first.kill("SIGKILL");
     await first.done;
     outlived = !sleeperGone(join(S, "sleeper.pid"));
     await fx.runLoop(loop, S);
@@ -592,7 +592,7 @@ describe("a start refused before the lock leaves the running loop's mark alone",
       second = await fx.runLoop(loop, S);
       after = read(join(loop, ".child"));
     } finally {
-      term(loop, first.proc);
+      term(loop, first);
       await first.done;
       gone = sleeperGone(join(S, "sleeper.pid"));
     }

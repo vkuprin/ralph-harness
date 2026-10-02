@@ -110,7 +110,7 @@ describe("a stop after the verdict: the commit was judged, and a restart keeps i
     });
     const run = fx.startLoop(loop, S, { remote });
     await until(() => existsSync(flag), 60);
-    term(loop, run.proc);
+    term(loop, run);
     code = await run.done;
     atStop = rows(loop);
     kept = fx.git(W, "rev-parse", "HEAD");
@@ -261,8 +261,8 @@ out=${sq(log)}
     const within = (s: number) => Promise.race([run.done.then(() => true), Bun.sleep(s * 1000).then(() => false)]);
     if (await within(secs)) return true;
     const pid = Number(read(join(dir, "ralph.lock")).trim());
-    term(dir, run.proc, pid);
-    if (!(await within(10))) run.proc.kill("SIGKILL");
+    term(dir, run, pid);
+    if (!(await within(10))) run.kill("SIGKILL");
     await run.done;
     return false;
   }
