@@ -6,7 +6,7 @@
 // stdin is kept as prompt.agent.N or prompt.review.N and every argv as
 // argv.agent.N or argv.review.N, one argument per line, so tests can inspect them.
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { humanEnv, human as humanIn, humanOut as humanOutIn } from "./human.ts";
 
@@ -164,6 +164,33 @@ switch (mode) {
     writeFileSync("BAD", "");
     commit("cheat");
     writeFileSync("measure.sh", "#!/bin/sh\nexit 0\n");
+    break;
+  case "cheat-locked":
+    // the cheat, then a worktree git cannot write in, so the reset that
+    // throws the defanged check away fails
+    writeFileSync("BAD", "");
+    commit("cheat-locked");
+    writeFileSync("measure.sh", "#!/bin/sh\nexit 0\n");
+    chmodSync(".", 0o555);
+    break;
+  case "cheat-fsmonitor":
+    // the cheat, behind an fsmonitor hook that tells git no file changed, so
+    // the reset believes measure.sh is already what HEAD holds
+    writeFileSync("BAD", "");
+    commit("cheat-fsmonitor");
+    writeFileSync(join(d, "fsmonitor"), "#!/bin/sh\nprintf 'token\\0'\n");
+    chmodSync(join(d, "fsmonitor"), 0o755);
+    git("config", "core.fsmonitor", join(d, "fsmonitor"));
+    git("status");
+    writeFileSync("measure.sh", "#!/bin/sh\nexit 0\n");
+    break;
+  case "nest":
+    // a commit, and a repository of its own inside the worktree, the way an
+    // agent leaves a clone it looked at; git clean -fd steps around those
+    commit("nest");
+    mkdirSync("dep");
+    git("init", "-q", "dep");
+    writeFileSync(join("dep", "x"), "");
     break;
   case "sleep":
     await nap("999");

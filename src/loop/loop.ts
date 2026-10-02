@@ -266,14 +266,33 @@ export class Loop {
 
   // ------------------------------------------------------------ git
 
-  private async cleanTree(): Promise<void> {
+  /**
+   * Make the worktree what HEAD holds: "" when git did, otherwise what failed.
+   * The gates run on the files on disk, so a clean that did not happen means
+   * the gates judge the agent's uncommitted edits. Measured, each of these
+   * kept a commit whose own check failed: a reset into a directory the agent
+   * made read-only, which exits 128 and leaves the edit, and an fsmonitor hook
+   * the agent configured, which tells git that no file changed. `clean` needs
+   * -f twice to remove a repository of its own inside the worktree, such as a
+   * clone the agent looked at. `git status` is not asked afterwards: a
+   * repository holding README and readme shows one modified after every reset
+   * on a case-insensitive disk, and asking would stop that loop for good.
+   */
+  private async cleanTree(): Promise<string> {
     const gitdir = resolve(process.cwd(), await this.gitOut(["rev-parse", "--git-dir"]));
     if (existsSync(join(gitdir, "rebase-merge")) || existsSync(join(gitdir, "rebase-apply"))) {
       await this.git(["rebase", "--abort"], { quiet: true });
     }
     rmSync(join(gitdir, "index.lock"), { force: true });
-    await this.git(["reset", "-q", "--hard", "HEAD"]);
-    await this.git(["clean", "-qfd"]);
+    const git = (...args: string[]) => run(["git", "-c", "core.fsmonitor=false", ...args]);
+    for (const args of [
+      ["reset", "-q", "--hard", "HEAD"],
+      ["clean", "-qffd"],
+    ]) {
+      const r = await git(...args);
+      if (r.code !== 0) return `git ${args[0]} exited ${r.code}: ${splitLines(r.stderr).find((l) => /\S/.test(l)) ?? ""}`;
+    }
+    return "";
   }
 
   /**
@@ -586,8 +605,15 @@ export class Loop {
     const c = this.cfg;
     this.log.rotate(c.LOG_MAX_BYTES, c.LOG_KEEP);
     if (c.WORKTREE) {
+      // Before the agent too: it would work, and be judged, on top of what
+      // the last one left.
+      const unclean = await this.cleanTree();
+      if (unclean) {
+        this.stop(`could not clean the worktree before iteration ${this.iter} (${unclean}) — fix it by hand`, true);
+        this.iter--;
+        return false;
+      }
       if (this.harnessPushes()) await this.sync();
-      else await this.cleanTree();
     }
     // The same text already sits in PROMPT.md's Steering section, which this
     // iteration reads; the live file is only for the iteration in flight.
@@ -663,12 +689,17 @@ export class Loop {
     if (c.WORKTREE) {
       // Gates judge what was committed. Anything left uncommitted is thrown
       // away first, so an uncommitted edit to a frozen file cannot help a
-      // commit pass.
-      await this.cleanTree();
+      // commit pass, and a tree that could not be cleaned is not judged.
+      const unclean = await this.cleanTree();
       const branch = await this.gitOut(["rev-parse", "--abbrev-ref", "HEAD"], { quiet: true });
+      // History first: a deleted branch leaves no HEAD to reset to, and that
+      // is the agent leaving the branch, not a tree git could not write.
       if (branch !== `ralph/${this.name}` || !(await this.gitOk(["merge-base", "--is-ancestor", before, "HEAD"], { quiet: true }))) {
         status = "revert:history";
         reason = `the agent left ralph/${this.name} or rewrote its history`;
+      } else if (unclean) {
+        status = "revert:unclean";
+        reason = `could not clean the worktree: ${unclean}`;
       }
     }
     const after = await this.gitOut(["rev-parse", "HEAD"]);
@@ -1417,6 +1448,17 @@ VERDICT: REJECT: <one sentence saying why>
     await this.markGated();
   }
 
+  /**
+   * A rebase and a verify on a tree git could not clean would judge what is
+   * left in it, so sync waits; the clean before the next iteration stops the
+   * loop if it fails again.
+   */
+  private async syncClean(): Promise<boolean> {
+    const unclean = await this.cleanTree();
+    if (unclean) this.log.line(`sync: could not clean the worktree (${unclean}), not syncing this time`);
+    return !unclean;
+  }
+
   private async fetchUpstream(): Promise<boolean> {
     if (await this.gitOk(["fetch", "-q", "origin", this.cfg.BRANCH], { toLog: true })) return true;
     this.log.line("sync: fetch failed, not pushing this time");
@@ -1425,7 +1467,7 @@ VERDICT: REJECT: <one sentence saying why>
 
   private async syncOnce(): Promise<void> {
     const upstream = `origin/${this.cfg.BRANCH}`;
-    await this.cleanTree();
+    if (!(await this.syncClean())) return;
     // Round again after a wait for LAND_OK_CMD: BRANCH may have moved meanwhile,
     // and what is pushed has to be rebased and verified on what it now holds.
     for (;;) {
@@ -1532,7 +1574,7 @@ VERDICT: REJECT: <one sentence saying why>
 
   private async syncPr(): Promise<void> {
     const upstream = `origin/${this.cfg.BRANCH}`;
-    await this.cleanTree();
+    if (!(await this.syncClean())) return;
     if (!(await this.fetchUpstream())) return;
     // Nothing of the loop's own that BRANCH lacks: merged, or no work yet.
     if ((await this.gitOut(["rev-list", `${upstream}..HEAD`])) === "") {

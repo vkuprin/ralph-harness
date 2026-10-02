@@ -406,3 +406,95 @@ describe("a gate whose git command fails does not read as a pass", () => {
     expect(rows(rloop)[0]![6]).toContain("git could not show the commits");
   });
 });
+
+describe.skipIf(IS_WIN)("a worktree git could not clean is not judged", () => {
+  // The gates run on the files on disk, after a reset and a clean whose exit
+  // statuses were dropped. Measured before the fix: an agent committed BAD,
+  // which measure.sh fails on, edited measure.sh to pass without committing
+  // it, and made the worktree read-only. The reset exited 128, measure.sh ran
+  // as edited, and the commit was kept. Windows lets a file in a read-only
+  // directory be removed, so neither case can be set up there.
+  const app = fx.p("app-locked");
+  const loop = fx.p("loops/locked");
+  const W = fx.p("app-locked-ralph-locked");
+  const app2 = fx.p("app-locked-out");
+  const loop2 = fx.p("loops/locked-out");
+  const W2 = fx.p("app-locked-out-ralph-locked-out");
+  let S = "";
+  let S2 = "";
+  let before = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-locked.git"));
+    S = fx.stub("stub-locked", ["cheat-locked", "commit"]);
+    fx.makeLoop(loop, app, { WORKTREE: true, MAX_ITER: 2, VERIFY_CMD: "./measure.sh", FROZEN: ["measure.sh"] });
+    before = fx.git(app, "rev-parse", "HEAD");
+    await fx.runLoop(loop, S);
+    chmodSync(W, 0o755);
+
+    // What VERIFY_CMD leaves behind is cleaned before the next agent, and a
+    // directory it cannot be removed from is found there, before an agent.
+    fx.makeRepo(app2, fx.p("remote-locked-out.git"));
+    S2 = fx.stub("stub-locked-out", ["commit", "commit"]);
+    fx.makeLoop(loop2, app2, { WORKTREE: true, MAX_ITER: 2, VERIFY_CMD: "./measure.sh && mkdir out && touch out/x && chmod a-w out" });
+    await fx.runLoop(loop2, S2);
+    chmodSync(join(W2, "out"), 0o755);
+  });
+
+  test("the commit is neither kept nor marked judged, so a restart sets it aside", () => {
+    expect(statuses(loop)).toBe("revert:unclean");
+    expect(read(join(loop, "ralph.log"))).not.toContain("shipped");
+    expect(read(join(loop, ".gated-head")).trim()).toBe(before);
+  });
+  test("the verdict quotes git", () => {
+    expect(rows(loop)[0]![6]).toContain("could not clean the worktree: git reset exited 128");
+  });
+  test("the loop stops, since the reset back cannot be written either", () => {
+    expect(read(join(S, "agent_calls")).trim()).toBe("1");
+    expect(read(join(loop, "ralph.log"))).toContain(`stopping: could not reset ralph/locked to ${before} after revert:unclean`);
+  });
+  test("a tree left unclean between iterations stops the loop before the next agent", () => {
+    expect(statuses(loop2)).toBe("keep");
+    expect(read(join(S2, "agent_calls")).trim()).toBe("1");
+    const log = read(join(loop2, "ralph.log"));
+    expect(log).toContain("stopping: could not clean the worktree before iteration 2 (git clean exited 1");
+    expect(log).toContain("ralph finished after 1 iterations");
+  });
+});
+
+describe("git looks at the files itself when it cleans the worktree", () => {
+  // Measured before the fix: an agent committed BAD, edited measure.sh to pass
+  // without committing it, and configured an fsmonitor hook that answers
+  // "nothing changed". The reset believed it, left the edit, and the commit
+  // was kept. A repository the agent left inside the worktree, such as a
+  // clone it looked at, survived `git clean -fd` and failed the verify of
+  // the commit that left it, which was fine.
+  const app = fx.p("app-fsmon");
+  const loop = fx.p("loops/fsmon");
+  const app2 = fx.p("app-nest");
+  const loop2 = fx.p("loops/nest");
+  const W2 = fx.p("app-nest-ralph-nest");
+  let S = "";
+  let S2 = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-fsmon.git"));
+    S = fx.stub("stub-fsmon", ["cheat-fsmonitor"]);
+    fx.makeLoop(loop, app, { WORKTREE: true, MAX_ITER: 1, VERIFY_CMD: "./measure.sh", FROZEN: ["measure.sh"] });
+    await fx.runLoop(loop, S);
+
+    fx.makeRepo(app2, fx.p("remote-nest.git"));
+    S2 = fx.stub("stub-nest", ["nest", "commit"]);
+    fx.makeLoop(loop2, app2, { WORKTREE: true, MAX_ITER: 2, VERIFY_CMD: "./measure.sh && test ! -e dep" });
+    await fx.runLoop(loop2, S2);
+  });
+
+  test("an fsmonitor hook that lies does not keep the uncommitted edit", () => {
+    expect(statuses(loop)).toBe("revert:verify");
+    expect(read(join(S, "agent_calls")).trim()).toBe("1");
+  });
+  test("a repository left inside the worktree is thrown away like any other file", () => {
+    expect(statuses(loop2)).toBe("keep keep");
+    expect(existsSync(join(W2, "dep"))).toBe(false);
+  });
+});
