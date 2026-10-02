@@ -1154,8 +1154,10 @@ describe("ralph edit reads EDITOR as git does, a command and not a program's nam
   const cwd = fx.p("cwd-edit");
   const editor = fx.p("ed bin", "fake-ed");
   // Shell syntax in the name, so its path holds it too: the path must reach the
-  // editor as it is, and never be read by a shell.
-  const name = `ed'"$(touch\${IFS}pwned)`;
+  // editor as it is, and never be read by a shell. Windows refuses `"` in a
+  // file name, and the loop name is a directory: there `ralph new` failed, and
+  // every case after it with it.
+  const name = IS_WIN ? `ed'$(touch\${IFS}pwned)` : `ed'"$(touch\${IFS}pwned)`;
   const prompt = join(home, name, "PROMPT.md");
   const onPath = `${fx.p("ed bin")}${delimiter}${fx.env().PATH}`;
   let newRc = -1;
