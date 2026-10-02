@@ -1,0 +1,27 @@
+tests/e2e/config.test.ts
+  s_b021035ca9c378::t_61a287d9132b94 556-631,639,641-654
+  s_b021035ca9c378::t_8822703686495f 632-638,640
+src/loop/loop.ts
+  s_b021035ca9c378::t_ff327819a4fd29 361-389
+  s_b021035ca9c378::t_c4ad040b31f030 404,406-407
+template/config.json
+  s_b021035ca9c378::t_357cc3a3384628 41-44
+.changeset/worktree-dir-owned.md
+  s_b021035ca9c378::t_794fe5109843f2 1-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "c89fafd1ee94d7cf7701f22f430845cd5981071c",
+  "prompts": {},
+  "sessions": {
+    "s_b021035ca9c378": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c6d275b-9ee7-4ab2-b2b6-f19cdcb0d1de",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
