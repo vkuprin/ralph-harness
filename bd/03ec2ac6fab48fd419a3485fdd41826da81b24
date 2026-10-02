@@ -1,0 +1,24 @@
+template/PROMPT.md
+  s_ff9ec75222469f::t_dde3fe8929b959 10
+.changeset/prompt-names-config-json.md
+  s_ff9ec75222469f::t_4a9e845018cf9b 1-5
+tests/e2e/config.test.ts
+  s_ff9ec75222469f::t_9a44e2ca1e3d0a 2,655-687
+  s_ff9ec75222469f::t_7a43d245727ac2 688
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "bd03ec2ac6fab48fd419a3485fdd41826da81b24",
+  "prompts": {},
+  "sessions": {
+    "s_ff9ec75222469f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aee7f58f-ff96-453c-adec-5bc9a4cb00e2",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
