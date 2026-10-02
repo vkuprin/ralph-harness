@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type SpawnOptions } from "node:child_process";
 import {
   appendFileSync,
   closeSync,
@@ -23,7 +23,7 @@ import { readResults } from "../lib/results.ts";
 import { Log } from "../lib/log.ts";
 import { hint } from "../lib/shq.ts";
 import { splitLines } from "../lib/text.ts";
-import { IS_WIN, claudeProblem, commandLineSync, killTree, orphanSync, reapOrphan, upTimeSync } from "../lib/proc.ts";
+import { IS_WIN, claudeProblem, commandLineSync, killTree, orphanSync, reapOrphan, shellCommand, upTimeSync } from "../lib/proc.ts";
 import {
   CHILD_FILE,
   HARNESS,
@@ -122,6 +122,28 @@ function isDir(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A program the human works in on this terminal, run to its end: its exit
+ * status, or 127 when it could not be started. A spawn that fails reports it
+ * as an error event, and with no listener bun printed that as a crash and then
+ * never exited, so the CLI held the terminal until the human killed it.
+ */
+function attached(argv: string[], opts: SpawnOptions = {}): Promise<number> {
+  return new Promise((resolve) => {
+    const c = spawn(argv[0]!, argv.slice(1), { stdio: "inherit", ...opts });
+    c.once("error", () => resolve(127));
+    c.once("exit", (code) => resolve(code ?? 128));
+  });
 }
 
 function loopDir(name: string | undefined): string {
@@ -693,8 +715,7 @@ async function cmdTail(name?: string): Promise<void> {
   if (IS_WIN) return follow(join(dir, "ralph.log"));
   // -F, not -f: a rotation renames the file this is following, and -f would
   // then sit on the old one, silent, for the rest of the run.
-  const c = spawn("tail", ["-F", join(dir, "ralph.log")], { stdio: "inherit" });
-  await new Promise((r) => c.once("exit", r));
+  await attached(["tail", "-F", join(dir, "ralph.log")]);
 }
 
 /**
@@ -901,15 +922,31 @@ async function cmdSetup(): Promise<never> {
   if (problem) die(problem);
   const skill = join(HARNESS, "skills/ralph-new/SKILL.md");
   const prompt = `Set up a ralph loop on the repository in this directory, following the ralph-new instructions in your system prompt. The ralph CLI is ${join(HARNESS, "bin/ralph")}.`;
-  const c = spawn(claude, ["--append-system-prompt-file", skill, prompt], { stdio: "inherit", cwd: process.cwd() });
-  const code = await new Promise<number>((r) => c.once("exit", (n) => r(n ?? 1)));
-  process.exit(code);
+  process.exit(await attached([claude, "--append-system-prompt-file", skill, prompt], { cwd: process.cwd() }));
 }
 
+/**
+ * PROMPT.md in the human's editor. EDITOR is shell text, as git and every other
+ * tool that reads it takes it: `code --wait` and `emacsclient -t` are a program
+ * and its flags, and spawned as the name of one program they never started.
+ * bash reads the text from the environment under a constant script, and the
+ * file goes there too, so the loop's path is never part of a command line. The
+ * default, and an EDITOR that is the path of a program, are that program, as
+ * they always were: a shell would split a path at a space and, on Windows, eat
+ * its backslashes.
+ */
 async function cmdEdit(name?: string): Promise<void> {
-  const dir = loopDir(name);
-  const c = spawn(process.env.EDITOR || (IS_WIN ? "notepad" : "vi"), [join(dir, "PROMPT.md")], { stdio: "inherit" });
-  await new Promise((r) => c.once("exit", r));
+  const file = join(loopDir(name), "PROMPT.md");
+  if (!existsSync(file)) die(`no loop called ${name} in ${HOME}`);
+  const editor = process.env.EDITOR || (IS_WIN ? "notepad" : "vi");
+  let code: number;
+  if (!process.env.EDITOR || (/[\\/]/.test(editor) && isFile(editor))) {
+    code = await attached([editor, file]);
+  } else {
+    const sh = shellCommand(`eval "$RALPH_EDITOR"' "$RALPH_EDIT_FILE"'`);
+    code = await attached(sh.argv, { env: { ...process.env, ...sh.env, RALPH_EDITOR: editor, RALPH_EDIT_FILE: file } });
+  }
+  if (code !== 0) die(`the editor, ${JSON.stringify(editor)}, exited ${code}`);
 }
 
 function cmdMigrate(name?: string): void {

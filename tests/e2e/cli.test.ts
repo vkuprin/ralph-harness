@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { delimiter } from "node:path";
 import {
   Fx,
   IS_WIN,
@@ -1139,5 +1140,104 @@ describe("two ralph start at once: one loop runs, and one start says so", () => 
   });
   test("ralph status shows the loop that runs", () => {
     expect(status).toContain(`PID ${lock}`);
+  });
+});
+
+// EDITOR is shell text to every tool that reads it: `code --wait`, `subl -w`
+// and `emacsclient -t` are a program and its flags. `ralph edit` spawned the
+// whole value as the name of one program, so each of those printed a stack
+// trace and then held the terminal until the human killed it; so did an editor
+// that is not installed.
+describe("ralph edit reads EDITOR as git does, a command and not a program's name", () => {
+  const app = fx.p("app-edit");
+  const home = fx.p("home edit");
+  const cwd = fx.p("cwd-edit");
+  const editor = fx.p("ed bin", "fake-ed");
+  // Shell syntax in the name, so its path holds it too: the path must reach the
+  // editor as it is, and never be read by a shell.
+  const name = `ed'"$(touch\${IFS}pwned)`;
+  const prompt = join(home, name, "PROMPT.md");
+  const onPath = `${fx.p("ed bin")}${delimiter}${fx.env().PATH}`;
+  let newRc = -1;
+  const ran: Record<string, { code: number; out: string; err: string }> = {};
+
+  /** `ralph edit` with these EDITOR and arguments; a hang reads as code -1. */
+  const edit = (key: string, editorValue: string, args: string[], extra: Record<string, string> = {}) => {
+    try {
+      ran[key] = fx.sh([cliPath(), "edit", ...args], {
+        cwd,
+        env: { RALPH_HOME: home, EDITOR: editorValue, ED_RECORD: fx.p(`record-${key}`), PATH: onPath, ...extra },
+        timeout: 20,
+      });
+    } catch (e) {
+      ran[key] = { code: -1, out: "", err: String(e) };
+    }
+  };
+  /** What the editor was handed, one argument a line, or null when it never ran. */
+  const record = (key: string) =>
+    existsSync(fx.p(`record-${key}`))
+      ? read(fx.p(`record-${key}`))
+          .split("\n")
+          .slice(0, -1)
+      : null;
+
+  setup(() => {
+    fx.makeRepo(app, fx.p("remote-edit.git"));
+    mkdirSync(cwd);
+    mkdirSync(fx.p("ed bin"));
+    writeFileSync(editor, '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$ED_RECORD"\nexit "${ED_RC:-0}"\n');
+    chmodSync(editor, 0o755);
+    newRc = fx.cli(home, ["new", name, app]).code;
+    edit("flags", `${sq(editor)} --wait -n`, [name]);
+    if (!IS_WIN) {
+      edit("path", editor, [name]);
+      // A path that names no program it can start: the spawn itself fails.
+      writeFileSync(fx.p("ed bin", "not-a-program"), "");
+      edit("noexec", fx.p("ed bin", "not-a-program"), [name]);
+    }
+    edit("missing", "no-such-editor-ralph --wait", [name]);
+    edit("fails", "fake-ed", [name], { ED_RC: "3" });
+    edit("nosuch", "fake-ed", ["nosuch"]);
+  });
+
+  test("the loop it edits exists", () => {
+    expect(newRc).toBe(0);
+    expect(existsSync(prompt)).toBe(true);
+  });
+  test("an EDITOR with flags gets its flags, then the path of PROMPT.md", () => {
+    expect(ran.flags!.code).toBe(0);
+    expect(record("flags")).toEqual(["--wait", "-n", prompt]);
+  });
+  test.skipIf(IS_WIN)("an EDITOR that is the path of a program, a space in it, still runs that program", () => {
+    expect(ran.path!.code).toBe(0);
+    expect(record("path")).toEqual([prompt]);
+  });
+  test("an editor that is not installed is a short error, not a stack trace and a hang", () => {
+    const r = ran.missing!;
+    expect(r.code).toBeGreaterThan(0);
+    expect(r.err).toContain("no-such-editor-ralph");
+    expect(r.out + r.err).not.toContain("child_process");
+    expect(r.out + r.err).not.toMatch(/^\s+at /m);
+  });
+  test.skipIf(IS_WIN)("an EDITOR naming a file that is no program is a short error too", () => {
+    const r = ran.noexec!;
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("not-a-program");
+    expect(r.out + r.err).not.toContain("child_process");
+  });
+  test("an editor that fails makes ralph edit fail, and says so", () => {
+    expect(record("fails")).toEqual([prompt]);
+    expect(ran.fails!.code).toBe(1);
+    expect(ran.fails!.err).toContain("exited 3");
+  });
+  test("a loop that does not exist is refused, and no editor opens on a file nobody reads", () => {
+    expect(ran.nosuch!.code).toBe(1);
+    expect(ran.nosuch!.err).toContain("no loop called nosuch");
+    expect(record("nosuch")).toBeNull();
+    expect(existsSync(join(home, "nosuch"))).toBe(false);
+  });
+  test("no shell ever read the loop's path", () => {
+    expect(existsSync(join(cwd, "pwned"))).toBe(false);
+    expect(existsSync(join(home, "pwned"))).toBe(false);
   });
 });
