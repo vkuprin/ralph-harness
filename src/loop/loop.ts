@@ -204,7 +204,11 @@ export class Loop {
     return (await this.git(args, opts)).code === 0;
   }
 
-  private bounded(secs: number, argv: string[], opts: { stdin?: string; out: string; err?: string; env?: Record<string, string> }) {
+  private bounded(
+    secs: number,
+    argv: string[],
+    opts: { stdin?: string; out: string; err?: string; env?: Record<string, string>; cwd?: string },
+  ) {
     return runBounded(secs, argv, {
       ...opts,
       env: opts.env ? { ...process.env, ...opts.env } : undefined,
@@ -214,7 +218,7 @@ export class Loop {
   }
 
   /** A *_CMD setting, bounded: the user's own text, run by bash. */
-  private shell(secs: number, command: string, opts: { out: string; env?: Record<string, string> }) {
+  private shell(secs: number, command: string, opts: { out: string; env?: Record<string, string>; cwd?: string }) {
     const sh = shellCommand(command);
     return this.bounded(secs, sh.argv, { ...opts, env: { ...opts.env, ...sh.env } });
   }
@@ -347,39 +351,60 @@ export class Loop {
     const branch = `ralph/${this.name}`;
     this.work = WORKTREE_DIR || join(dirname(REPO), `${basename(REPO)}-ralph-${this.name}`);
     const WORK = this.work;
+    // There from before a new worktree is made until its SETUP_CMD has passed.
+    // A start stopped or killed in between left the worktree and its branch in
+    // place, and the next one took the reuse path, which never ran setup: the
+    // agent worked for good in a checkout its setup had never finished.
+    const pending = this.p(".setup-pending");
+    const again = SETUP_CMD !== "" && existsSync(pending);
+    let setup = again;
     if (await this.gitOk(["-C", WORK, "rev-parse", "--is-inside-work-tree"], { quiet: true })) {
       // Everything the harness does in WORK resets and cleans it, so WORK has
       // to be this REPO's own worktree and not merely some checkout that
       // happens to sit where WORKTREE_DIR points.
-      if (await this.sameRepo(WORK, REPO)) return;
-      await this.refuse(`${WORK} is not a worktree of ${REPO} — refusing to reset a checkout this loop does not own`);
-    }
-    await this.git(["-C", REPO, "worktree", "prune"]);
-    if (await this.gitOk(["-C", REPO, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])) {
-      // Reuse the branch as it is. `worktree add -B` would reset it and lose kept work.
-      if (!(await this.gitOk(["-C", REPO, "worktree", "add", "-q", WORK, branch], { toLog: true }))) {
-        await this.refuse(`cannot create worktree ${WORK}`);
+      if (!(await this.sameRepo(WORK, REPO))) {
+        await this.refuse(`${WORK} is not a worktree of ${REPO} — refusing to reset a checkout this loop does not own`);
+      }
+      if (!setup) {
+        rmSync(pending, { force: true });
+        return;
       }
     } else {
-      let base = BRANCH;
-      if (await this.gitOk(["-C", REPO, "fetch", "-q", "origin", BRANCH], { toLog: true })) base = `origin/${BRANCH}`;
-      if (!(await this.gitOk(["-C", REPO, "worktree", "add", "-q", "-b", branch, WORK, base], { toLog: true }))) {
-        await this.refuse(`cannot create worktree ${WORK} from ${base}`);
-      }
-      if (SETUP_CMD) {
-        this.log.line(`setup: ${SETUP_CMD}`);
-        const sh = shellCommand(SETUP_CMD);
-        const r = await run(sh.argv, { cwd: WORK, env: { ...process.env, ...sh.env }, outTo: this.log.file, errTo: this.log.file });
-        if (r.code !== 0) {
-          // The branch goes with the worktree. Keeping it sent the next start
-          // down the reuse path above, which never runs SETUP_CMD, so the loop
-          // ran for good in a worktree its own setup had never prepared.
-          await this.git(["-C", REPO, "worktree", "remove", "--force", WORK], { quiet: true });
-          await this.git(["-C", REPO, "branch", "-q", "-D", branch], { quiet: true });
-          await this.refuse(`SETUP_CMD failed; removed the new worktree and branch ${branch}, so the next start runs setup again`);
+      await this.git(["-C", REPO, "worktree", "prune"]);
+      if (await this.gitOk(["-C", REPO, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])) {
+        // Reuse the branch as it is. `worktree add -B` would reset it and lose kept work.
+        if (!(await this.gitOk(["-C", REPO, "worktree", "add", "-q", WORK, branch], { toLog: true }))) {
+          await this.refuse(`cannot create worktree ${WORK}`);
         }
+      } else {
+        let base = BRANCH;
+        if (await this.gitOk(["-C", REPO, "fetch", "-q", "origin", BRANCH], { toLog: true })) base = `origin/${BRANCH}`;
+        if (SETUP_CMD) writeFileSync(pending, "");
+        if (!(await this.gitOk(["-C", REPO, "worktree", "add", "-q", "-b", branch, WORK, base], { toLog: true }))) {
+          rmSync(pending, { force: true });
+          await this.refuse(`cannot create worktree ${WORK} from ${base}`);
+        }
+        setup = SETUP_CMD !== "";
       }
     }
+    if (setup) {
+      if (again) this.log.line(`SETUP_CMD did not finish the last time ${WORK} was set up, so it runs again`);
+      this.log.line(`setup: ${SETUP_CMD}`);
+      // In a group of its own, like every command the loop waits on, so a stop
+      // ends what the setup started (npm under bash) and not only the shell.
+      // Unbounded: it holds no work a gate has yet to judge.
+      const r = await this.shell(Infinity, SETUP_CMD, { out: this.log.file, cwd: WORK });
+      if (r.rc !== 0) {
+        // The branch goes with the worktree. Keeping it sent the next start
+        // down the reuse path above, which never runs SETUP_CMD, so the loop
+        // ran for good in a worktree its own setup had never prepared.
+        await this.git(["-C", REPO, "worktree", "remove", "--force", WORK], { quiet: true });
+        await this.git(["-C", REPO, "branch", "-q", "-D", branch], { quiet: true });
+        rmSync(pending, { force: true });
+        await this.refuse(`SETUP_CMD failed; removed the new worktree and branch ${branch}, so the next start runs setup again`);
+      }
+    }
+    rmSync(pending, { force: true });
     if (!(await this.sameRepo(WORK, REPO))) await this.refuse(`worktree ${WORK} is not usable`);
     this.log.line(`worktree ${WORK} on ${branch}`);
   }

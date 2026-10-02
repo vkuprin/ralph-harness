@@ -397,6 +397,60 @@ describe("SETUP_CMD that works, and a branch that is reused", () => {
   });
 });
 
+describe("a start stopped while SETUP_CMD runs", () => {
+  // `ralph stop` during a slow setup, an `npm ci` under bash. Measured before
+  // the fix: the TERM reached the shell alone, so what the setup had started
+  // ran on in the worktree with no loop above it, and the next start found the
+  // worktree and its branch in place, took the reuse path, which never runs
+  // SETUP_CMD, and ran the agent in a checkout its setup had never finished.
+  const app = fx.p("app-setstop");
+  const loop = fx.p("loops/setstop");
+  const hold = fx.p("setstop-hold");
+  const first = fx.p("setstop-first");
+  const ran = fx.p("setstop-ran");
+  let code = -1;
+  let held = false;
+  let gone = false;
+  let S2 = "";
+  let afterThird = 0;
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-setstop.git"));
+    // The first setup waits on a child of its own, as bash waits on npm; every
+    // later one finishes at once. `hold` names that child on its command line.
+    const script = fx.p("setstop.sh");
+    writeFileSync(
+      script,
+      `if [ -e ${sq(first)} ]; then echo ran >> ${sq(ran)}; exit 0; fi\nbash -c 'sleep 30; :' ${sq(hold)} &\n: > ${sq(first)}\nwait\n`,
+    );
+    fx.makeLoop(loop, app, { WORKTREE: true, MAX_ITER: 1, QUIET_SLEEP: 1, SETUP_CMD: `bash ${sq(script)}` });
+    const run = fx.startLoop(loop, fx.stub("stub-setstop", ["nothing"]));
+    held = await until(() => existsSync(first), 30);
+    term(loop, run);
+    code = await run.done;
+    gone = await until(() => noProc(hold), 5);
+    S2 = fx.stub("stub-setstop2", ["nothing"]);
+    await fx.runLoop(loop, S2);
+    await fx.runLoop(loop, fx.stub("stub-setstop3", ["nothing"]));
+    afterThird = lines(ran).length;
+  });
+
+  test("the stop ends what the setup started, not only its shell", () => {
+    expect(held).toBe(true);
+    expect(code).toBe(130);
+    expect(gone).toBe(true);
+  });
+  test("the next start runs SETUP_CMD again, before the agent", () => {
+    const log = read(join(loop, "ralph.log"));
+    expect(count(log, /setup: bash /)).toBe(2);
+    expect(log).toContain("SETUP_CMD did not finish the last time");
+    expect(read(join(S2, "agent_calls")).trim()).toBe("1");
+  });
+  test("and once it has finished, a start does not run it again", () => {
+    expect(afterThird).toBe(1);
+  });
+});
+
 describe("how the loop is started", () => {
   const app = fx.p("app-arg");
   const loop = fx.p("loops/arg");
