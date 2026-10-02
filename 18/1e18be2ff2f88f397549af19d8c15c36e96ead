@@ -1,0 +1,19 @@
+tests/e2e/cli.test.ts
+  s_2acf1929b27ce0::t_eea4f6c378da27 1157-1160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "181e18be2ff2f88f397549af19d8c15c36e96ead",
+  "prompts": {},
+  "sessions": {
+    "s_2acf1929b27ce0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a66d48b9-bf89-4025-bcb3-ea214a384057",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
