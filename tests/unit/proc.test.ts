@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { etime, killGroup, parseEtime, reapOrphan, run, runBounded, shellCommand } from "../../src/lib/proc.ts";
+import { etime, killGroup, orphanSync, parseEtime, reapOrphan, run, runBounded, shellCommand } from "../../src/lib/proc.ts";
 import { endsWithArg, markThen } from "../../src/paths.ts";
 
 const T = realpathSync(mkdtempSync(join(tmpdir(), "ralph-unit-proc.")));
@@ -256,6 +256,45 @@ describe.skipIf(IS_WIN)("reapOrphan", () => {
       } catch {}
     }
   }, 20_000);
+});
+
+describe.skipIf(IS_WIN)("orphanSync", () => {
+  const now = () => Math.floor(Date.now() / 1000);
+
+  test("names what reapOrphan would stop, and leaves it and its mark alone", async () => {
+    const c = spawn("sleep", ["30"], { stdio: "ignore" });
+    const exited = new Promise<string>((resolve) => c.once("exit", () => resolve("exited")));
+    const mark = join(T, "o.mark");
+    const text = `${c.pid} ${now()}\n`;
+    writeFileSync(mark, text);
+    try {
+      expect(orphanSync(mark)).toBe(c.pid!);
+      expect(await Promise.race([exited, Bun.sleep(500).then(() => "running")])).toBe("running");
+      expect(readFileSync(mark, "utf8")).toBe(text);
+    } finally {
+      c.kill("SIGKILL");
+    }
+  });
+
+  test("not a process whose start is not the one recorded, nor garbage", async () => {
+    const c = spawn("sleep", ["30"], { stdio: "ignore" });
+    const exited = new Promise<string>((resolve) => c.once("exit", () => resolve("exited")));
+    const mark = join(T, "p.mark");
+    try {
+      for (const bad of [`${c.pid} ${now() - 3600}\n`, `${c.pid}\n`, `${c.pid} ${now()}`, `x ${now()}\n`, ""]) {
+        writeFileSync(mark, bad);
+        expect(orphanSync(mark)).toBeNull();
+        expect(readFileSync(mark, "utf8")).toBe(bad);
+      }
+      expect(orphanSync(join(T, "no-such.mark"))).toBeNull();
+      c.kill("SIGKILL");
+      expect(await exited).toBe("exited");
+      writeFileSync(mark, `${c.pid} ${now()}\n`);
+      expect(orphanSync(mark)).toBeNull();
+    } finally {
+      c.kill("SIGKILL");
+    }
+  });
 });
 
 describe("reading a loop off a command line", () => {

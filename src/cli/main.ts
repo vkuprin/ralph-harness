@@ -23,7 +23,7 @@ import { readResults } from "../lib/results.ts";
 import { Log } from "../lib/log.ts";
 import { hint } from "../lib/shq.ts";
 import { splitLines } from "../lib/text.ts";
-import { IS_WIN, claudeProblem, commandLineSync, killTree, reapOrphan, upTimeSync } from "../lib/proc.ts";
+import { IS_WIN, claudeProblem, commandLineSync, killTree, orphanSync, reapOrphan, upTimeSync } from "../lib/proc.ts";
 import {
   CHILD_FILE,
   HARNESS,
@@ -221,6 +221,20 @@ function stateLine(dir: string): string {
 }
 
 /**
+ * Under a stopped loop, what its last run left running when it was killed
+ * outright: the agent goes on unbounded, and "stopped" alone gave nobody a
+ * reason to run the `ralph stop` that ends it. Asks, never stops.
+ */
+function leftOver(dir: string): void {
+  if (pidOf(dir)) return;
+  const pid = orphanSync(join(dir, CHILD_FILE));
+  if (pid === null) return;
+  out(
+    `  \x1b[33mleft over   PID ${pid}, which its last run left running when it died, is still running — stop it: ${hint("ralph", "stop", basename(dir))}\x1b[0m\n`,
+  );
+}
+
+/**
  * The loop rotates its log, so the history is spread over ralph.log and the
  * ralph.log.N behind it. Anything that reads the log reads them all, oldest
  * first — numerically, because ralph.log.10 sorts under ralph.log.2 by name.
@@ -304,6 +318,7 @@ function statusOne(dir: string): boolean {
   }
   const c = loopConf(dir);
   out(`${name.padEnd(20)} ${stateLine(dir)}\n`);
+  leftOver(dir);
   out(`  repo        ${c.repo || "?"}\n`);
   if (c.worktree) out(`  worktree    ${c.work} (ralph/${name})\n`);
   statusIterations(dir);
@@ -918,6 +933,7 @@ function cmdHelp(): void {
     const flags: string[] = [];
     if (kind === "sh") flags.push("needs ralph migrate");
     if (pidOf(dir)) flags.push("running");
+    else if (orphanSync(join(dir, CHILD_FILE)) !== null) flags.push("stopped, but left a process running");
     loops.push(`${d}${flags.length ? ` (${flags.join(", ")})` : ""}`);
   }
   if (loops.length) out(`\nYour loops: ${loops.join(", ")}\n`);

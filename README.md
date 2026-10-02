@@ -166,7 +166,7 @@ ralph status
 | `ralph edit <name>` | open `PROMPT.md` in `$EDITOR` |
 | `ralph start <name>` | run it in the background |
 | `ralph stop <name>` | stop the loop and everything the agent started |
-| `ralph status [name]` | running or not, iterations, verdicts, HEAD |
+| `ralph status [name]` | running or not (and anything a killed loop left running), iterations, verdicts, HEAD |
 | `ralph review <name> [n]` | what it shipped, what it threw away, what waits to merge |
 | `ralph results <name> [n]` | last n verdicts as a table |
 | `ralph log <name> [n]` | last n log lines |

@@ -198,6 +198,12 @@ describe.skipIf(IS_WIN)("ralph stop on a loop killed without its handler stops t
   let again = { code: -1, out: "", err: "" };
   let liveStop = { code: -1, out: "", err: "" };
   let liveAgentRunning = false;
+  let status = "";
+  let statusAll = "";
+  let help = "";
+  let askedAlive = false;
+  let statusAfter = "";
+  let liveStatus = "";
 
   setup(async () => {
     fx.makeRepo(app, fx.p("remote-orphan.git"));
@@ -209,8 +215,15 @@ describe.skipIf(IS_WIN)("ralph stop on a loop killed without its handler stops t
     first.kill("SIGKILL");
     await first.done;
     outlived = !sleeperGone(join(S, "sleeper.pid"));
+    // Asking first, the way a human would: status said a bare `stopped` over
+    // an agent still writing into the checkout.
+    status = fx.cli(home, ["status", "dead"]).out;
+    statusAll = fx.cli(home, ["status"]).out;
+    help = fx.cli(home, ["help"]).out;
+    askedAlive = !sleeperGone(join(S, "sleeper.pid")) && existsSync(join(dead, ".child"));
     stop = fx.cli(home, ["stop", "dead"]);
     again = fx.cli(home, ["stop", "dead"]);
+    statusAfter = fx.cli(home, ["status", "dead"]).out;
 
     // The mark names a running loop's agent while nothing names the loop: its
     // ralph.lock is gone, and it was not started by `ralph start`, so there is
@@ -222,6 +235,7 @@ describe.skipIf(IS_WIN)("ralph stop on a loop killed without its handler stops t
     try {
       await until(() => read(join(L, "sleeper.pid")).trim() !== "", 30);
       rmSync(join(live, "ralph.lock"), { force: true });
+      liveStatus = fx.cli(home, ["status", "live"]).out;
       liveStop = fx.cli(home, ["stop", "live"]);
       liveAgentRunning = !sleeperGone(join(L, "sleeper.pid"));
     } finally {
@@ -243,6 +257,18 @@ describe.skipIf(IS_WIN)("ralph stop on a loop killed without its handler stops t
     expect(agent).toBeGreaterThan(1);
     expect(outlived).toBe(true);
   });
+  test("status and help say it is still running, and how to stop it, without stopping it", () => {
+    const said = `left over   PID ${agent}, which its last run left running when it died, is still running — stop it: ralph stop dead`;
+    expect(status).toContain("stopped");
+    expect(status).toContain(said);
+    expect(statusAll).toContain(said);
+    expect(help).toContain("dead (stopped, but left a process running)");
+    expect(askedAlive).toBe(true);
+  });
+  test("and once it is stopped, status says only stopped", () => {
+    expect(statusAfter).toContain("stopped");
+    expect(statusAfter).not.toContain("left over");
+  });
   test("stop stopped it and its whole group, and said so", () => {
     expect(stop.code).toBe(0);
     expect(stop.out).toContain(`PID ${agent}, which its last run left running when it died`);
@@ -260,5 +286,6 @@ describe.skipIf(IS_WIN)("ralph stop on a loop killed without its handler stops t
     expect(liveStop.code).toBe(1);
     expect(liveStop.err).toContain("live is not running");
     expect(liveAgentRunning).toBe(true);
+    expect(liveStatus).not.toContain("left over");
   });
 });

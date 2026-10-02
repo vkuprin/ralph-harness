@@ -451,10 +451,8 @@ export async function reapOrphan(mark: string): Promise<number | null> {
   const m = /^(\d+) (\d+)\n$/.exec(text);
   let pid = 0;
   if (m && alive(Number(m[1]))) {
-    const [etime = "", ppid = ""] = (await run(["ps", "-p", m[1]!, "-o", "etime=", "-o", "ppid="])).stdout.trim().split(/\s+/);
-    const up = parseEtime(etime);
-    const started = up === null ? NaN : Math.floor(Date.now() / 1000) - up;
-    if (Math.abs(started - Number(m[2])) <= 2) {
+    const ppid = markedParent(Number(m[2]), (await run(["ps", "-p", m[1]!, "-o", "etime=", "-o", "ppid="])).stdout);
+    if (ppid !== null) {
       if (/^\d+$/.test(ppid) && (await commandLine(ppid)).includes(LOOP_MARK)) return null;
       pid = Number(m[1]);
     }
@@ -468,6 +466,39 @@ export async function reapOrphan(mark: string): Promise<number | null> {
   } catch {}
   if (now === text) rmSync(mark, { force: true });
   return pid || null;
+}
+
+/**
+ * The PID `reapOrphan` would stop, without stopping it or touching the mark,
+ * for a reader that only reports. `ralph status` said `stopped` while the
+ * command a killed loop left behind ran on, its agent unbounded and writing
+ * into the checkout, and gave no reason to run the `ralph stop` that ends it.
+ */
+export function orphanSync(mark: string): number | null {
+  if (IS_WIN) return null;
+  let m: RegExpExecArray | null;
+  try {
+    m = /^(\d+) (\d+)\n$/.exec(readFileSync(mark, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!m || !alive(Number(m[1]))) return null;
+  const ps = spawnSync("ps", ["-p", m[1]!, "-o", "etime=", "-o", "ppid="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const ppid = markedParent(Number(m[2]), ps.stdout ?? "");
+  if (ppid === null || (/^\d+$/.test(ppid) && commandLineSync(ppid).includes(LOOP_MARK))) return null;
+  return Number(m[1]);
+}
+
+/**
+ * The parent PID from `ps -o etime= -o ppid=`, when the start that gives
+ * matches the one a mark recorded, to within the second etime is rounded to;
+ * null when it does not, and the PID is somebody else's now.
+ */
+function markedParent(started: number, ps: string): string | null {
+  const [etime = "", ppid = ""] = ps.trim().split(/\s+/);
+  const up = parseEtime(etime);
+  if (up === null || Math.abs(Math.floor(Date.now() / 1000) - up - started) > 2) return null;
+  return ppid;
 }
 
 export interface Ran {
