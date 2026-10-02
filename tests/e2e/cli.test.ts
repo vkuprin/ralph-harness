@@ -421,6 +421,8 @@ describe("ralph new --set writes settings into config.json", () => {
       repo: ["--set", "REPO=/elsewhere"],
       flag: ["--push", "pr"],
       bare: ["--set", "NOEQUALS"],
+      // Each compiles alone; joined by | they do not.
+      limits: ["--set", "RATE_LIMIT_RE=(?<x>limit)", "--set", "RATE_LIMIT_EXTRA_RE=\\k<y>"],
     })) {
       refused[what] = fx.cli(home, ["new", `no-${what}`, app, ...args]);
     }
@@ -455,7 +457,7 @@ describe("ralph new --set writes settings into config.json", () => {
     expect(text).toContain('"LIVE_STEER": true,');
     expect(text).toContain('  "PR_MERGE_POLL": 5,\n}');
   });
-  for (const what of ["unknown", "type", "method", "repo", "flag", "bare"]) {
+  for (const what of ["unknown", "type", "method", "repo", "flag", "bare", "limits"]) {
     test(`a refused --set (${what}) leaves no loop behind`, () => {
       expect(refused[what]!.code).not.toBe(0);
       expect(existsSync(join(home, `no-${what}`))).toBe(false);
@@ -467,6 +469,7 @@ describe("ralph new --set writes settings into config.json", () => {
     expect(both(refused.method!)).toContain('"merge", "squash" or "rebase"');
     expect(both(refused.repo!)).toContain("REPO is the <repo-path> argument");
     expect(both(refused.flag!)).toContain('not "--push"');
+    expect(both(refused.limits!)).toContain("RATE_LIMIT_RE and RATE_LIMIT_EXTRA_RE must make a regular expression as one pattern");
   });
 });
 
@@ -833,6 +836,13 @@ describe("ralph start says so when the loop did not start", () => {
   const app = fx.p("app-refused");
   const cases: { name: string; spoil: (dir: string) => void; why: string }[] = [
     { name: "unknown", spoil: (d) => patchConfig(d, { NOPE_KEY: 1 }), why: "NOPE_KEY is not a setting this harness knows" },
+    // These two crashed the loop before its log existed, and it read as started.
+    { name: "proto", spoil: (d) => patchConfig(d, { toString: 1 }), why: "toString is not a setting this harness knows" },
+    {
+      name: "limits",
+      spoil: (d) => patchConfig(d, { RATE_LIMIT_RE: "(?<x>limit)", RATE_LIMIT_EXTRA_RE: "\\k<y>" }),
+      why: "must make a regular expression as one pattern",
+    },
     { name: "badjson", spoil: (d) => writeFileSync(join(d, "config.json"), "{not json\n"), why: "does not parse" },
     { name: "noprompt", spoil: (d) => rmSync(join(d, "PROMPT.md")), why: "loop is missing PROMPT.md" },
     { name: "nogit", spoil: (d) => patchConfig(d, { REPO: fx.p("not-a-repo") }), why: "REPO is not a git checkout" },

@@ -50,6 +50,16 @@ describe("config.json", () => {
   test("an unknown key is refused rather than ignored", () => {
     expect(err('{ "MAX_ITERS": 3 }')).toContain("MAX_ITERS is not a setting");
   });
+  test("a key every object has is unknown too, and refused rather than thrown", () => {
+    // The table of settings is an object, so it answers toString, constructor
+    // and __proto__. Read through that, such a key crashed the loop before its
+    // log existed, and `ralph start` said started.
+    const names = Object.getOwnPropertyNames(Object.prototype);
+    expect(names).toContain("__proto__");
+    for (const key of names) {
+      expect(err(`{ ${JSON.stringify(key)}: 1 }`)).toContain(`${key} is not a setting this harness knows`);
+    }
+  });
   test("a value of the wrong type is refused", () => {
     expect(err('{ "MAX_ITER": "40" }')).toContain("MAX_ITER must be a whole number");
     expect(err('{ "MAX_ITER": 4.5 }')).toContain("whole number");
@@ -83,6 +93,14 @@ describe("config.json", () => {
   });
   test("a limit pattern that does not compile is refused", () => {
     expect(err('{ "RATE_LIMIT_EXTRA_RE": "(" }')).toContain("regular expression");
+  });
+  test("two limit patterns that compile alone but not joined are refused, not thrown", () => {
+    // \k<y> alone is an escaped k; beside a named group it must name one.
+    const pair = JSON.stringify({ RATE_LIMIT_RE: "(?<x>limit)", RATE_LIMIT_EXTRA_RE: "\\k<y>" });
+    expect(checkSetting("RATE_LIMIT_RE", "(?<x>limit)").ok).toBe(true);
+    expect(checkSetting("RATE_LIMIT_EXTRA_RE", "\\k<y>").ok).toBe(true);
+    expect(err(pair)).toContain("RATE_LIMIT_RE and RATE_LIMIT_EXTRA_RE must make a regular expression as one pattern");
+    expect(ok(JSON.stringify({ RATE_LIMIT_RE: "(?<x>limit)", RATE_LIMIT_EXTRA_RE: "\\k<x>" })).RATE_LIMIT_EXTRA_RE).toBe("\\k<x>");
   });
   test("$schema is allowed", () => {
     expect(ok('{ "$schema": "./config.schema.json" }').MAX_ITER).toBe(500);

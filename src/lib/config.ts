@@ -275,7 +275,8 @@ export function parseConfig(text: string, file: string, dir: string): Loaded {
   const config = defaults(dir) as unknown as Record<string, unknown>;
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (key === "$schema") continue;
-    const kind = KINDS[key as keyof Config];
+    // Own keys only: KINDS is an object, and it answers toString or __proto__.
+    const kind = Object.hasOwn(KINDS, key) ? KINDS[key as keyof Config] : undefined;
     if (!kind) {
       return { ok: false, error: `ralph: ${file}: ${key} is not a setting this harness knows — refusing to start rather than ignore it` };
     }
@@ -284,6 +285,16 @@ export function parseConfig(text: string, file: string, dir: string): Loaded {
       return { ok: false, error: `ralph: ${file}: ${key} must be ${WHAT[kind]}, not ${JSON.stringify(value)}` };
     }
     config[key] = c.value;
+  }
+  // Each pattern compiled alone, and the loop reads the two as one: a \k<name>
+  // in the extension that names a group only the base has does not compile.
+  try {
+    limitPattern(config as unknown as Config);
+  } catch (e) {
+    return {
+      ok: false,
+      error: `ralph: ${file}: RATE_LIMIT_RE and RATE_LIMIT_EXTRA_RE must make a regular expression as one pattern, joined by |: ${(e as Error).message}`,
+    };
   }
   return { ok: true, config: config as unknown as Config };
 }
