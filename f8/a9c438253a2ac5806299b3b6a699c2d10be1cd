@@ -1,0 +1,29 @@
+src/cli/main.ts
+  s_7b665ca9e8aab6::t_dcff3c49dc0928 21,450
+src/lib/files.ts
+  s_7b665ca9e8aab6::t_dcff3c49dc0928 1-2,57-66
+  s_7b665ca9e8aab6::t_d7613e4a3a6548 67
+tests/e2e/cli.test.ts
+  s_7b665ca9e8aab6::t_4575e734aa122e 569-570,599
+  s_7b665ca9e8aab6::t_98110a154af99d 555-568,571-598,600-615
+.changeset/new-takes-linked-checkouts.md
+  s_7b665ca9e8aab6::t_27605e740751c8 1-5
+src/loop/loop.ts
+  s_7b665ca9e8aab6::t_dcff3c49dc0928 5,474
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f8a9c438253a2ac5806299b3b6a699c2d10be1cd",
+  "prompts": {},
+  "sessions": {
+    "s_7b665ca9e8aab6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef5b9e33-42ca-49a4-a5cd-0f3b5190a88b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
