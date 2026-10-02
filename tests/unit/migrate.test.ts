@@ -2,8 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DEFAULT_RATE_LIMIT_RE } from "../../src/lib/config.ts";
-import { migrate } from "../../src/cli/migrate.ts";
+import { type Migrated, migrate } from "../../src/cli/migrate.ts";
 
 // The oracle for `ralph migrate` is bash itself: source the config.sh the way
 // the old harness did, and read back what each setting became. The converter
@@ -65,6 +66,11 @@ function agrees(text: string): void {
   if (extends_) expect(`${DEFAULT_RATE_LIMIT_RE}|${m.config.RATE_LIMIT_EXTRA_RE as string}`).toBe(want.RATE_LIMIT_RE as string);
 }
 
+/** Refused, or read as bash read it. What the converter must never do is write something else. */
+function refusesOrAgrees(text: string): void {
+  if (migrate(text, "x").ok) agrees(text);
+}
+
 describe("ralph migrate reads config.sh the way bash did", () => {
   test("plain assignments, several to a line, with comments", () => {
     agrees(`# Settings for the x loop.
@@ -116,6 +122,14 @@ HEALTH_CMD="echo \\"quoted\\" and a \\\\ backslash and a \\$ sign"
   test("a line continued with a backslash", () => {
     agrees('VERIFY_CMD="npm test \\\n  --silent"\n');
   });
+  test("a list continued with backslashes, a word to a line", () => {
+    agrees("FROZEN=(\n  measure.sh \\\n  tests/eval \\\n)\nCHURN_IGNORE=(a \\\n  b)\nVERIFY_CMD=x \\\nMAX_ITER=3\n");
+  });
+  test("a brace, a ~ or a backslash where bash keeps it as it is", () => {
+    agrees('VERIFY_CMD=x{a,b}\nFROZEN=(a\\{b,c} \'{d,e}\' a:~/b a=~/b a~b "~/c" ""~/d)\n');
+    agrees("SETUP_CMD=a:\"~\"/b HEALTH_CMD=a\\:~/b DONE_CMD=a=~/b NOTIFY_CMD=a:''~/b\n");
+    agrees("VERIFY_CMD=a\\");
+  });
   test("a scalar in a list setting is a list of one", () => {
     const m = migrate("FROZEN=measure.sh\n", "x");
     expect(m.ok && m.config.FROZEN).toEqual(["measure.sh"]);
@@ -142,7 +156,11 @@ describe("ralph migrate refuses what it would have to evaluate", () => {
     ["[ -d x ] && ADD_DIRS=(x)\n", "not a setting"],
     ["FOO=1\n", "FOO is not a setting"],
     ["FROZEN=(*.md)\n", "glob"],
+    ["FROZEN=(src/{eval,score}.ts)\n", "brace"],
     ["REPO=~/app\n", "~"],
+    ["VERIFY_CMD=PATH=/opt/bin:~/bin\n", "a ~ that bash would have expanded"],
+    ["VERIFY_CMD=\\\n~/bin/check\n", "a ~ that bash would have expanded"],
+    ["FROZEN=(a)#b\n", '"#" right after the ) that closes a list'],
     ["MAX_ITER=forty\n", "not a whole number"],
     ["WORKTREE=yes\n", "not 0 or 1"],
     ["PUSH=main\n", "not 0, 1 or pr"],
@@ -156,8 +174,43 @@ describe("ralph migrate refuses what it would have to evaluate", () => {
       if (!m.ok) expect(m.error).toContain(why);
     });
   }
+  test("a ; inside a list is refused, not read for ever", () => {
+    // The list reader once stood still on the ; and pushed "" until memory ran
+    // out (8.5 GB in 8s), so these run in a child that is killed after 10s.
+    const texts = ["FROZEN=(measure.sh;tests)\n", "FROZEN=(a ;)\n", "FROZEN=(;)\n"];
+    const url = pathToFileURL(join(import.meta.dir, "../../src/cli/migrate.ts")).href;
+    const code = `const { migrate } = await import(${JSON.stringify(url)});
+console.log(JSON.stringify(JSON.parse(await Bun.stdin.text()).map((t) => migrate(t, "x"))));`;
+    const r = Bun.spawnSync([process.execPath, "-e", code], { stdin: Buffer.from(JSON.stringify(texts)), timeout: 10_000 });
+    expect(r.exitCode).toBe(0);
+    for (const m of JSON.parse(r.stdout.toString()) as Migrated[]) expect(!m.ok && m.error).toContain("shell syntax");
+  });
   test("the refusal quotes the line it is about", () => {
     const m = migrate('MAX_ITER=3\nREPO="$HOME/app"\n', "x");
     expect(!m.ok && m.error).toContain('REPO="$HOME/app"');
   });
+});
+
+// Each of these is a line bash read as something other than the plain text on
+// it — a brace or a ~ it expanded, a line continuation it joined, a list it took
+// for one word — or could not read at all. The converter refuses each, or
+// writes what bash held; a value nobody wrote is the one wrong answer.
+describe("ralph migrate never writes a value bash did not hold", () => {
+  const odd = [
+    "FROZEN=(src/{eval,score}.ts measure.sh)\n",
+    "FROZEN=({a..c})\n",
+    "FROZEN=(a\\\n{b,c})\n",
+    "VERIFY_CMD=PATH=/opt/bin:~/bin\n",
+    'VERIFY_CMD="a":~/b\n',
+    "VERIFY_CMD=a:\\\n~/b\n",
+    "VERIFY_CMD=\\\n~/bin/check\n",
+    "FROZEN=(\\\n~/a)\n",
+    "FROZEN=(a)#b\n",
+    "FROZEN=(a)b\n",
+    "FROZEN=(a b)\\\n",
+    "FROZEN=(a)\r\nMAX_ITER=3\r\n",
+    "FROZEN=(a \\\n  b)\n",
+    "VERIFY_CMD=a\\",
+  ];
+  for (const text of odd) test(JSON.stringify(text), () => refusesOrAgrees(text));
 });
