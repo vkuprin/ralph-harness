@@ -586,10 +586,9 @@ async function cmdStart(name?: string): Promise<void> {
     closeSync(fd);
     child.unref();
     const pid = child.pid!;
-    let status: number | null | undefined;
-    const ended = new Promise<number | null>((r) => child.once("exit", (code) => r(code)));
-    void ended.then((code) => (status = code));
-    const exited = () => status !== undefined;
+    let exitedNow = false;
+    child.once("exit", () => (exitedNow = true));
+    const exited = () => exitedNow;
     writeFileSync(join(dir, "ralph.pid"), `${pid}\n`);
     for (let waited = 0; waited < BOOT_WAIT * 10 && !booted(dir, pid, exited); waited++) await Bun.sleep(100);
     if (booted(dir, pid, exited)) {
@@ -599,11 +598,7 @@ async function cmdStart(name?: string): Promise<void> {
       // long SETUP_CMD outlasts that, and then the line below says so.
       const gone = () => exited() || !alive(pid);
       for (let waited = 0; waited < BOOT_WAIT * 10 && !started(dir, pid) && !gone(); waited++) await Bun.sleep(100);
-      if (!started(dir, pid) && gone()) {
-        // Gone and reaped, so its exit status is on its way.
-        if (!exited()) status = await ended;
-        notStarted(dir, name!, pid, from);
-      }
+      if (!started(dir, pid) && gone()) notStarted(dir, name!, pid, from);
       green(`started ${name} as PID ${pid}`);
       if (!started(dir, pid)) {
         dim(
