@@ -249,8 +249,13 @@ out=${sq(log)}
     return fx.startLoop(dir, stub, { env: { RALPH_TEST_CLOCK: clock } });
   }
 
-  /** The loop has logged `text` within `secs`. */
-  const untilLog = (dir: string, text: string, secs: number) => until(() => read(join(dir, "ralph.log")).includes(text), secs);
+  /**
+   * The loop has logged `text` within `secs`, counted from when it booted: a
+   * loop bun never finished loading is started again by `fx.startLoop` after
+   * 30s, up to three times, and a wait of 30s from the first start ran out
+   * during the first retry (Windows, run 37027911464, lr4).
+   */
+  const untilLog = (dir: string, text: string, secs: number) => until(() => read(join(dir, "ralph.log")).includes(text), secs + 90);
 
   /**
    * The run ended by itself within `secs`. If not, it is stopped through the PID
