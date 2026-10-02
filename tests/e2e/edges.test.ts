@@ -358,6 +358,63 @@ describe("a rebase that fails verify is dropped (PUSH=1)", () => {
   });
 });
 
+describe("a fetch that never answers is cut off, as a push is", () => {
+  // A stalled connection does not fail a fetch by itself, and every fetch ran
+  // unbounded: the loop sat in sync for good, saying nothing. Origin here is a
+  // transport that hangs, and it moves the fake clock 1000 awake seconds on
+  // its way in, so the 300s bound is reached on the next poll.
+  const ran: Record<string, { code: number | "timeout"; took: number }> = {};
+
+  async function runHung(name: string, cfg: Record<string, unknown>): Promise<void> {
+    const app = fx.p(`app-${name}`);
+    fx.makeRepo(app, fx.p(`remote-${name}.git`));
+    // The clock file comes through the environment, so no path is read by
+    // the shell, and names the hanging command on its command line.
+    const hang = `sh -c 'n=$(cat "$RALPH_TEST_CLOCK"); echo $((n+1000)) > "$RALPH_TEST_CLOCK"; exec sh -c "sleep 611; :" "$RALPH_TEST_CLOCK"' --`;
+    fx.git(app, "config", "core.sshCommand", hang);
+    fx.git(app, "remote", "set-url", "origin", "ssh://hang.invalid/x");
+    const clock = fx.p(`clock-${name}`);
+    writeFileSync(clock, "0\n");
+    fx.makeLoop(fx.p(`loops/${name}`), app, { WORKTREE: true, MAX_ITER: 1, POLL_GAP_MAX: 100000, ...cfg });
+    const run = fx.startLoop(fx.p(`loops/${name}`), fx.stub(`stub-${name}`, ["commit"]), { env: { RALPH_TEST_CLOCK: clock } });
+    const t0 = Date.now();
+    const code = await Promise.race([run.done, Bun.sleep(60_000).then(() => "timeout" as const)]);
+    ran[name] = { code, took: (Date.now() - t0) / 1000 };
+    if (code === "timeout") {
+      run.kill();
+      await run.done;
+    }
+  }
+
+  setup(async () => {
+    await runHung("hangpush", { PUSH: true, PUSH_CONFIRM: "main" });
+    await runHung("hangpr", { PUSH: "pr" });
+  });
+
+  test("the loop ends by itself, in well under the 611s the fetch would hang", () => {
+    for (const name of ["hangpush", "hangpr"]) {
+      expect(ran[name]!.code).toBe(0);
+      expect(ran[name]!.took).toBeLessThan(60);
+    }
+  });
+  test("the commit is still kept, and stays local", () => {
+    expect(statuses(fx.p("loops/hangpush"))).toBe("keep");
+    expect(fx.git(fx.p("remote-hangpush.git"), "log", "--format=%s", "main")).not.toContain("stub: work");
+    expect(statuses(fx.p("loops/hangpr"))).toBe("keep");
+    expect(fx.gitOk(fx.p("remote-hangpr.git"), "rev-parse", "-q", "--verify", "refs/heads/ralph/hangpr")).toBe(false);
+  });
+  test("each fetch says it timed out: at the worktree's creation, and in both syncs", () => {
+    for (const name of ["hangpush", "hangpr"]) {
+      const log = read(join(fx.p(`loops/${name}`), "ralph.log"));
+      expect(count(log, /git fetch origin main timed out after 300s/)).toBe(3);
+      expect(count(log, /sync: fetch failed, not pushing this time/)).toBe(2);
+    }
+  });
+  test("and the transport it was waiting on is gone", async () => {
+    expect(await until(() => noProc(fx.p("clock-hangpush")) && noProc(fx.p("clock-hangpr")), 5)).toBe(true);
+  });
+});
+
 describe("SETUP_CMD that works, and a branch that is reused", () => {
   const app = fx.p("app-set");
   const loop = fx.p("loops/set");

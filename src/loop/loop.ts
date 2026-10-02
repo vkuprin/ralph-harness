@@ -204,6 +204,18 @@ export class Loop {
     return (await this.git(args, opts)).code === 0;
   }
 
+  /**
+   * `git fetch <args>`, bounded like the pushes. A connection that stalls (a
+   * VPN gone, a credential helper waiting on a browser nobody sees) does not
+   * fail by itself, and the loop sat in its fetch for good, logging nothing
+   * while `ralph status` said running.
+   */
+  private async fetch(args: string[], cwd?: string): Promise<boolean> {
+    const r = await this.bounded(300, ["git", "fetch", "-q", ...args], { out: this.log.file, cwd });
+    if (r.timedOut) this.log.line(`git fetch ${args.join(" ")} timed out after 300s`);
+    return r.rc === 0 && !r.timedOut;
+  }
+
   private bounded(
     secs: number,
     argv: string[],
@@ -378,7 +390,7 @@ export class Loop {
         }
       } else {
         let base = BRANCH;
-        if (await this.gitOk(["-C", REPO, "fetch", "-q", "origin", BRANCH], { toLog: true })) base = `origin/${BRANCH}`;
+        if (await this.fetch(["origin", BRANCH], REPO)) base = `origin/${BRANCH}`;
         if (SETUP_CMD) writeFileSync(pending, "");
         if (!(await this.gitOk(["-C", REPO, "worktree", "add", "-q", "-b", branch, WORK, base], { toLog: true }))) {
           rmSync(pending, { force: true });
@@ -1485,7 +1497,7 @@ VERDICT: REJECT: <one sentence saying why>
   }
 
   private async fetchUpstream(): Promise<boolean> {
-    if (await this.gitOk(["fetch", "-q", "origin", this.cfg.BRANCH], { toLog: true })) return true;
+    if (await this.fetch(["origin", this.cfg.BRANCH])) return true;
     this.log.line("sync: fetch failed, not pushing this time");
     return false;
   }
@@ -1675,7 +1687,7 @@ VERDICT: REJECT: <one sentence saying why>
     }
     const pushedFile = this.p(".pr-pushed");
     if (remote && remote !== this.read(pushedFile).trim()) {
-      await this.git(["fetch", "-q", "origin", `+${ref}:refs/remotes/origin/ralph/${this.name}`], { toLog: true });
+      await this.fetch(["origin", `+${ref}:refs/remotes/origin/ralph/${this.name}`]);
       if (!(await this.gitOk(["merge-base", "--is-ancestor", remote, "HEAD"], { quiet: true }))) {
         await this.prBlocked(
           `foreign ${remote}`,
