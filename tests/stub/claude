@@ -393,20 +393,28 @@ switch (mode) {
     git("commit", "-qm", `stub: conflicting (agent call ${n})`);
     break;
   }
-  case "plan-approve": {
+  case "plan-approve":
+  case "plan-twice": {
     // PLAN_FIRST: Claude Code sends the approval prompts of a -p run to the
     // --permission-prompt-tool. The stub starts the MCP server the way the
     // --mcp-config says, asks it about ExitPlanMode and about a Bash call,
     // and records the answers, then commits as the approved plan would.
+    // plan-twice plans again later in the same run (back in plan mode), the
+    // first plan with no newline at its end.
     const cfg = JSON.parse(readFileSync(argv[argv.indexOf("--mcp-config") + 1] ?? "", "utf8")).mcpServers.ralph;
     const call = (id: number, tool: string, input: object) =>
       JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "approve", arguments: { tool_name: tool, input } } });
+    const plans =
+      mode === "plan-twice"
+        ? [call(3, "ExitPlanMode", { plan: "1. read the code" }), call(5, "ExitPlanMode", { plan: "## Revised\n1. fix it\n" })]
+        : [call(3, "ExitPlanMode", { plan: "stub plan: edit work.txt\n" })];
     const input = [
       JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }),
       JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
       JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
-      call(3, "ExitPlanMode", { plan: "stub plan: edit work.txt\n" }),
+      plans[0],
       call(4, "Bash", { command: "rm -rf build" }),
+      ...plans.slice(1),
     ].join("\n");
     const r = spawnSync(cfg.command, cfg.args, { input: `${input}\n`, encoding: "utf8", env: { ...process.env, ...cfg.env } });
     writeFileSync(join(d, `approve.${n}`), r.stdout ?? "");
