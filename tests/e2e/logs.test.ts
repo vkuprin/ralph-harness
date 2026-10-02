@@ -154,9 +154,9 @@ describe("refs/ralph/ is a safety net, not a leak", () => {
   let gcOk = false;
   let stillThere = true;
 
-  // `ralph review` sorted these by refname, and refs/ralph/reverted/ sorts
-  // above refs/ralph/dropped/, so a loop with more reverts than the listing
-  // shows never showed a dropped commit at all.
+  // `ralph review` sorted these by refname, and refs/ralph/<name>/reverted/
+  // sorts above refs/ralph/<name>/dropped/, so a loop with more reverts than
+  // the listing shows never showed a dropped commit at all.
   const mixed = fx.p("app-mixed");
   const home = fx.p("home-refs");
   let review = "";
@@ -168,7 +168,7 @@ describe("refs/ralph/ is a safety net, not a leak", () => {
     await fx.runLoop(loop, S);
     refsGone = rows(loop)[0]?.[3] ?? "";
     keptRefs = fx
-      .git(W, "for-each-ref", "--format=%(refname)", "refs/ralph/reverted/")
+      .git(W, "for-each-ref", "--format=%(refname)", "refs/ralph/refs/reverted/")
       .split("\n")
       .filter((l) => l !== "");
     keptSubjects = fx.git(W, "log", "--no-walk", "--format=%s", ...keptRefs);
@@ -183,10 +183,10 @@ describe("refs/ralph/ is a safety net, not a leak", () => {
     writeConfig(join(home, "mixed"), { REPO: mixed });
     for (let i = 1; i <= 12; i++) {
       fx.git(mixed, "commit", "-q", "--allow-empty", "-m", `gate rejected this one (${i})`);
-      fx.git(mixed, "update-ref", `refs/ralph/reverted/${1758400000 + i}-${i}`, "HEAD");
+      fx.git(mixed, "update-ref", `refs/ralph/mixed/reverted/${1758400000 + i}-${i}`, "HEAD");
     }
     fx.git(mixed, "commit", "-q", "--allow-empty", "-m", "a rebase conflict dropped this");
-    fx.git(mixed, "update-ref", "refs/ralph/dropped/1758500000", "HEAD");
+    fx.git(mixed, "update-ref", "refs/ralph/mixed/dropped/1758500000", "HEAD");
     fx.git(mixed, "reset", "-q", "--hard", "HEAD~13");
     review = fx.cli(home, ["review", "mixed"]).out;
   });
@@ -194,7 +194,7 @@ describe("refs/ralph/ is a safety net, not a leak", () => {
   test("five iterations were reverted, so the checks below mean something", () => {
     expect(statuses(loop)).toBe("revert:verify revert:verify revert:verify revert:verify revert:verify");
   });
-  test("refs/ralph/reverted/ is bounded by REF_KEEP", () => {
+  test("refs/ralph/<name>/reverted/ is bounded by REF_KEEP", () => {
     expect(keptRefs.length).toBe(2);
   });
   test("the newest thrown-away commits are the ones kept", () => {
@@ -219,7 +219,80 @@ describe("refs/ralph/ is a safety net, not a leak", () => {
     const all = review.split("\n");
     const from = all.findIndex((l) => l.includes("Reverted or dropped"));
     expect(from).toBeGreaterThanOrEqual(0);
-    expect((all[from + 2] ?? "").replace(/.* {2}/, "")).toBe("(ralph/reverted/1758400012-12)");
+    expect((all[from + 2] ?? "").replace(/.* {2}/, "")).toBe("(ralph/mixed/reverted/1758400012-12)");
+  });
+});
+
+describe("loops that share a repository keep their own thrown-away commits", () => {
+  // A ref was refs/ralph/<kind>/<epoch>-<iteration>, with no loop in it, and a
+  // ref belongs to the repository, not to a worktree. So a loop's REF_KEEP let
+  // go of every other loop's thrown-away commits, and `ralph review` listed them
+  // all as its own. Measured: b, with REF_KEEP 0 ("keeps every ref"), reverted
+  // two commits; a, with REF_KEEP 1, reverted two more; b's two were gone.
+  const home = fx.p("home-shared");
+  const app = fx.p("app-shared");
+  const A = join(home, "a");
+  const B = join(home, "b");
+  let aShas: string[] = [];
+  let bShas: string[] = [];
+  let legacy = "";
+  let reviewA = "";
+  let reviewB = "";
+  const saved = (sha: string) => fx.git(app, "for-each-ref", "--format=%(refname)", "--points-at", sha);
+  const short = (sha: string) => sha.slice(0, 7);
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-shared.git"));
+    // What an older version saved, with no loop in the name.
+    fx.git(app, "commit", "-q", "--allow-empty", "-m", "an older version threw this away");
+    legacy = fx.git(app, "rev-parse", "HEAD");
+    fx.git(app, "update-ref", "refs/ralph/reverted/1758400000-1", legacy);
+    // What a loop named "reverted" saves: under the old prefix, and not old.
+    fx.git(app, "commit", "-q", "--allow-empty", "-m", "a loop named reverted threw this away");
+    fx.git(app, "update-ref", "refs/ralph/reverted/reverted/1758400001-1", "HEAD");
+    fx.git(app, "reset", "-q", "--hard", "HEAD~2");
+    fx.makeLoop(B, app, { WORKTREE: true, MAX_ITER: 2, REF_KEEP: 0, VERIFY_CMD: "./measure.sh" });
+    fx.makeLoop(A, app, { WORKTREE: true, MAX_ITER: 2, REF_KEEP: 1, VERIFY_CMD: "./measure.sh" });
+    await fx.runLoop(B, fx.stub("stub-shared-b", ["commit-bad", "commit-bad"]));
+    await fx.runLoop(A, fx.stub("stub-shared-a", ["commit-bad", "commit-bad"]));
+    aShas = rows(A).map((r) => r[3] ?? "");
+    bShas = rows(B).map((r) => r[3] ?? "");
+    reviewA = fx.cli(home, ["review", "a"]).out;
+    reviewB = fx.cli(home, ["review", "b"]).out;
+  });
+
+  test("both loops reverted both of their commits, so the checks below mean something", () => {
+    expect(statuses(A)).toBe("revert:verify revert:verify");
+    expect(statuses(B)).toBe("revert:verify revert:verify");
+    expect(new Set([...aShas, ...bShas, ""]).size).toBe(5);
+  });
+  test("a loop that keeps every ref still has them after another loop pruned its own", () => {
+    for (const sha of bShas) expect(saved(sha)).not.toBe("");
+  });
+  test("each loop's refs carry its name", () => {
+    for (const sha of bShas) expect(saved(sha)).toStartWith("refs/ralph/b/reverted/");
+    expect(saved(aShas[1]!)).toStartWith("refs/ralph/a/reverted/");
+  });
+  test("the pruning loop kept its own newest REF_KEEP and let go of the rest", () => {
+    expect(saved(aShas[0]!)).toBe("");
+    expect(saved(aShas[1]!)).not.toBe("");
+  });
+  test("a ref an older version saved is not pruned, since no loop can tell it is its own", () => {
+    expect(saved(legacy)).toBe("refs/ralph/reverted/1758400000-1");
+  });
+  test("review lists a loop's own thrown-away commits and not the other loop's", () => {
+    expect(reviewA).toContain(short(aShas[1]!));
+    for (const sha of bShas) expect(reviewA).not.toContain(short(sha));
+    for (const sha of bShas) expect(reviewB).toContain(short(sha));
+    for (const sha of aShas) expect(reviewB).not.toContain(short(sha));
+  });
+  test("review lists an older version's refs under a heading of their own", () => {
+    for (const review of [reviewA, reviewB]) {
+      const at = review.indexOf("older version");
+      expect(at).toBeGreaterThan(review.indexOf("Reverted or dropped"));
+      expect(review.slice(at)).toContain("an older version threw this away");
+      expect(review).not.toContain("a loop named reverted");
+    }
   });
 });
 

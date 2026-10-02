@@ -8,7 +8,7 @@ import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runB
 import { keepRows, readResults, record } from "../lib/results.ts";
 import { shq } from "../lib/shq.ts";
 import { chomp, headBytes, lastNonBlank, section, splitLines, stripEscapes, tailLines } from "../lib/text.ts";
-import { APPROVE_PLAN, CHILD_FILE, REFUSED, STEER_HOOK } from "../paths.ts";
+import { APPROVE_PLAN, CHILD_FILE, REFUSED, STEER_HOOK, refPrefix, sortRefs } from "../paths.ts";
 import { type Window, inWindow, parseHours } from "./active-hours.ts";
 import { addCost, addTokens, claudeText } from "./cost.ts";
 import { resetAt, limitLine, type Reset } from "./limits.ts";
@@ -288,17 +288,21 @@ export class Loop {
   }
 
   /**
-   * Keep a commit the gates threw away under refs/ralph/<ns>/, so a human can
-   * still get it back, and let go of the oldest beyond REF_KEEP: a ref is the
-   * only thing keeping such a commit reachable, so unbounded these stop `git
-   * gc` from ever reclaiming it. Oldest by the epoch in the name, numerically.
+   * Keep a commit the gates threw away under refs/ralph/<name>/<ns>/, so a
+   * human can still get it back, and let go of the oldest beyond REF_KEEP: a
+   * ref is the only thing keeping such a commit reachable, so unbounded these
+   * stop `git gc` from ever reclaiming it. Oldest by the epoch in the name,
+   * numerically. The loop's name is in the ref because refs belong to the
+   * repository, which other loops share: without it a loop pruned theirs too.
+   * Refs an older version saved (refs/ralph/<ns>/<epoch>-<iter>) name no loop,
+   * so no loop prunes them; `ralph review` lists them on their own.
    */
   private async saveRef(ns: string, commit: string): Promise<void> {
-    await this.git(["update-ref", `refs/ralph/${ns}/${nowSec()}-${this.iter}`, commit], { quiet: true });
+    const prefix = refPrefix(this.name, ns);
+    await this.git(["update-ref", `${prefix}${nowSec()}-${this.iter}`, commit], { quiet: true });
     if (!(this.cfg.REF_KEEP >= 1)) return;
-    const refs = splitLines(await this.gitOut(["for-each-ref", "--format=%(refname)", `refs/ralph/${ns}/`]));
-    const epoch = (r: string) => Number.parseInt(r.split("/")[3] ?? "", 10) || 0;
-    refs.sort((a, b) => epoch(b) - epoch(a) || (a < b ? 1 : a > b ? -1 : 0));
+    const refs = splitLines(await this.gitOut(["for-each-ref", "--format=%(refname)", prefix]));
+    sortRefs(refs);
     for (const ref of refs.slice(this.cfg.REF_KEEP)) await this.git(["update-ref", "-d", ref]);
   }
 
@@ -392,9 +396,11 @@ export class Loop {
       after: judged,
       status: "drop:interrupted",
       secs: 0,
-      reason: "commits from an interrupted iteration were never judged; saved under refs/ralph/dropped/",
+      reason: `commits from an interrupted iteration were never judged; saved under ${refPrefix(this.name, "dropped")}`,
     });
-    this.log.line(`start: ${head} was never judged (an iteration was interrupted); reset to ${judged}, saved under refs/ralph/dropped/`);
+    this.log.line(
+      `start: ${head} was never judged (an iteration was interrupted); reset to ${judged}, saved under ${refPrefix(this.name, "dropped")}`,
+    );
   }
 
   // ------------------------------------------------------------ start
@@ -1383,9 +1389,9 @@ VERDICT: REJECT: <one sentence saying why>
             after: await this.gitOut(["rev-parse", "HEAD"]),
             status: "drop:conflict",
             secs: 0,
-            reason: `rebase onto ${upstream} conflicted; unpushed commits dropped, saved under refs/ralph/dropped/`,
+            reason: `rebase onto ${upstream} conflicted; unpushed commits dropped, saved under ${refPrefix(this.name, "dropped")}`,
           });
-          this.log.line("sync: rebase conflicted, dropped unpushed commits (saved under refs/ralph/dropped/)");
+          this.log.line(`sync: rebase conflicted, dropped unpushed commits (saved under ${refPrefix(this.name, "dropped")})`);
           return;
         }
         const v = await this.verify();
@@ -1399,7 +1405,7 @@ VERDICT: REJECT: <one sentence saying why>
             reason: `after rebase onto ${upstream}: ${v}`,
           });
           await this.git(["reset", "-q", "--hard", upstream]);
-          this.log.line("sync: rebased commits failed verify, dropped them (saved under refs/ralph/dropped/)");
+          this.log.line(`sync: rebased commits failed verify, dropped them (saved under ${refPrefix(this.name, "dropped")})`);
           return;
         }
       }

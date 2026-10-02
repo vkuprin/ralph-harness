@@ -288,7 +288,7 @@ Events: `stopped`, `refused`, `stuck`, `limit`, `limit-clear`, `decision`, `heal
 | `PROGRESS_MAX_BYTES` | `120000` | most of `PROGRESS.md` put into one prompt; `0` all |
 | `LOG_MAX_BYTES` | `10000000` | rotate `ralph.log` past this size; `0` never |
 | `LOG_KEEP` | `3` | rotated logs kept |
-| `REF_KEEP` | `20` | thrown-away commits kept under `refs/ralph/`; `0` keeps all |
+| `REF_KEEP` | `20` | thrown-away commits kept under `refs/ralph/<name>/`, of each kind; `0` keeps all |
 
 </details>
 

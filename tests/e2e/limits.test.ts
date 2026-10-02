@@ -68,9 +68,9 @@ describe("limits heal themselves; interrupted iterations are set aside", () => {
   test("the unjudged commit never reached origin", () => {
     expect(fx.git(remote, "log", "--format=%s", "main")).not.toContain("interrupted");
   });
-  test("the unjudged commit is kept under refs/ralph/dropped/", () => {
+  test("the unjudged commit is kept under refs/ralph/f/dropped/", () => {
     const refs = fx
-      .git(W, "for-each-ref", "--format=%(refname)", "refs/ralph/dropped/")
+      .git(W, "for-each-ref", "--format=%(refname)", "refs/ralph/f/dropped/")
       .split("\n")
       .filter((l) => l !== "");
     expect(refs.length).toBeGreaterThan(0);
@@ -125,7 +125,7 @@ describe("a stop after the verdict: the commit was judged, and a restart keeps i
   });
   test("the restart does not set the kept commit aside", () => {
     expect(verdicts(rows(loop))).toBe("ratelimit keep quiet");
-    expect(fx.git(W, "for-each-ref", "refs/ralph/dropped/")).toBe("");
+    expect(fx.git(W, "for-each-ref", "refs/ralph/")).toBe("");
   });
   test("the kept commit is still on the loop's branch, and the restart pushes it", () => {
     expect(fx.gitOk(W, "merge-base", "--is-ancestor", kept, "HEAD")).toBe(true);

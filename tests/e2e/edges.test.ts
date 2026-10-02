@@ -350,11 +350,11 @@ describe("a rebase that fails verify is dropped (PUSH=1)", () => {
     expect(statuses(loop)).toBe("keep drop:reverify");
     expect(rows(loop)[1]![6]).toContain("after rebase onto origin/main: verify exited 1");
   });
-  test("so it never reaches origin, and is kept under refs/ralph/dropped/", () => {
+  test("so it never reaches origin, and is kept under refs/ralph/rev/dropped/", () => {
     const main = fx.git(remote, "log", "--format=%s", "main");
     expect(main).toContain("human: add human.txt");
     expect(main).not.toContain("stub: work");
-    expect(fx.git(fx.p("app-rev-ralph-rev"), "for-each-ref", "refs/ralph/dropped/")).not.toBe("");
+    expect(fx.git(fx.p("app-rev-ralph-rev"), "for-each-ref", "refs/ralph/rev/dropped/")).not.toBe("");
   });
 });
 

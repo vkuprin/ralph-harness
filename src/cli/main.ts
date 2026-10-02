@@ -24,7 +24,22 @@ import { Log } from "../lib/log.ts";
 import { hint } from "../lib/shq.ts";
 import { splitLines } from "../lib/text.ts";
 import { IS_WIN, claudeProblem, commandLineSync, killTree, reapOrphan, upTimeSync } from "../lib/proc.ts";
-import { CHILD_FILE, HARNESS, LOOP_ENTRY, LOOP_MARK, REFUSED, STOP_FILE, TEMPLATE, endsWithArg, markThen, ralphHome } from "../paths.ts";
+import {
+  CHILD_FILE,
+  HARNESS,
+  LEGACY_REFS,
+  LOOP_ENTRY,
+  LOOP_MARK,
+  REFUSED,
+  STOP_FILE,
+  TEMPLATE,
+  endsWithArg,
+  isLegacyRef,
+  markThen,
+  ralphHome,
+  refPrefix,
+  sortRefs,
+} from "../paths.ts";
 import { migrate } from "./migrate.ts";
 
 const USAGE = `ralph — long-running Claude Code loops: a fresh \`claude -p\` every iteration,
@@ -747,19 +762,28 @@ function cmdReview(name?: string, nArg?: string): void {
   // Newest first, by the epoch the harness put in the refname — numerically,
   // and across both kinds: sorting by name put every reverted above every
   // dropped, so a loop with many reverts never showed a dropped commit at all.
-  out("\nReverted or dropped by the gates, kept under refs/ralph/\n");
-  const refs = splitLines(git(c.work, "for-each-ref", "--format=%(refname)", "refs/ralph/reverted/", "refs/ralph/dropped/").out);
-  const epoch = (r: string) => Number.parseInt(r.split("/")[3] ?? "", 10) || 0;
-  refs.sort((a, b) => epoch(b) - epoch(a) || (a < b ? 1 : a > b ? -1 : 0));
-  let listed = 0;
-  for (const ref of refs.slice(0, n)) {
-    const l = git(c.work, "log", "-1", `--format=  %h  %s  (${ref.slice("refs/".length)})`, ref);
-    if (l.code === 0) {
-      out(l.out);
-      listed++;
+  // Only this loop's: the refs belong to the repository, which other loops
+  // may share. The ones an older version kept name no loop, so they get a
+  // heading of their own, and only when there are any.
+  const listRefs = (refs: string[]): number => {
+    let listed = 0;
+    for (const ref of sortRefs(refs).slice(0, n)) {
+      const l = git(c.work, "log", "-1", `--format=  %h  %s  (${ref.slice("refs/".length)})`, ref);
+      if (l.code === 0) {
+        out(l.out);
+        listed++;
+      }
     }
+    return listed;
+  };
+  const refsOf = (...prefixes: string[]) => splitLines(git(c.work, "for-each-ref", "--format=%(refname)", ...prefixes).out);
+  out(`\nReverted or dropped by the gates, kept under refs/ralph/${name}/\n`);
+  if (!listRefs(refsOf(refPrefix(name!, "reverted"), refPrefix(name!, "dropped")))) dim("  nothing");
+  const legacy = refsOf(...LEGACY_REFS).filter(isLegacyRef);
+  if (legacy.length) {
+    out("\nKept under refs/ralph/ by an older version, for any loop on this repository\n");
+    listRefs(legacy);
   }
-  if (!listed) dim("  nothing");
 
   if (c.worktree && c.push !== true) {
     const base = git(c.work, "rev-parse", "-q", "--verify", `origin/${c.branch}`).code === 0 ? `origin/${c.branch}` : c.branch;

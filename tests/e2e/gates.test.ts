@@ -61,8 +61,8 @@ describe("gates, verdicts and pushes (WORKTREE=1 PUSH=1 REVIEW=1)", () => {
     expect(remoteLog).toContain("human: edit work.txt");
     expect(remoteLog).not.toContain("stub: conflicting");
   });
-  test("dropped commit saved under refs/ralph/dropped/", () => {
-    expect(fx.git(W, "for-each-ref", "refs/ralph/dropped/")).not.toBe("");
+  test("dropped commit saved under refs/ralph/a/dropped/", () => {
+    expect(fx.git(W, "for-each-ref", "refs/ralph/a/dropped/")).not.toBe("");
   });
   test("the agent's own git push failed", () => {
     expect(read(join(S, "push-attempt.rc")).trim()).not.toBe("0");
@@ -115,8 +115,8 @@ describe("gates, verdicts and pushes (WORKTREE=1 PUSH=1 REVIEW=1)", () => {
   test("no harness variable leaks into VERIFY_CMD", () => {
     expect(read(join(loop, "verify-env"))).not.toMatch(/^BOUNDED_/m);
   });
-  test("reverted commits are kept under refs/ralph/reverted/", () => {
-    expect(count(fx.git(W, "for-each-ref", "refs/ralph/reverted/"), /./)).toBeGreaterThanOrEqual(4);
+  test("reverted commits are kept under refs/ralph/a/reverted/", () => {
+    expect(count(fx.git(W, "for-each-ref", "refs/ralph/a/reverted/"), /./)).toBeGreaterThanOrEqual(4);
   });
   test("review shows what shipped", () => {
     expect(review).toContain("stub: work (agent call 1)");
