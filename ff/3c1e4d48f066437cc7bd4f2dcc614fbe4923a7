@@ -1,0 +1,28 @@
+.changeset/windows-job-object.md
+  s_ef6dcb2cf730c3::t_a93e5f3cf87b1c 1-5
+src/lib/proc.ts
+  s_ef6dcb2cf730c3::t_633b327cfa0756 457
+  s_ef6dcb2cf730c3::t_76462d79295f7a 4
+  s_ef6dcb2cf730c3::t_791f251f1653d4 184-188
+  s_ef6dcb2cf730c3::t_1ef6cf4fc28221 92-145
+  s_ef6dcb2cf730c3::t_fb21977911677f 494
+  s_ef6dcb2cf730c3::t_b0ca2642f40eec 26
+AGENTS.md
+  s_ef6dcb2cf730c3::t_5416f83b54d08d 145-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ff3c1e4d48f066437cc7bd4f2dcc614fbe4923a7",
+  "prompts": {},
+  "sessions": {
+    "s_ef6dcb2cf730c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86ea9fb5-e790-409e-b70d-30708c28026d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
