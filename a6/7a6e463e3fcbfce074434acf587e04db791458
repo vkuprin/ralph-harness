@@ -1,0 +1,23 @@
+debug/tree.ts
+  s_ef6dcb2cf730c3::t_03481d2e3b7d21 1-88
+.github/workflows/test.yml
+  s_ef6dcb2cf730c3::t_511b5e27ac05a9 3-4,21-25,27-37
+src/cli/main.ts
+  s_ef6dcb2cf730c3::t_10fb336707854f 191,193,533-541,570,572,607,609,619,621
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a67a6e463e3fcbfce074434acf587e04db791458",
+  "prompts": {},
+  "sessions": {
+    "s_ef6dcb2cf730c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86ea9fb5-e790-409e-b70d-30708c28026d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
