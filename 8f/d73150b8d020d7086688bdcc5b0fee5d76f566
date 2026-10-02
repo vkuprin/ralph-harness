@@ -1,0 +1,26 @@
+hooks/approve-plan.ts
+  s_1ea84e7456e1e7::t_06a5c0256d54ea 9,19-37,40
+tests/e2e/plan.test.ts
+  s_1ea84e7456e1e7::t_135b3cc4e8673d 112-143,145-185
+  s_1ea84e7456e1e7::t_ae07ce145c35c2 144
+.changeset/plan-first-two-plans.md
+  s_1ea84e7456e1e7::t_a83cbb6ee9ec70 1-5
+tests/stub/claude
+  s_1ea84e7456e1e7::t_9ea705216841dd 396-397,402-403,407-410,415,417
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "8fd73150b8d020d7086688bdcc5b0fee5d76f566",
+  "prompts": {},
+  "sessions": {
+    "s_1ea84e7456e1e7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f71988a-58f1-4aff-bde6-a296855bc706",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
