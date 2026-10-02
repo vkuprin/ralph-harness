@@ -860,6 +860,32 @@ describe("ralph start says so when the loop did not start", () => {
     { name: "nogit", spoil: (d) => patchConfig(d, { REPO: fx.p("not-a-repo") }), why: "REPO is not a git checkout" },
     { name: "push", spoil: (d) => patchConfig(d, { WORKTREE: true, PUSH: true }), why: '"PUSH_CONFIRM": "main"' },
     { name: "hours", spoil: (d) => patchConfig(d, { ACTIVE_HOURS: "25-99" }), why: "ACTIVE_HOURS=25-99" },
+    // These four refuse after the lock, while the loop sets up its worktree.
+    // `ralph start` stopped waiting at the lock, so each printed "started" and
+    // exited 0, and the loop was gone 130ms later.
+    { name: "nobranch", spoil: (d) => patchConfig(d, { WORKTREE: true, BRANCH: "trunk" }), why: "cannot create worktree" },
+    {
+      name: "setupfail",
+      spoil: (d) => patchConfig(d, { WORKTREE: true, SETUP_CMD: "exit 3" }),
+      why: "SETUP_CMD failed; removed the new worktree",
+    },
+    {
+      name: "foreign",
+      spoil: (d) => {
+        fx.makeRepo(fx.p("other-refused"), fx.p("remote-other-refused.git"));
+        patchConfig(d, { WORKTREE: true, WORKTREE_DIR: fx.p("other-refused") });
+      },
+      why: "refusing to reset a checkout this loop does not own",
+    },
+    {
+      name: "fulldir",
+      spoil: (d) => {
+        mkdirSync(fx.p("full-refused"));
+        writeFileSync(fx.p("full-refused", "notes.txt"), "mine\n");
+        patchConfig(d, { WORKTREE: true, WORKTREE_DIR: fx.p("full-refused") });
+      },
+      why: "cannot create worktree",
+    },
   ];
   const ran: Record<string, { code: number; out: string; err: string; pidLeft: boolean; agent: boolean }> = {};
   let ok = { code: -1, out: "", err: "" };
@@ -902,8 +928,47 @@ describe("ralph start says so when the loop did not start", () => {
   test("a loop that starts still says started, and exits 0", () => {
     expect(ok.code).toBe(0);
     expect(ok.out).toContain("started fine as PID");
+    expect(ok.out).not.toContain("still starting");
     expect(ok.err).toBe("");
     expect(okFinished).toBe(true);
+  });
+});
+
+describe("ralph start does not wait out a long SETUP_CMD", () => {
+  // `ralph start` waits for the loop's whole start, the worktree's SETUP_CMD
+  // included, but only BOOT_WAIT seconds past the lock: an `npm ci` can take
+  // minutes, and the loop is not refusing anything while it runs.
+  const home = fx.p("home-setupslow");
+  const app = fx.p("app-setupslow");
+  const loop = join(home, "slowsetup");
+  let r = { code: -1, out: "", err: "" };
+  let secs = 0;
+  let startedThen = true;
+  let finished = false;
+  let S = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-setupslow.git"));
+    S = fx.stub("stub-setupslow", ["nothing"]);
+    fx.cli(home, ["new", "slowsetup", app]);
+    patchConfig(loop, { ...TAME, WORKTREE: true, SETUP_CMD: "sleep 8" });
+    const t0 = Date.now();
+    r = fx.cli(home, ["start", "slowsetup"], { STUB_DIR: S, RALPH_TEST_BOOT_WAIT: "2" });
+    secs = (Date.now() - t0) / 1000;
+    startedThen = existsSync(join(loop, ".started"));
+    finished = await until(() => read(join(loop, "ralph.log")).includes("ralph finished"), 60);
+  });
+
+  test("it says started, and that the loop is still starting, before the setup is done", () => {
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("started slowsetup as PID");
+    expect(r.out).toContain("still starting after 2s");
+    expect(startedThen).toBe(false);
+    expect(secs).toBeLessThan(8);
+  });
+  test("and the loop goes on to run once its setup is done", () => {
+    expect(finished).toBe(true);
+    expect(read(join(S, "agent_calls")).trim()).toBe("1");
   });
 });
 

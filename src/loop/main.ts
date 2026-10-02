@@ -11,7 +11,7 @@ import { loadConfig } from "../lib/config.ts";
 import { Log } from "../lib/log.ts";
 import { IS_WIN, commandLine, current, freeze, killGroup, plainChildren, reapOrphan } from "../lib/proc.ts";
 import { hint } from "../lib/shq.ts";
-import { CHILD_FILE, LOOP_MARK, REFUSED, STOP_FILE } from "../paths.ts";
+import { CHILD_FILE, LOOP_MARK, REFUSED, STARTED_FILE, STOP_FILE } from "../paths.ts";
 import { Loop, Stop, missingFile } from "./loop.ts";
 
 // The suite's stand-in for bun never finishing loading this file, which
@@ -180,6 +180,10 @@ try {
   await loop.check();
   await lock();
   await loop.start();
+  // The worktree, SETUP_CMD and the rest of the start are behind the lock, and
+  // a loop that refuses one of them is gone a moment after `ralph start` saw
+  // it take the lock; so that waits for this too.
+  writeFileSync(join(dir, STARTED_FILE), `${process.pid}\n`);
   await loop.run();
 } catch (e) {
   if (e instanceof Stop) process.exit(e.code);

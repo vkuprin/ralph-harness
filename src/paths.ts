@@ -35,6 +35,9 @@ export const STOP_FILE = "ralph.stop";
 /** Where the loop names the bounded command it is running, for the next start if it dies first. */
 export const CHILD_FILE = ".child";
 
+/** Where the loop writes its PID once its start is done (worktree, setup), which `ralph start` waits for. */
+export const STARTED_FILE = ".started";
+
 /**
  * Where loop `name` keeps the commits a gate threw away, `ns` being "reverted"
  * or "dropped": refs/ralph/<name>/<ns>/<epoch>-<iteration>. A prefix for

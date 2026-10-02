@@ -30,7 +30,7 @@ import {
   LEGACY_REFS,
   LOOP_ENTRY,
   LOOP_MARK,
-  REFUSED,
+  STARTED_FILE,
   STOP_FILE,
   TEMPLATE,
   endsWithArg,
@@ -495,6 +495,11 @@ function booted(dir: string, pid: number, exited: () => boolean): boolean {
   return exited() || !alive(pid) || read(join(dir, "ralph.lock")).trim() === String(pid);
 }
 
+/** The loop has done its whole start, the worktree and SETUP_CMD included, and runs. */
+function started(dir: string, pid: number): boolean {
+  return read(join(dir, STARTED_FILE)).trim() === String(pid);
+}
+
 // Now and then bun on Linux never finishes loading the loop's modules: the
 // process sits in epoll with no child and no line of its own written, and a
 // loop that `ralph status` calls running does nothing for ever. So a start is
@@ -505,9 +510,10 @@ const BOOT_WAIT = Number(process.env.RALPH_TEST_BOOT_WAIT) || 30;
 const BOOT_TRIES = 3;
 
 /**
- * The loop exited REFUSED: a setting it could not read, a file missing, or
- * another loop holding the lock. It says why in ralph.log, in its own lines
- * since `from` (bytes), and a loop that runs is the reason when there is one.
+ * The loop exited before its start was done: a setting it could not read, a
+ * file missing, another loop holding the lock, a worktree it could not make or
+ * a SETUP_CMD that failed. It says why in ralph.log, in its own lines since
+ * `from` (bytes), and a loop that runs is the reason when there is one.
  * "started <name>" in green, exit status 0, is what this printed for every
  * refusal there is, and the loop was gone before the human read it.
  */
@@ -547,10 +553,23 @@ async function cmdStart(name?: string): Promise<void> {
     writeFileSync(join(dir, "ralph.pid"), `${pid}\n`);
     for (let waited = 0; waited < BOOT_WAIT * 10 && !booted(dir, pid, exited); waited++) await Bun.sleep(100);
     if (booted(dir, pid, exited)) {
-      // Gone and reaped, so its exit status is on its way.
-      if (!exited() && !alive(pid)) status = await ended;
-      if (status === REFUSED) notStarted(dir, name!, pid, from);
+      // The lock is not the end of a start: the worktree and SETUP_CMD come
+      // after it, and a loop that refuses one of them is gone a moment later.
+      // Wait BOOT_WAIT seconds more for the loop to say its start is done; a
+      // long SETUP_CMD outlasts that, and then the line below says so.
+      const gone = () => exited() || !alive(pid);
+      for (let waited = 0; waited < BOOT_WAIT * 10 && !started(dir, pid) && !gone(); waited++) await Bun.sleep(100);
+      if (!started(dir, pid) && gone()) {
+        // Gone and reaped, so its exit status is on its way.
+        if (!exited()) status = await ended;
+        notStarted(dir, name!, pid, from);
+      }
       green(`started ${name} as PID ${pid}`);
+      if (!started(dir, pid)) {
+        dim(
+          `  still starting after ${BOOT_WAIT}s (a new worktree runs SETUP_CMD first), so it can still fail: ${hint("ralph", "tail", name!)}`,
+        );
+      }
       dim(`  ${hint("ralph", "status", name!)}   ${hint("ralph", "tail", name!)}   ${hint("ralph", "stop", name!)}`);
       return;
     }
