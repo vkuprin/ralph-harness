@@ -142,8 +142,11 @@ Windows is a platform, not a port kept on the side, and every difference lives
 in `src/lib/proc.ts` behind `IS_WIN`, so the loop reads the same on all three.
 What stands in for what:
 
-- No process groups: `killGroup` and `killTree` kill the tree with
-  `taskkill /T /F`. No TERM a program started without a console can catch:
+- No process groups: each bounded command goes into a job object of its own
+  (`enterJob`, through `bun:ffi`), and `killGroup` and `killTree` end the job,
+  then the tree with `taskkill /T /F`. The tree alone is not enough: Git
+  Bash's fork and exec leave a process whose parent PID names one already
+  gone, and taskkill /T walks parent PIDs. No TERM a program started without a console can catch:
   `ralph stop` writes `ralph.stop` into the loop directory, and `main.ts` answers
   it through the same `onSignal` as a signal, freeze first. A new way to stop a
   loop goes through that one handler on both.
