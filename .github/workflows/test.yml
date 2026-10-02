@@ -1,14 +1,14 @@
 name: test
 
-# Scratch branch ci-debug/windows, never merged: a Windows-only job that runs
-# the diagnostics and the failing tests, dispatched by hand.
+# Scratch branch ci-debug/windows, never merged: the Windows job, dispatched by
+# hand, with every CLI run traced to C:\ralph-debug\start.log.
 on:
   workflow_dispatch:
 
 jobs:
   windows:
     runs-on: windows-2025
-    timeout-minutes: 45
+    timeout-minutes: 55
     defaults:
       run:
         shell: bash
@@ -21,17 +21,18 @@ jobs:
       - name: process tree under each kill
         continue-on-error: true
         run: bun debug/tree.ts
-      - name: ralph start refusals, five times
+      - name: unit tests
         continue-on-error: true
-        run: |
-          for i in 1 2 3 4 5; do
-            echo "::group::run $i"
-            bun test --timeout 600000 tests/e2e/cli.test.ts -t "ralph start says so when the loop did not start" || echo "RUN $i FAILED"
-            echo "::endgroup::"
-          done
-      - name: start trace
+        run: bun test --timeout 600000 tests/unit
+      - name: end-to-end tests
+        continue-on-error: true
+        run: bun test --timeout 600000 tests/e2e
+      - name: CLI runs that never exited
         if: always()
-        run: cat /c/ralph-debug/start.log || true
-      - name: the fetch transport test
-        continue-on-error: true
-        run: bun test --timeout 600000 tests/e2e/edges.test.ts -t "a fetch that never answers"
+        run: |
+          f=/c/ralph-debug/start.log
+          test -f "$f" || exit 0
+          echo "lines: $(wc -l < "$f")"
+          for p in $(grep -o 'cli=[0-9]* loaded' "$f" | cut -d= -f2 | cut -d' ' -f1 | sort -u); do
+            grep -q "cli=$p exit" "$f" || { echo "== no exit: $p"; grep "cli=$p " "$f"; }
+          done

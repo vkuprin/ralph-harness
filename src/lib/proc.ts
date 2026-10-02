@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { constants, devNull } from "node:os";
+import { dlopen, FFIType, type Pointer } from "bun:ffi";
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
 import { LOOP_MARK } from "../paths.ts";
@@ -22,7 +23,7 @@ import { nowSec, sleep } from "./clock.ts";
 
 // Windows has neither process groups nor a TERM a console program can catch,
 // so the same promises are kept there another way, and every difference is in
-// this file: a tree kill (taskkill /T) stands in for the group, output bound
+// this file: a job object, then a tree kill (taskkill /T), stands in for the group, output bound
 // for a file is pumped through a pipe (see `pumped`), and a command line is
 // read from CIM rather than ps.
 export const IS_WIN = process.platform === "win32";
@@ -88,6 +89,60 @@ function alive(pid: number): boolean {
   }
 }
 
+// On Windows each bounded command goes into a job object of its own, and a
+// kill ends the job. taskkill /T finds a tree by each process's parent PID, and
+// Git Bash's fork and exec leave a process whose parent PID names one already
+// gone. Measured on windows-2025: a hung git fetch's ssh transport, a `sh -c
+// "sleep 611"` under core.sshCommand, outlived taskkill /T on git with and
+// without an `exec` in front of it, and TerminateJobObject on a job git was put
+// in when it started ended every process in it. A process started before the
+// assignment is outside the job, so killTree still runs taskkill /T after it.
+const jobs = new Map<number, Pointer>();
+let kernel32: ReturnType<typeof openKernel32> | null | undefined;
+
+function openKernel32() {
+  return dlopen("kernel32.dll", {
+    CreateJobObjectW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
+    OpenProcess: { args: [FFIType.u32, FFIType.bool, FFIType.u32], returns: FFIType.ptr },
+    AssignProcessToJobObject: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
+    TerminateJobObject: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.bool },
+    CloseHandle: { args: [FFIType.ptr], returns: FFIType.bool },
+  }).symbols;
+}
+
+function win32() {
+  if (kernel32 === undefined) {
+    try {
+      kernel32 = openKernel32();
+    } catch {
+      kernel32 = null;
+    }
+  }
+  return kernel32;
+}
+
+/** Put a command just started into a job of its own. Without one, killTree is taskkill /T alone. */
+function enterJob(pid: number): void {
+  const k = IS_WIN ? win32() : null;
+  if (!k) return;
+  const job = k.CreateJobObjectW(null, null);
+  if (!job) return;
+  // PROCESS_SET_QUOTA | PROCESS_TERMINATE, what AssignProcessToJobObject needs.
+  const proc = k.OpenProcess(0x0101, false, pid);
+  const ok = proc ? k.AssignProcessToJobObject(job, proc) : false;
+  if (proc) k.CloseHandle(proc);
+  if (ok) jobs.set(pid, job);
+  else k.CloseHandle(job);
+}
+
+/** The command ended by itself: let go of its job, and leave what it left running alone. */
+function leaveJob(pid: number): void {
+  const job = jobs.get(pid);
+  if (!job) return;
+  jobs.delete(pid);
+  win32()?.CloseHandle(job);
+}
+
 /**
  * TERM the whole group, give it up to ten seconds, then KILL the group. The
  * KILL goes out whether or not the leader has gone: a leader that exits on TERM
@@ -126,6 +181,11 @@ export async function killGroup(pid: number, done?: Promise<number>): Promise<vo
  */
 export function killTree(pid: number): void {
   if (IS_WIN) {
+    const job = jobs.get(pid);
+    if (job) {
+      win32()?.TerminateJobObject(job, 1);
+      leaveJob(pid);
+    }
     spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
     return;
   }
@@ -394,6 +454,7 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
     await drained(child, pumps);
     return settle({ rc, timedOut: false });
   }
+  enterJob(pid);
   current = { pid, done };
   // The wall clock, which is what ps's etime is read against, and not the
   // loop's clock. A mark that cannot be written costs only the cleanup after a
@@ -430,6 +491,7 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
   }
   const rc = await done;
   await drained(child, pumps);
+  leaveJob(pid);
   current = null;
   if (opts.mark) rmSync(opts.mark, { force: true });
   return settle({ rc, timedOut });

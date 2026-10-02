@@ -538,6 +538,7 @@ function dbg(m: string): void {
   } catch {}
 }
 process.on("exit", (c) => dbg(`exit ${c}`));
+dbg(`loaded ${JSON.stringify(process.argv.slice(2))}`);
 
 function booted(dir: string, pid: number, exited: () => boolean): boolean {
   return exited() || !alive(pid) || read(join(dir, "ralph.lock")).trim() === String(pid);
@@ -599,10 +600,9 @@ async function cmdStart(name?: string): Promise<void> {
     closeSync(fd);
     child.unref();
     const pid = child.pid!;
-    let status: number | null | undefined;
-    const ended = new Promise<number | null>((r) => child.once("exit", (code) => r(code)));
-    void ended.then((code) => (status = code));
-    const exited = () => status !== undefined;
+    let exitedNow = false;
+    child.once("exit", () => (exitedNow = true));
+    const exited = () => exitedNow;
     writeFileSync(join(dir, "ralph.pid"), `${pid}\n`);
     dbg(`spawned ${pid} for ${name} attempt ${attempt}`);
     for (let waited = 0; waited < BOOT_WAIT * 10 && !booted(dir, pid, exited); waited++) await Bun.sleep(100);
@@ -614,13 +614,7 @@ async function cmdStart(name?: string): Promise<void> {
       // long SETUP_CMD outlasts that, and then the line below says so.
       const gone = () => exited() || !alive(pid);
       for (let waited = 0; waited < BOOT_WAIT * 10 && !started(dir, pid) && !gone(); waited++) await Bun.sleep(100);
-      if (!started(dir, pid) && gone()) {
-        // Gone and reaped, so its exit status is on its way.
-        dbg(`gone: exited=${exited()} alive=${alive(pid)} started=${started(dir, pid)}`);
-        if (!exited()) status = await ended;
-        dbg(`await ended returned ${status}`);
-        notStarted(dir, name!, pid, from);
-      }
+      if (!started(dir, pid) && gone()) notStarted(dir, name!, pid, from);
       green(`started ${name} as PID ${pid}`);
       if (!started(dir, pid)) {
         dim(
