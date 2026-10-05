@@ -279,7 +279,7 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `NOTIFY_CMD` | `""` | shell command run on an event; the event is in `RALPH_EVENT`, `RALPH_LOOP`, `RALPH_DIR`, `RALPH_ITER`, `RALPH_MESSAGE` |
-| `NOTIFY_TIMEOUT` | `30` | seconds it may take; its exit status is ignored |
+| `NOTIFY_TIMEOUT` | `30` | seconds it may take; its exit status is ignored. At the timeout everything it started is killed with it, `nohup` and `&` included, so start a next stage with `NEXT_LOOP`, not from the notifier |
 
 Events: `stopped`, `died`, `refused`, `stuck`, `limit`, `limit-clear`, `decision`, `health`,
 `health-clear`, `churn`, `pr`, `pr-blocked`, `pr-ready`, `land-held`, `ci-failed`, `merged`,

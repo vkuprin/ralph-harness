@@ -317,7 +317,10 @@ export class Loop {
         RALPH_MESSAGE: headBytes(message.split("\0").join(" "), MESSAGE_MAX),
       },
     });
-    if (r.timedOut) this.log.line(`notify: ${event} timed out after ${secs}s and its process group was killed`);
+    if (r.timedOut)
+      this.log.line(
+        `notify: ${event} timed out after ${secs}s and its process group was killed, with everything it started — NEXT_LOOP, not the notifier, starts a next stage`,
+      );
     else if (r.rc !== 0) this.log.line(`notify: ${event} exited ${r.rc} (ignored; a notifier is not a gate)`);
   }
 
