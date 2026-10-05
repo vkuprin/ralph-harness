@@ -1,0 +1,83 @@
+src/lib/text.ts
+  s_e61f9b7f01bef0::t_6827088ddec4aa 128-129,136
+  s_e61f9b7f01bef0::t_7e97a65acb8f6d 127,130-135,137-151
+tests/unit/text.test.ts
+  s_e61f9b7f01bef0::t_055d2b6d7042c4 133
+  s_e61f9b7f01bef0::t_2305362bd0e70b 2,122-132,134-145
+  s_e61f9b7f01bef0::t_63a7de996e4460 146
+tests/stub/gh
+  s_e61f9b7f01bef0::t_ee7fc0b6e038b1 15-18,55-61,125-128
+src/loop/loop.ts
+  s_e61f9b7f01bef0::t_cd050330a56fdc 843-848,1496-1500,2323-2325
+  s_e61f9b7f01bef0::t_d80db5b0d0605d 9,263,274,296,301,319-333
+  s_e61f9b7f01bef0::t_0d9dfbc95636a8 139-153,200-201,523-544,547-550,554-555,561-568,771,987-997,1005,1070-1195
+  s_e61f9b7f01bef0::t_e27a2380d1e496 10-11,15,192-199,625-628,647-665,770,772-795,799-800,818,820-842,850,890,893-894,1196,1212,1254-1256,1260,1436-1495,1501-1506,1594,1624-1626,2161,2163,2167,2185,2204,2207-2216,2270,2280,2283,2287-2322,2326-2334
+  s_e61f9b7f01bef0::t_b18da7d6e8a22c 1197
+template/config.json
+  s_e61f9b7f01bef0::t_5ca016875db7f1 242
+  s_e61f9b7f01bef0::t_8b8a1b59f98f1a 84-103,182-183,240-241,259-260,265-266
+src/paths.ts
+  s_e61f9b7f01bef0::t_e27a2380d1e496 10-11
+src/cli/main.ts
+  s_e61f9b7f01bef0::t_245eceac7ffe14 27-36,594,596-601
+  s_e61f9b7f01bef0::t_153236ff5da86d 650-654
+  s_e61f9b7f01bef0::t_4c1bc2a318eed7 26
+tests/unit/proc.test.ts
+  s_e61f9b7f01bef0::t_ddbbe120563527 450-458
+  s_e61f9b7f01bef0::t_b224c195021100 6,401-449,459-460
+  s_e61f9b7f01bef0::t_c5e257227b3b70 461
+tests/e2e/merge.test.ts
+  s_e61f9b7f01bef0::t_ddbbe120563527 12-14,42,67,362-520
+template/config.schema.json
+  s_e61f9b7f01bef0::t_2768dac2588184 107-124,161-163
+tests/unit/merge.test.ts
+  s_e61f9b7f01bef0::t_2305362bd0e70b 67,69,71,76,78
+  s_e61f9b7f01bef0::t_2917d7e023102a 2,65-66,68,70,72-75,77,79-83
+  s_e61f9b7f01bef0::t_170408d3d16e12 84
+tests/e2e/edges.test.ts
+  s_e61f9b7f01bef0::t_1dd1b6e8b5a7e5 826-913,969-970
+  s_e61f9b7f01bef0::t_e82da041d2c6c7 7-8,914-968
+plugin/skills/ralph-new/SKILL.md
+  s_e61f9b7f01bef0::t_f4860c420da992 47-50,158
+src/lib/config.ts
+  s_e61f9b7f01bef0::t_2768dac2588184 35-37,46,110-112,121,174-176,185
+src/lib/proc.ts
+  s_e61f9b7f01bef0::t_54f03f9b06e777 282-295
+  s_e61f9b7f01bef0::t_869dad554644c9 4
+  s_e61f9b7f01bef0::t_259df9f4beffb6 112-137
+  s_e61f9b7f01bef0::t_9eca1aade443bb 230-281,296-307
+  s_e61f9b7f01bef0::t_dd5d6ee85a7411 229,308-369
+  s_e61f9b7f01bef0::t_85909505516c7d 567-571,591,622,630,672
+tests/helpers/index.ts
+  s_e61f9b7f01bef0::t_153236ff5da86d 481-482,488-489
+src/loop/merge.ts
+  s_e61f9b7f01bef0::t_7e97a65acb8f6d 2-5,77-98
+  s_e61f9b7f01bef0::t_41d0f4d8151290 99
+src/loop/main.ts
+  s_e61f9b7f01bef0::t_153236ff5da86d 138-143,148,167,174-181,184-185
+README.md
+  s_e61f9b7f01bef0::t_7ff5801e1c6784 128-131
+  s_e61f9b7f01bef0::t_8b8a1b59f98f1a 206-207,252-254,284-287
+AGENTS.md
+  s_e61f9b7f01bef0::t_22a4be80b6cf09 161-166,202-211,270-274,290-300,333-334
+skills/ralph-new/SKILL.md
+  s_e61f9b7f01bef0::t_f4860c420da992 47-50,158
+.changeset/ci-feedback-chains-restart.md
+  s_e61f9b7f01bef0::t_b3907c28e369e8 1-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7fced90d0ff074637df3e5cfef2b978af3800089",
+  "prompts": {},
+  "sessions": {
+    "s_e61f9b7f01bef0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cfb733db-98e3-4ec7-aa69-1c77f9993b53",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
