@@ -54,6 +54,26 @@ export function lastNonBlank(lines: string[]): string {
   return "";
 }
 
+// A line that reports a failure, and a line that only counts none.
+const FAILURE = /error|fail|✗|✘|✖/i;
+const NONE = /(^|[^0-9])0 (errors?|failed|failures?|failing)\b/i;
+
+/**
+ * Why a command failed, from its output, as plain text. The last line of a
+ * build tool is its summary ("run failed: command exited (1)"), which names
+ * no task and no test, so the first line that reports a failure leads, with
+ * the summary after it when the two differ. With no such line, the last.
+ */
+export function failureLine(lines: string[]): string {
+  const last = lastNonBlank(lines);
+  for (const raw of lines) {
+    const line = plain(raw).trim();
+    if (!FAILURE.test(line) || NONE.test(line)) continue;
+    return line === last.trim() ? last : `${line} … ${last.trim()}`;
+  }
+  return last;
+}
+
 /** A fence line: up to three spaces, then three or more backticks or tildes. */
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 

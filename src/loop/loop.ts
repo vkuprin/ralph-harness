@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { hour, nowSec, stampMinutes } from "../lib/clock.ts";
 import { type Config, defaults, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
@@ -7,7 +7,7 @@ import type { Log } from "../lib/log.ts";
 import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
 import { hint, shq } from "../lib/shq.ts";
-import { chomp, headBytes, lastNonBlank, putSection, section, splitLines, stripEscapes, tailLines } from "../lib/text.ts";
+import { chomp, failureLine, headBytes, lastNonBlank, putSection, section, splitLines, stripEscapes, tailLines } from "../lib/text.ts";
 import { APPROVE_PLAN, CHILD_FILE, CLI_ENTRY, REFUSED, STEER_HOOK, refPrefix, sortRefs } from "../paths.ts";
 import { type Window, inWindow, parseHours } from "./active-hours.ts";
 import { addCost, addTokens, claudeText } from "./cost.ts";
@@ -142,6 +142,9 @@ export class Stop extends Error {
  */
 const JUDGING = ".judging";
 
+/** Where a failed VERIFY_CMD's output is kept, as <epoch>-<iteration>.out. */
+const VERIFY_KEPT = "verify-failed";
+
 interface Judging {
   before: string;
   after: string;
@@ -200,7 +203,9 @@ export class Loop {
   /** An interrupted iteration's commits that `run()` judges before anything else. */
   private resume: Judging | null = null;
   /** The last iteration's commits that VERIFY_CMD failed, for the next prompt. */
-  private verifyFailed: { before: string; after: string; tail: string } | null = null;
+  private verifyFailed: { before: string; after: string; tail: string; kept: string } | null = null;
+  /** Where keepVerify put the last failed VERIFY_CMD's output, or "". */
+  private verifyKept = "";
 
   constructor(
     readonly dir: string,
@@ -1123,7 +1128,8 @@ export class Loop {
     // Read now: a sync before the next iteration can run VERIFY_CMD again and
     // overwrite verify.out. Kept through an iteration that judged nothing (a
     // limit, a crash), so the retry still hears about it.
-    if (status === "revert:verify") this.verifyFailed = { before, after, tail: this.lastLines(this.p("verify.out")) };
+    if (status === "revert:verify")
+      this.verifyFailed = { before, after, tail: this.lastLines(this.p("verify.out")), kept: this.verifyKept };
     else if (!["ratelimit", "timeout", "error"].includes(status)) this.verifyFailed = null;
 
     if (status.startsWith("revert:")) {
@@ -1362,7 +1368,7 @@ export class Loop {
     if (this.healthState !== "fail") {
       this.healthSince = stampMinutes();
       this.log.line(`health: HEALTH_CMD ${this.healthWhy} — every prompt leads with it until it passes`);
-      await this.notify("health", `HEALTH_CMD ${this.healthWhy}: ${[...lastNonBlank(splitLines(this.read(out)))].slice(0, 300).join("")}`);
+      await this.notify("health", `HEALTH_CMD ${this.healthWhy}: ${[...failureLine(splitLines(this.read(out)))].slice(0, 300).join("")}`);
     }
     this.healthState = "fail";
     return false;
@@ -1564,6 +1570,7 @@ export class Loop {
     if (!f) return "";
     let s = "\n---\n\n# Harness: VERIFY_CMD failed on the last commits\n\n";
     s += `The harness ran \`${this.cfg.VERIFY_CMD}\` on them and reset them. Its last lines:\n\n\`\`\`\n${f.tail}\n\`\`\`\n`;
+    if (f.kept) s += `\nThe whole output is in ${f.kept}.\n`;
     s += `\nThe commits are kept: \`git cherry-pick ${f.before}..${f.after}\` brings them back, to fix what failed rather than write them again.\n`;
     return s;
   }
@@ -1666,9 +1673,30 @@ export class Loop {
     const r = await this.shell(c.VERIFY_TIMEOUT, c.VERIFY_CMD, { out });
     const text = this.read(out);
     this.log.raw(text);
+    if (!r.timedOut && r.rc === 0) return null;
+    this.keepVerify(text);
     if (r.timedOut) return `verify timed out after ${c.VERIFY_TIMEOUT}s`;
-    if (r.rc !== 0) return `verify exited ${r.rc}: ${lastNonBlank(splitLines(text))}`;
-    return null;
+    return `verify exited ${r.rc}: ${failureLine(splitLines(text))}`;
+  }
+
+  /**
+   * A failed VERIFY_CMD's output, kept under verify-failed/ beside the refs the
+   * gate keeps, because the next run overwrites verify.out and a sync can run
+   * it again before anyone looks. Bounded by REF_KEEP, as the refs are.
+   */
+  private keepVerify(text: string): void {
+    const dir = this.p(VERIFY_KEPT);
+    try {
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, `${nowSec()}-${this.iter}.out`);
+      writeFileSync(file, text);
+      this.verifyKept = file;
+      if (!(this.cfg.REF_KEEP >= 1)) return;
+      const kept = sortRefs(readdirSync(dir).filter((n) => n.endsWith(".out")));
+      for (const name of kept.slice(this.cfg.REF_KEEP)) rmSync(join(dir, name), { force: true });
+    } catch (e) {
+      this.log.line(`verify: could not keep its output under ${dir}: ${(e as Error).message}`);
+    }
   }
 
   /** A fresh, read-only claude judges the new commits since `before`. */

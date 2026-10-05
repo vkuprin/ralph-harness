@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { Fx, IS_WIN, count, join, read, rows, setup, sleeperGone, sq, statuses } from "../helpers/index.ts";
 
 const fx = new Fx("gates");
@@ -397,6 +397,43 @@ describe("a coloured VERIFY_CMD reaches every reader as plain text", () => {
     expect(prompt).toContain(why);
     expect(prompt).toContain("(fail) one\tthing");
     expect(prompt).not.toContain("\x1b");
+  });
+});
+
+describe("a failed VERIFY_CMD: the failing line leads the reason, and its output is kept", () => {
+  // A build tool's last line is its summary, which names no task. verify.out
+  // holds only the newest run, so the output that explained a revert was gone
+  // by the time anyone looked.
+  const app = fx.p("app-why");
+  const loop = fx.p("loops/why");
+  const why = "verify exited 1: web:test: FAIL src/a.test.ts … ERROR run failed: command exited (1)";
+  let S = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-why.git"));
+    S = fx.stub("stub-why", ["commit", "commit"]);
+    fx.makeLoop(loop, app, {
+      WORKTREE: true,
+      MAX_ITER: 2,
+      ESCALATE_AFTER: 3,
+      REF_KEEP: 1,
+      VERIFY_CMD: `printf 'lint: 0 errors\\nweb:test: FAIL src/a.test.ts\\nweb:test: expected 1\\n ERROR run failed: command exited (1)\\n'; exit 1`,
+    });
+    await fx.runLoop(loop, S);
+  });
+
+  test("results.tsv names the failing task, with the summary after it", () => {
+    expect(statuses(loop)).toBe("revert:verify revert:verify");
+    expect(rows(loop).map((r) => r[6])).toEqual([why, why]);
+  });
+  test("the output is kept under verify-failed/, bounded by REF_KEEP", () => {
+    const kept = readdirSync(join(loop, "verify-failed"));
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).toMatch(/^\d+-2\.out$/);
+    expect(read(join(loop, "verify-failed", kept[0]!))).toContain("web:test: expected 1");
+  });
+  test("the next prompt names the kept file", () => {
+    expect(read(join(S, "prompt.agent.2"))).toContain(join(loop, "verify-failed"));
   });
 });
 
