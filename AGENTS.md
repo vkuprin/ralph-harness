@@ -164,6 +164,11 @@ What stands in for what:
   not die with that job. It inherits only the handles it is given, through a
   handle list, never its starter's, whose pipes a shell tool waits on. A job
   that forbids breakaway gets the start without it, and `ralph start` says so.
+  The harness's own jobs (`enterJob`) allow breakaway, because NEXT_LOOP runs
+  `ralph start` as a bounded command: in a job that forbade it, the next loop
+  stayed in the finishing loop's jobs and was killed with it. A process killed
+  that way runs no handler and sends no `died`, so `ralph status` reads a
+  `ralph.pid` left behind as `died`.
 - The agent is `claude.exe`. An npm `claude.cmd` is refused at start
   (`claudeProblem`), because starting a batch file means cmd.exe reading the
   agent's arguments, which is the shell this file forbids.

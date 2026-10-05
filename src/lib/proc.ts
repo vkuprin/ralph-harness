@@ -100,11 +100,13 @@ function alive(pid: number): boolean {
 // A HANDLE is u64 and not ptr: Bun's FFI docs say a Windows HANDLE is not an
 // address, and ptr does not carry one as expected.
 const jobs = new Map<number, bigint>();
+const JOB_BREAKAWAY_OK = 0x800;
 let kernel32: ReturnType<typeof openKernel32> | null | undefined;
 
 function openKernel32() {
   return dlopen("kernel32.dll", {
     CreateJobObjectW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.u64 },
+    SetInformationJobObject: { args: [FFIType.u64, FFIType.i32, FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
     OpenProcess: { args: [FFIType.u32, FFIType.bool, FFIType.u32], returns: FFIType.u64 },
     AssignProcessToJobObject: { args: [FFIType.u64, FFIType.u64], returns: FFIType.bool },
     TerminateJobObject: { args: [FFIType.u64, FFIType.u32], returns: FFIType.bool },
@@ -149,12 +151,23 @@ function win32() {
   return kernel32;
 }
 
-/** Put a command just started into a job of its own. Without one, killTree is taskkill /T alone. */
+/**
+ * Put a command just started into a job of its own. Without one, killTree is
+ * taskkill /T alone. The job lets a process that asks for it leave
+ * (BREAKAWAY_OK), and only spawnDetached asks: a `ralph start` run as a
+ * bounded command, NEXT_LOOP's, otherwise left the next loop in this job and
+ * in the finishing loop's, and it died with that loop without a word. Nothing
+ * leaves silently, so killTree still ends everything else.
+ */
 function enterJob(pid: number): void {
   const k = IS_WIN ? win32() : null;
   if (!k) return;
   const job = k.CreateJobObjectW(null, null);
   if (!job) return;
+  // JOBOBJECT_EXTENDED_LIMIT_INFORMATION (class 9, 144 bytes); LimitFlags at 16.
+  const info = Buffer.alloc(144);
+  info.writeUInt32LE(JOB_BREAKAWAY_OK, 16);
+  k.SetInformationJobObject(job, 9, info, 144);
   // PROCESS_SET_QUOTA | PROCESS_TERMINATE, what AssignProcessToJobObject needs.
   const proc = k.OpenProcess(0x0101, false, pid);
   const ok = proc ? k.AssignProcessToJobObject(job, proc) : false;

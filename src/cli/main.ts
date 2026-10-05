@@ -245,9 +245,23 @@ function loopConf(dir: string): Conf {
   return { repo, worktree, branch: str("BRANCH", "main"), push, merge: bool(raw.PR_MERGE), work };
 }
 
+/**
+ * The PID in a ralph.pid that names no running loop, or 0. Every way a loop
+ * ends by itself, by `ralph stop` or by a signal it heard removes the file, so
+ * one left behind is a loop killed outright, which could send no `died`.
+ */
+function diedPid(dir: string): number {
+  const pid = Number.parseInt(read(join(dir, "ralph.pid")).trim(), 10);
+  return pid > 0 && !pidOf(dir) ? pid : 0;
+}
+
 function stateLine(dir: string): string {
   const pid = pidOf(dir);
-  if (!pid) return "\x1b[2mstopped\x1b[0m";
+  if (!pid) {
+    const stale = diedPid(dir);
+    if (stale) return `\x1b[31mdied\x1b[0m  PID ${stale} ended without stopping — see ralph.log`;
+    return "\x1b[2mstopped\x1b[0m";
+  }
   const up = upTimeSync(pid);
   return `\x1b[32mrunning\x1b[0m  PID ${pid}  up ${up}`;
 }
@@ -637,6 +651,9 @@ async function cmdStop(name?: string): Promise<void> {
     // bound it, ITER_TIMEOUT included. This said "not running" and left it
     // writing into the checkout until the next `ralph start`.
     const orphan = await reapOrphan(join(dir, CHILD_FILE));
+    // What `ralph status` read as died is acknowledged: a stop of a loop that
+    // is not running leaves it stopped.
+    rmSync(join(dir, "ralph.pid"), { force: true });
     if (orphan === null) die(`${name} is not running`);
     const said = `PID ${orphan}, which its last run left running when it died, was still running; stopped it and its process group`;
     // The file alone: Log.line writes to stdout too, which is the line below.
@@ -986,6 +1003,7 @@ function cmdHelp(): void {
     const flags: string[] = [];
     if (kind === "sh") flags.push("needs ralph migrate");
     if (pidOf(dir)) flags.push("running");
+    else if (diedPid(dir)) flags.push("died");
     else if (orphanSync(join(dir, CHILD_FILE)) !== null) flags.push("stopped, but left a process running");
     loops.push(`${d}${flags.length ? ` (${flags.join(", ")})` : ""}`);
   }

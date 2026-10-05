@@ -518,3 +518,33 @@ describe("NEXT_LOOP: a stage that merges starts the next one", () => {
     expect(read(join(self.loop, "ralph.log"))).toContain("a loop cannot be its own next stage");
   });
 });
+
+describe("NEXT_LOOP: the next loop outlives the loop that started it", () => {
+  // On Windows the next loop's `ralph start` ran as a bounded command, in a job
+  // that let nothing leave it, so the next loop stayed in the finishing loop's
+  // jobs and died with it: no `died`, a stale ralph.pid, "stopped".
+  const home = fx.p("loops");
+  const next = fx.p("loops/chain-wait");
+  let status = "";
+  let log = "";
+
+  setup(async () => {
+    fx.makeRepo(fx.p("app-chain-wait"), fx.p("remote-chain-wait.git"));
+    // Waits for an hour that is not now, so it is alive and idle when asked.
+    const h = new Date().getHours();
+    fx.makeLoop(next, fx.p("app-chain-wait"), { ACTIVE_HOURS: `${(h + 2) % 24}-${(h + 3) % 24}`, ACTIVE_POLL: 1 });
+    const a = await merging("chain-lead", { checks: [PASS], cfg: { NEXT_LOOP: "chain-wait" } });
+    expect(a.rc).toBe(0);
+    await Bun.sleep(3000);
+    status = fx.cli(home, ["status", "chain-wait"]).out;
+    log = read(join(next, "ralph.log"));
+    fx.cli(home, ["stop", "chain-wait"]);
+  });
+
+  test("it is still running after the stage that started it exited", () => {
+    expect(status).toContain("running");
+  });
+  test("it left every job it was started in", () => {
+    expect(log).not.toContain("keeps what it starts in a job");
+  });
+});
