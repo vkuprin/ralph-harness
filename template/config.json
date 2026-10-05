@@ -99,7 +99,16 @@
   // first. Nothing starts after `ralph stop`, which never merges, so stopping a
   // stage ends the chain there.
   // "NEXT_LOOP": "__NAME__-polish",
+  //
+  // Rounds with no set end: {n+1} counts from this loop's name, so a loop named
+  // polish-3 with "polish-{n+1}" starts polish-4. A next loop that is not there
+  // yet is made then, from this loop's config.json and PROMPT.md as they are, so
+  // it counts on until a stage is stopped. Leave WORKTREE_DIR empty for this:
+  // every stage gets a worktree of its own.
+  // "NEXT_LOOP": "polish-{n+1}",
   "NEXT_LOOP": "",
+  // The loop a next loop that is not there yet is made from, instead of this one.
+  "NEXT_FROM": "",
 
   // Your own check that BRANCH may move now, run in the work directory before
   // the harness pushes to BRANCH (PUSH true) or merges into it (PR_MERGE). When
@@ -281,7 +290,10 @@
   // "NOTIFY_CMD": "curl -sS -m 20 -X POST \"https://api.telegram.org/bot$TG_TOKEN/sendMessage\" -d chat_id=\"$TG_CHAT\" --data-urlencode text=\"ralph/$RALPH_LOOP $RALPH_EVENT: $RALPH_MESSAGE\" >/dev/null",
   "NOTIFY_CMD": "",
   // Seconds the notifier may take before its process group is killed. Seconds the
-  // machine was awake for, like every other timeout here.
+  // machine was awake for, like every other timeout here. Everything the notifier
+  // started goes with it, `nohup` and `&` included (on Windows, its job): what it
+  // leaves running when it exits by itself is left alone, but a notifier is no
+  // place to start long work. To start a next stage, use NEXT_LOOP.
   "NOTIFY_TIMEOUT": 30,
 
   // ---------------------------------------------------------------- memory

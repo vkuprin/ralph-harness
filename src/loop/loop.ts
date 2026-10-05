@@ -1,18 +1,19 @@
-import { accessSync, constants, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { hour, nowSec, stampMinutes } from "../lib/clock.ts";
-import { type Config, defaults, limitPattern, pushProblem, pushWord } from "../lib/config.ts";
+import { type Config, defaults, limitPattern, parseConfig, pushProblem, pushWord } from "../lib/config.ts";
 import { isCheckout, rewrite, sameDir } from "../lib/files.ts";
 import type { Log } from "../lib/log.ts";
 import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
 import { hint, shq } from "../lib/shq.ts";
-import { chomp, headBytes, lastNonBlank, putSection, section, splitLines, stripEscapes, tailLines } from "../lib/text.ts";
-import { APPROVE_PLAN, CHILD_FILE, CLI_ENTRY, REFUSED, STEER_HOOK, refPrefix, sortRefs } from "../paths.ts";
+import { chomp, failureLine, headBytes, lastNonBlank, putSection, section, splitLines, stripEscapes, tailLines } from "../lib/text.ts";
+import { APPROVE_PLAN, CHILD_FILE, CLI_ENTRY, REFUSED, STEER_HOOK, TEMPLATE, refPrefix, sortRefs } from "../paths.ts";
 import { type Window, inWindow, parseHours } from "./active-hours.ts";
 import { addCost, addTokens, claudeText } from "./cost.ts";
 import { resetAt, limitLine, type Reset } from "./limits.ts";
 import { type Checks, failedLog, readChecks } from "./merge.ts";
+import { counts, nextName } from "./next.ts";
 import { ARCHIVE_HEADER, capProgress, decisions, injectProgress } from "./progress.ts";
 
 // One loop over one repository. Every iteration is a NEW `claude -p` with an
@@ -142,6 +143,9 @@ export class Stop extends Error {
  */
 const JUDGING = ".judging";
 
+/** Where a failed VERIFY_CMD's output is kept, as <epoch>-<iteration>.out. */
+const VERIFY_KEPT = "verify-failed";
+
 interface Judging {
   before: string;
   after: string;
@@ -200,7 +204,9 @@ export class Loop {
   /** An interrupted iteration's commits that `run()` judges before anything else. */
   private resume: Judging | null = null;
   /** The last iteration's commits that VERIFY_CMD failed, for the next prompt. */
-  private verifyFailed: { before: string; after: string; tail: string } | null = null;
+  private verifyFailed: { before: string; after: string; tail: string; kept: string } | null = null;
+  /** Where keepVerify put the last failed VERIFY_CMD's output, or "". */
+  private verifyKept = "";
 
   constructor(
     readonly dir: string,
@@ -260,7 +266,15 @@ export class Loop {
   private bounded(
     secs: number,
     argv: string[],
-    opts: { stdin?: string; out: string; err?: string; env?: Record<string, string>; cwd?: string; afterFreeze?: boolean },
+    opts: {
+      stdin?: string;
+      out: string;
+      err?: string;
+      env?: Record<string, string>;
+      cwd?: string;
+      afterFreeze?: boolean;
+      breakaway?: boolean;
+    },
   ) {
     return runBounded(secs, argv, {
       ...opts,
@@ -312,7 +326,10 @@ export class Loop {
         RALPH_MESSAGE: headBytes(message.split("\0").join(" "), MESSAGE_MAX),
       },
     });
-    if (r.timedOut) this.log.line(`notify: ${event} timed out after ${secs}s and its process group was killed`);
+    if (r.timedOut)
+      this.log.line(
+        `notify: ${event} timed out after ${secs}s and its process group was killed, with everything it started — NEXT_LOOP, not the notifier, starts a next stage`,
+      );
     else if (r.rc !== 0) this.log.line(`notify: ${event} exited ${r.rc} (ignored; a notifier is not a gate)`);
   }
 
@@ -623,7 +640,7 @@ export class Loop {
       );
     }
     if (c.NEXT_LOOP) {
-      const next = this.nextProblem();
+      const next = await this.nextProblem();
       if (next) await this.refuse(`ralph: NEXT_LOOP ${JSON.stringify(c.NEXT_LOOP)}: ${next}`, REFUSED);
     }
     // The frozen-file check stops the loop when git cannot run it, which is
@@ -644,8 +661,24 @@ export class Loop {
     }
   }
 
+  /** The next loop's name, NEXT_LOOP's {n+1} counted, or "" when it gives none. */
+  private nextLoop(): string {
+    const n = nextName(this.cfg.NEXT_LOOP, this.name);
+    return "name" in n ? n.name : "";
+  }
+
   private nextDir(): string {
-    return join(dirname(this.dir), this.cfg.NEXT_LOOP);
+    return join(dirname(this.dir), this.nextLoop());
+  }
+
+  /** The loop a next loop that is not there yet is made from: NEXT_FROM, or this one. */
+  private nextFrom(): string {
+    return this.cfg.NEXT_FROM ? join(dirname(this.dir), this.cfg.NEXT_FROM) : this.dir;
+  }
+
+  /** The next loop is made at hand-over when it is not there: NEXT_LOOP counts, or NEXT_FROM says what from. */
+  private makesNext(): boolean {
+    return counts(this.cfg.NEXT_LOOP) || this.cfg.NEXT_FROM !== "";
   }
 
   /**
@@ -653,14 +686,34 @@ export class Loop {
    * merges, or "". Asked at start, so a chain with a broken link refuses its
    * first stage rather than finding out after the merge.
    */
-  private nextProblem(): string {
+  private async nextProblem(): Promise<string> {
     const c = this.cfg;
-    const n = c.NEXT_LOOP;
     if (!c.PR_MERGE) return "the next loop starts once this loop's pull request merges, so it needs PR_MERGE true";
-    if (n.includes("/") || n.includes("\\") || n === "." || n === "..") return `a loop is one directory in ${dirname(this.dir)}`;
+    const named = nextName(c.NEXT_LOOP, this.name);
+    if ("problem" in named) return named.problem;
+    const n = named.name;
+    const oneDir = (x: string) => !(x.includes("/") || x.includes("\\") || x === "." || x === "..");
+    if (!oneDir(n)) return `a loop is one directory in ${dirname(this.dir)}`;
     if (n === this.name) return "a loop cannot be its own next stage";
-    const gone = missingFile(this.nextDir(), "config.json", "PROMPT.md", "PROGRESS.md");
-    return gone ? `${join(this.nextDir(), gone)} is missing — scaffold the next loop before starting this one` : "";
+    // A loop that is there is started as it is.
+    if (existsSync(this.nextDir()) || !this.makesNext()) {
+      const gone = missingFile(this.nextDir(), "config.json", "PROMPT.md", "PROGRESS.md");
+      return gone ? `${join(this.nextDir(), gone)} is missing — scaffold the next loop before starting this one` : "";
+    }
+    // Made at hand-over, so judged now, as `ralph new` judges a name.
+    if (!(await this.gitOk(["check-ref-format", "--branch", `ralph/${n}`], { quiet: true }))) {
+      return `${n} is not a name git allows in the branch ralph/${n}`;
+    }
+    if (c.NEXT_FROM && !oneDir(c.NEXT_FROM)) return `NEXT_FROM names a loop, one directory in ${dirname(this.dir)}`;
+    const from = this.nextFrom();
+    const gone = missingFile(from, "config.json", "PROMPT.md");
+    if (gone) return `${join(from, gone)}, which the next loop is made from, is missing`;
+    const loaded = parseConfig(this.read(join(from, "config.json")), join(from, "config.json"), this.nextDir());
+    if (!loaded.ok) return loaded.error;
+    if (loaded.config.WORKTREE_DIR) {
+      return `every loop made from ${join(from, "config.json")} would share its WORKTREE_DIR, ${loaded.config.WORKTREE_DIR} — leave it empty, so each stage gets a worktree of its own`;
+    }
+    return "";
   }
 
   /**
@@ -1123,7 +1176,8 @@ export class Loop {
     // Read now: a sync before the next iteration can run VERIFY_CMD again and
     // overwrite verify.out. Kept through an iteration that judged nothing (a
     // limit, a crash), so the retry still hears about it.
-    if (status === "revert:verify") this.verifyFailed = { before, after, tail: this.lastLines(this.p("verify.out")) };
+    if (status === "revert:verify")
+      this.verifyFailed = { before, after, tail: this.lastLines(this.p("verify.out")), kept: this.verifyKept };
     else if (!["ratelimit", "timeout", "error"].includes(status)) this.verifyFailed = null;
 
     if (status.startsWith("revert:")) {
@@ -1362,7 +1416,7 @@ export class Loop {
     if (this.healthState !== "fail") {
       this.healthSince = stampMinutes();
       this.log.line(`health: HEALTH_CMD ${this.healthWhy} — every prompt leads with it until it passes`);
-      await this.notify("health", `HEALTH_CMD ${this.healthWhy}: ${[...lastNonBlank(splitLines(this.read(out)))].slice(0, 300).join("")}`);
+      await this.notify("health", `HEALTH_CMD ${this.healthWhy}: ${[...failureLine(splitLines(this.read(out)))].slice(0, 300).join("")}`);
     }
     this.healthState = "fail";
     return false;
@@ -1564,6 +1618,7 @@ export class Loop {
     if (!f) return "";
     let s = "\n---\n\n# Harness: VERIFY_CMD failed on the last commits\n\n";
     s += `The harness ran \`${this.cfg.VERIFY_CMD}\` on them and reset them. Its last lines:\n\n\`\`\`\n${f.tail}\n\`\`\`\n`;
+    if (f.kept) s += `\nThe whole output is in ${f.kept}.\n`;
     s += `\nThe commits are kept: \`git cherry-pick ${f.before}..${f.after}\` brings them back, to fix what failed rather than write them again.\n`;
     return s;
   }
@@ -1622,7 +1677,7 @@ export class Loop {
           : `and a human merges its pull request into ${c.BRANCH}`;
         s += `Commit your work, but do not push: the harness checks each commit, pushes the ones it keeps to ralph/${this.name}, ${merges}. A rejected commit is reset, and the verdict shows up above next time.\n`;
         if (c.NEXT_LOOP) {
-          s += `\nWhen that pull request merges, the harness starts the loop ${c.NEXT_LOOP}, the next stage of this job. Keep a "## Carry forward" section in PROGRESS.md with what that stage needs to know from this one; the harness copies it into that loop's PROGRESS.md.\n`;
+          s += `\nWhen that pull request merges, the harness starts the loop ${this.nextLoop()}, the next stage of this job. Keep a "## Carry forward" section in PROGRESS.md with what that stage needs to know from this one; the harness copies it into that loop's PROGRESS.md.\n`;
         }
       } else {
         s += `Commit your work, but do not push. A human merges ralph/${this.name}.\n`;
@@ -1666,9 +1721,30 @@ export class Loop {
     const r = await this.shell(c.VERIFY_TIMEOUT, c.VERIFY_CMD, { out });
     const text = this.read(out);
     this.log.raw(text);
+    if (!r.timedOut && r.rc === 0) return null;
+    this.keepVerify(text);
     if (r.timedOut) return `verify timed out after ${c.VERIFY_TIMEOUT}s`;
-    if (r.rc !== 0) return `verify exited ${r.rc}: ${lastNonBlank(splitLines(text))}`;
-    return null;
+    return `verify exited ${r.rc}: ${failureLine(splitLines(text))}`;
+  }
+
+  /**
+   * A failed VERIFY_CMD's output, kept under verify-failed/ beside the refs the
+   * gate keeps, because the next run overwrites verify.out and a sync can run
+   * it again before anyone looks. Bounded by REF_KEEP, as the refs are.
+   */
+  private keepVerify(text: string): void {
+    const dir = this.p(VERIFY_KEPT);
+    try {
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, `${nowSec()}-${this.iter}.out`);
+      writeFileSync(file, text);
+      this.verifyKept = file;
+      if (!(this.cfg.REF_KEEP >= 1)) return;
+      const kept = sortRefs(readdirSync(dir).filter((n) => n.endsWith(".out")));
+      for (const name of kept.slice(this.cfg.REF_KEEP)) rmSync(join(dir, name), { force: true });
+    } catch (e) {
+      this.log.line(`verify: could not keep its output under ${dir}: ${(e as Error).message}`);
+    }
   }
 
   /** A fresh, read-only claude judges the new commits since `before`. */
@@ -2298,9 +2374,13 @@ VERDICT: REJECT: <one sentence saying why>
    * a signal never merges, so `ralph stop` on a stage ends the chain there.
    */
   private async startNext(): Promise<void> {
-    const next = this.cfg.NEXT_LOOP;
+    const next = this.nextLoop();
     if (!next) return;
     const dir = this.nextDir();
+    if (!existsSync(dir) && this.makesNext()) {
+      const why = this.makeNext(dir);
+      if (why) return this.nextFailed(why);
+    }
     const gone = missingFile(dir, "config.json", "PROMPT.md", "PROGRESS.md");
     if (gone) return this.nextFailed(`${join(dir, gone)} is gone or unreadable`);
     const carry = section(this.read(this.p("PROGRESS.md")), "## Carry forward");
@@ -2316,7 +2396,11 @@ VERDICT: REJECT: <one sentence saying why>
     writeFileSync(out, "");
     // RALPH_HOME is where this loop lives, so `ralph start` finds the next one
     // beside it whatever this process was started with.
-    const r = await this.bounded(300, [process.execPath, CLI_ENTRY, "start", next], { out, env: { RALPH_HOME: dirname(this.dir) } });
+    const r = await this.bounded(300, [process.execPath, CLI_ENTRY, "start", next], {
+      out,
+      env: { RALPH_HOME: dirname(this.dir) },
+      breakaway: true,
+    });
     const said = stripEscapes(this.read(out));
     this.log.raw(said);
     if (r.timedOut || r.rc !== 0) {
@@ -2328,8 +2412,32 @@ VERDICT: REJECT: <one sentence saying why>
     await this.notify("next", `the pull request merged; started the next loop, ${next}`);
   }
 
+  /**
+   * Make the next loop, which is not there yet: config.json and PROMPT.md as
+   * the NEXT_FROM loop's (this one's, by default) are, so a NEXT_LOOP that
+   * counts goes on counting, and a fresh PROGRESS.md. The config is read back
+   * before anything is written, as `ralph new` reads back the one it writes.
+   * Why it could not, or "".
+   */
+  private makeNext(dir: string): string {
+    const from = this.nextFrom();
+    const config = this.read(join(from, "config.json"));
+    const loaded = parseConfig(config, join(from, "config.json"), dir);
+    if (!loaded.ok) return loaded.error;
+    try {
+      mkdirSync(dir);
+      writeFileSync(join(dir, "config.json"), config);
+      writeFileSync(join(dir, "PROMPT.md"), this.read(join(from, "PROMPT.md")));
+      writeFileSync(join(dir, "PROGRESS.md"), this.read(join(TEMPLATE, "PROGRESS.md")));
+    } catch (e) {
+      return `could not make ${dir}: ${e instanceof Error ? e.message : String(e)}`;
+    }
+    this.log.line(`NEXT_LOOP: made ${basename(dir)} from ${from}`);
+    return "";
+  }
+
   private async nextFailed(why: string): Promise<void> {
-    const message = `the pull request merged, but the next loop ${this.cfg.NEXT_LOOP} did not start: ${why}`;
+    const message = `the pull request merged, but the next loop ${this.nextLoop()} did not start: ${why}`;
     this.log.line(`NEXT_LOOP: ${message}`);
     await this.notify("next-failed", message);
   }

@@ -32,14 +32,17 @@ import {
   reapOrphan,
   shellCommand,
   spawnDetached,
+  startOutOfJob,
   upTimeSync,
 } from "../lib/proc.ts";
 import {
   CHILD_FILE,
+  CLI_ENTRY,
   HARNESS,
   LEGACY_REFS,
   LOOP_ENTRY,
   LOOP_MARK,
+  RELAUNCH_ENTRY,
   STARTED_FILE,
   STOP_FILE,
   TEMPLATE,
@@ -73,7 +76,10 @@ Commands
                                  --set writes a setting into its config.json:
                                  VALUE as JSON (true, 3, "pr", ["a"]), or as a
                                  plain string when it is not JSON
-  ralph start <name>             run it in the background
+  ralph start <name> [--in-job]  run it in the background. On Windows, from a
+                                 shell whose job lets nothing leave it (an
+                                 agent's), it starts the loop outside the job
+                                 through WMI; --in-job leaves it in the job
   ralph stop <name>              stop the loop and the agent inside it
   ralph status [name]            what is running, how long, how far
   ralph review <name> [n]        what the loop shipped, reverted, and has waiting to merge
@@ -245,9 +251,23 @@ function loopConf(dir: string): Conf {
   return { repo, worktree, branch: str("BRANCH", "main"), push, merge: bool(raw.PR_MERGE), work };
 }
 
+/**
+ * The PID in a ralph.pid that names no running loop, or 0. Every way a loop
+ * ends by itself, by `ralph stop` or by a signal it heard removes the file, so
+ * one left behind is a loop killed outright, which could send no `died`.
+ */
+function diedPid(dir: string): number {
+  const pid = Number.parseInt(read(join(dir, "ralph.pid")).trim(), 10);
+  return pid > 0 && !pidOf(dir) ? pid : 0;
+}
+
 function stateLine(dir: string): string {
   const pid = pidOf(dir);
-  if (!pid) return "\x1b[2mstopped\x1b[0m";
+  if (!pid) {
+    const stale = diedPid(dir);
+    if (stale) return `\x1b[31mdied\x1b[0m  PID ${stale} ended without stopping — see ralph.log`;
+    return "\x1b[2mstopped\x1b[0m";
+  }
   const up = upTimeSync(pid);
   return `\x1b[32mrunning\x1b[0m  PID ${pid}  up ${up}`;
 }
@@ -579,23 +599,77 @@ function notStarted(dir: string, name: string, pid: number, from: number): never
   die(`${name} did not start:${said.join("") || ` see ${join(dir, "ralph.log")}`}`);
 }
 
-async function cmdStart(name?: string): Promise<void> {
+// In the environment of a `ralph start` run through WMI: it is one, and does
+// not try WMI again.
+const RELAUNCHED = "RALPH_RELAUNCHED";
+
+/**
+ * Run this `ralph start` again through WMI, outside every job of the shell
+ * that ran it, wait for it, and pass on what it printed and its exit status.
+ * False, having started nothing, when WMI would not start it.
+ */
+async function relaunch(dir: string, name: string, log: Log): Promise<boolean> {
+  const envFile = join(dir, "ralph.start-env");
+  const outFile = join(dir, "ralph.start-out");
+  const rcFile = `${outFile}.rc`;
+  rmSync(rcFile, { force: true });
+  // WMI starts it with the service's environment. This one holds what the loop
+  // needs (PATH, RALPH_HOME, tokens), so the file is the owner's alone, and
+  // gone as soon as the relaunched start has read it.
+  writeFileSync(envFile, JSON.stringify({ ...process.env, [RELAUNCHED]: "1" }), { mode: 0o600 });
+  const pid = startOutOfJob(
+    [process.execPath, RELAUNCH_ENTRY, envFile, outFile, process.execPath, CLI_ENTRY, "start", name],
+    process.cwd(),
+  );
+  if (pid === null) {
+    rmSync(envFile, { force: true });
+    return false;
+  }
+  log.line(
+    "ralph start: the shell that ran ralph start keeps what it starts in a job that does not let a process leave it; starting the loop outside it, through WMI",
+  );
+  const limit = (BOOT_WAIT * 2 * BOOT_TRIES + 60) * 10;
+  for (let waited = 0; waited < limit && !existsSync(rcFile) && alive(pid); waited++) await Bun.sleep(100);
+  if (!existsSync(rcFile)) {
+    rmSync(envFile, { force: true });
+    die(`the ralph start run through WMI (PID ${pid}) did not finish — see ${join(dir, "ralph.log")}`);
+  }
+  out(read(outFile));
+  const rc = Number.parseInt(read(rcFile).trim(), 10);
+  rmSync(outFile, { force: true });
+  rmSync(rcFile, { force: true });
+  process.exit(Number.isFinite(rc) ? rc : 1);
+}
+
+async function cmdStart(args: string[]): Promise<void> {
+  // --in-job: a loop started from a shell that keeps it in a job ends with that
+  // job, rather than being started outside it through WMI.
+  const pinned = args.includes("--in-job") || process.env[RELAUNCHED] === "1";
+  const name = args.find((a) => a !== "--in-job");
   const dir = loopDir(name);
   if (!isDir(dir)) die(`no such loop: ${name}`);
   if (loopKind(dir) === "sh") die(`${name} keeps its settings in config.sh — convert them first: ${hint("ralph", "migrate", name!)}`);
   const running = pidOf(dir);
   if (running) die(`already running as PID ${running}`);
   const log = new Log(join(dir, "ralph.log"));
+  let stayInJob = pinned;
   for (let attempt = 1; ; attempt++) {
     const from = log.size();
     // Not stdout: every line the loop logs goes there too, for a loop run by
     // hand in a terminal, and here that made ralph.out a second ralph.log that
     // nothing rotates. stderr is what bun says on its own, a crash, in no log.
-    const { pid, exited, inJob } = spawnDetached([process.execPath, LOOP_ENTRY, dir], join(dir, "ralph.out"));
+    const { pid, exited, inJob } = spawnDetached([process.execPath, LOOP_ENTRY, dir], join(dir, "ralph.out"), stayInJob);
+    if (pid === 0 && inJob) {
+      // Nothing started: in the job, the loop would end with the shell's.
+      if (!(await relaunch(dir, name!, log))) stayInJob = true;
+      attempt--;
+      continue;
+    }
     writeFileSync(join(dir, "ralph.pid"), `${pid}\n`);
     if (inJob && attempt === 1) {
-      const why =
-        "the shell that ran ralph start keeps what it starts in a job that does not let a process leave it, so the loop ends when that job does — start it from a terminal of its own to keep it running";
+      const why = pinned
+        ? "the shell that ran ralph start keeps what it starts in a job that does not let a process leave it, so the loop ends when that job does"
+        : "the shell that ran ralph start keeps what it starts in a job that does not let a process leave it, and WMI would not start it outside, so the loop ends when that job does — start it from a terminal of its own to keep it running";
       log.line(`ralph start: ${why}`);
       dim(`  ${why}`);
     }
@@ -637,6 +711,9 @@ async function cmdStop(name?: string): Promise<void> {
     // bound it, ITER_TIMEOUT included. This said "not running" and left it
     // writing into the checkout until the next `ralph start`.
     const orphan = await reapOrphan(join(dir, CHILD_FILE));
+    // What `ralph status` read as died is acknowledged: a stop of a loop that
+    // is not running leaves it stopped.
+    rmSync(join(dir, "ralph.pid"), { force: true });
     if (orphan === null) die(`${name} is not running`);
     const said = `PID ${orphan}, which its last run left running when it died, was still running; stopped it and its process group`;
     // The file alone: Log.line writes to stdout too, which is the line below.
@@ -986,6 +1063,7 @@ function cmdHelp(): void {
     const flags: string[] = [];
     if (kind === "sh") flags.push("needs ralph migrate");
     if (pidOf(dir)) flags.push("running");
+    else if (diedPid(dir)) flags.push("died");
     else if (orphanSync(join(dir, CHILD_FILE)) !== null) flags.push("stopped, but left a process running");
     loops.push(`${d}${flags.length ? ` (${flags.join(", ")})` : ""}`);
   }
@@ -1005,7 +1083,7 @@ switch (cmd) {
     cmdMigrate(args[0]);
     break;
   case "start":
-    await cmdStart(args[0]);
+    await cmdStart(args);
     break;
   case "stop":
     await cmdStop(args[0]);

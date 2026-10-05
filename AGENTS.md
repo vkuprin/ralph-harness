@@ -8,7 +8,7 @@ is one class on purpose, so an iteration reads in order.
 
 - `src/loop/main.ts`: the loop process, one per loop directory — the lock, the
   config, signals. `src/loop/loop.ts`: the iteration, the gates, sync.
-- `src/loop/{cost,limits,progress,active-hours,merge}.ts`: pure pieces with unit tests.
+- `src/loop/{cost,limits,progress,active-hours,merge,next}.ts`: pure pieces with unit tests.
 - `src/lib/`: `proc` (bounded runs, process groups, the freeze on a signal),
   `clock` (the one test seam into time), `config`, `files` (rewriting a file a
   human owns, through its symlink; whether two paths are one directory), `log`,
@@ -162,8 +162,20 @@ What stands in for what:
   CREATE_BREAKAWAY_FROM_JOB, which node and bun leave out, so a loop started
   from a shell that keeps its processes in a job (an agent's shell tool) does
   not die with that job. It inherits only the handles it is given, through a
-  handle list, never its starter's, whose pipes a shell tool waits on. A job
-  that forbids breakaway gets the start without it, and `ralph start` says so.
+  handle list, never its starter's, whose pipes a shell tool waits on. From a
+  job that forbids breakaway, `ralph start` runs itself again through WMI
+  (`startOutOfJob`, `src/cli/relaunch.ts`): a process WMI starts is outside the
+  caller's jobs, with the service's environment, so the caller's goes across in
+  a file the relaunched start reads and removes first. `--in-job`, or WMI
+  refusing, gets the start in the job, and `ralph start` says the loop ends
+  with it.
+  NEXT_LOOP runs `ralph start` as a bounded command whose job allows breakaway
+  (`breakaway` in `runBounded`): in a job that forbade it, the next loop stayed
+  in the finishing loop's jobs and was killed with it. Only that command: Git
+  Bash asks for breakaway whenever a job allows it, so in any other job a `&`
+  in a `*_CMD` outlives the kill at its timeout. A process killed
+  that way runs no handler and sends no `died`, so `ralph status` reads a
+  `ralph.pid` left behind as `died`.
 - The agent is `claude.exe`. An npm `claude.cmd` is refused at start
   (`claudeProblem`), because starting a batch file means cmd.exe reading the
   agent's arguments, which is the shell this file forbids.
@@ -293,7 +305,12 @@ What stands in for what:
   so a round that runs none cannot repeat for ever; `merge-blocked` once spent.
   The one `stopped` notification still comes once, after the last round. Only
   after a merge the harness made does `NEXT_LOOP` start, through `ralph start`,
-  so a signal, which never merges, ends a chain of stages too.
+  so a signal, which never merges, ends a chain of stages too. A `NEXT_LOOP`
+  holding `{n+1}`, or a `NEXT_FROM`, makes a next loop that is not there, at
+  hand-over: its config.json and PROMPT.md copied as they are, so the copy
+  counts on; it is judged at start like one that exists (the name by `git
+  check-ref-format`, the source config through `parseConfig`, and no shared
+  `WORKTREE_DIR`).
 - CI is read, not waited for. With `CI_FEEDBACK` (or `PR_FIX_ITERS`) the checks
   on the head the harness pushed are read before each iteration; a failure leads
   the prompt and keeps DONE_CMD from being asked, as HEALTH_CMD's does. Checks

@@ -122,6 +122,9 @@
     "NEXT_LOOP": {
       "type": "string"
     },
+    "NEXT_FROM": {
+      "type": "string"
+    },
     "SETUP_CMD": {
       "type": "string"
     },

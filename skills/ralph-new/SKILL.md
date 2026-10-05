@@ -47,7 +47,10 @@ for every `ralph` command below. If neither exists, tell the user to install ral
   new loop. With `PR_MERGE`, offer to chain them: scaffold every stage now, each
   with `NEXT_LOOP` naming the one after it (the last with none), and start only the
   first. Each starts when the one before it merges, with that loop's
-  `## Carry forward` section copied into its PROGRESS.md.
+  `## Carry forward` section copied into its PROGRESS.md. For rounds with no
+  set end (polish round 1, 2, 3, ...), name the loop `<name>-1` and set
+  `NEXT_LOOP=<name>-{n+1}`: each round makes the next from its own config.json
+  and PROMPT.md when it merges, until a human stops one.
 
 ## 3. Look before asking (read-only)
 
@@ -156,6 +159,7 @@ whatever deploys it.
 | Reviewer off | `REVIEW=false` |
 | A done check | `DONE_CMD=<command>` |
 | The next stage starts after the merge | `NEXT_LOOP=<name>-<next stage>` (needs `PR_MERGE=true`) |
+| Rounds that go on until stopped | loop named `<name>-1`, `NEXT_LOOP=<name>-{n+1}` (needs `PR_MERGE=true`) |
 | Nothing shipped N times | `QUIET_STOP=<N>` |
 | After N iterations | `MAX_ITER=<N>` |
 | Model | `MODEL=opus\|sonnet` |

@@ -100,11 +100,13 @@ function alive(pid: number): boolean {
 // A HANDLE is u64 and not ptr: Bun's FFI docs say a Windows HANDLE is not an
 // address, and ptr does not carry one as expected.
 const jobs = new Map<number, bigint>();
+const JOB_BREAKAWAY_OK = 0x800;
 let kernel32: ReturnType<typeof openKernel32> | null | undefined;
 
 function openKernel32() {
   return dlopen("kernel32.dll", {
     CreateJobObjectW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.u64 },
+    SetInformationJobObject: { args: [FFIType.u64, FFIType.i32, FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
     OpenProcess: { args: [FFIType.u32, FFIType.bool, FFIType.u32], returns: FFIType.u64 },
     AssignProcessToJobObject: { args: [FFIType.u64, FFIType.u64], returns: FFIType.bool },
     TerminateJobObject: { args: [FFIType.u64, FFIType.u32], returns: FFIType.bool },
@@ -149,12 +151,25 @@ function win32() {
   return kernel32;
 }
 
-/** Put a command just started into a job of its own. Without one, killTree is taskkill /T alone. */
-function enterJob(pid: number): void {
+/**
+ * Put a command just started into a job of its own. Without one, killTree is
+ * taskkill /T alone. With `breakaway` the job lets a process that asks leave
+ * it (BREAKAWAY_OK): NEXT_LOOP's `ralph start`, whose loop otherwise stayed
+ * in this job and the finishing loop's and died with that loop without a word.
+ * Every other job forbids it, because Git Bash asks for breakaway whenever a
+ * job allows it, and a `&` in a *_CMD then outlived the kill at its timeout.
+ */
+function enterJob(pid: number, breakaway: boolean): void {
   const k = IS_WIN ? win32() : null;
   if (!k) return;
   const job = k.CreateJobObjectW(null, null);
   if (!job) return;
+  if (breakaway) {
+    // JOBOBJECT_EXTENDED_LIMIT_INFORMATION (class 9, 144 bytes); LimitFlags at 16.
+    const info = Buffer.alloc(144);
+    info.writeUInt32LE(JOB_BREAKAWAY_OK, 16);
+    k.SetInformationJobObject(job, 9, info, 144);
+  }
   // PROCESS_SET_QUOTA | PROCESS_TERMINATE, what AssignProcessToJobObject needs.
   const proc = k.OpenProcess(0x0101, false, pid);
   const ok = proc ? k.AssignProcessToJobObject(job, proc) : false;
@@ -276,15 +291,17 @@ export interface Detached {
  * group of its own, with a console that has no window, and inheriting only
  * the handles given here and none of its starter's, whose pipes a shell tool
  * waits on. A job that forbids breakaway gets the start without it, said in
- * `inJob`.
+ * `inJob`; with `stayInJob` false it gets no start at all, `pid` 0, so the
+ * caller can start it some other way (startOutOfJob).
  */
-export function spawnDetached(argv: string[], errFile: string): Detached {
+export function spawnDetached(argv: string[], errFile: string, stayInJob = true): Detached {
   const k = IS_WIN ? win32() : null;
   if (k) {
     try {
       let pid = createDetached(k, argv, errFile, true);
       let inJob = false;
       if (pid === null) {
+        if (!stayInJob) return { pid: 0, exited: () => true, inJob: true };
         pid = createDetached(k, argv, errFile, false);
         inJob = pid !== null;
       }
@@ -470,8 +487,35 @@ const CIM =
   '$p = Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$env:RALPH_PID)"; ' +
   'if ($p) { [Console]::Out.Write([string][int64](([DateTimeOffset]$p.CreationDate).ToUnixTimeSeconds()) + "`n" + $p.CommandLine) }';
 
-function cimArgv(): string[] {
-  return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", CIM];
+function cimArgv(script = CIM): string[] {
+  return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script];
+}
+
+// Win32_Process.Create starts the process from the WMI service, outside every
+// job its caller is in. DETACHED_PROCESS (8): no console, so no window opens on
+// the desktop; WMI refuses CREATE_NO_WINDOW. The command line and directory
+// come in the environment, never in the script.
+const CIM_CREATE =
+  "$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0; CreateFlags=[uint32]8}; " +
+  "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$env:RALPH_CMDLINE; CurrentDirectory=$env:RALPH_CWD; ProcessStartupInformation=$si}; " +
+  "if ($r.ReturnValue -eq 0) { [Console]::Out.Write([string]$r.ProcessId) }";
+
+/**
+ * Start `argv` on Windows outside every job of this process, through WMI, and
+ * return its PID, or null when WMI would not. The process gets the WMI
+ * service's environment, not this one's: pass what it needs some other way.
+ */
+export function startOutOfJob(argv: string[], cwd: string): number | null {
+  if (!IS_WIN) return null;
+  const [cmd, ...args] = cimArgv(CIM_CREATE);
+  const r = spawnSync(cmd!, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    env: { ...process.env, RALPH_CMDLINE: winQuote(argv), RALPH_CWD: cwd },
+    windowsHide: true,
+  });
+  const pid = Number.parseInt((r.stdout ?? "").trim(), 10);
+  return pid > 0 ? pid : null;
 }
 
 function cimSplit(text: string): { started: number; command: string } | null {
@@ -569,6 +613,8 @@ export interface BoundedOptions {
    * which runs once the loop is parked and nothing it returns reaches a gate.
    */
   afterFreeze?: boolean;
+  /** Windows: let the command take a process out of its job (enterJob). Only NEXT_LOOP's `ralph start`. */
+  breakaway?: boolean;
 }
 
 /**
@@ -629,7 +675,7 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
     await drained(child, pumps);
     return give({ rc, timedOut: false });
   }
-  enterJob(pid);
+  enterJob(pid, opts.breakaway === true);
   current = { pid, done };
   // The wall clock, which is what ps's etime is read against, and not the
   // loop's clock. A mark that cannot be written costs only the cleanup after a

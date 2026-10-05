@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { inFence, isHeading, lastNonBlank, plain, putSection, section, stripEscapes } from "../../src/lib/text.ts";
+import { failureLine, inFence, isHeading, lastNonBlank, plain, putSection, section, stripEscapes } from "../../src/lib/text.ts";
 
 const ESC = "\x1b";
 
@@ -44,6 +44,24 @@ describe("lastNonBlank", () => {
   test("nothing at all", () => {
     expect(lastNonBlank([])).toBe("");
     expect(lastNonBlank([`${ESC}[0m`, "\t"])).toBe("");
+  });
+});
+
+describe("failureLine", () => {
+  test("the first line that reports a failure leads, the summary after it", () => {
+    expect(failureLine(["web:test: FAIL a.test.ts", "more", " ERROR run failed: exited (1)"])).toBe(
+      "web:test: FAIL a.test.ts … ERROR run failed: exited (1)",
+    );
+  });
+  test("a count of none is not a failure", () => {
+    expect(failureLine(["lint: 0 errors", "tests: 0 failed", "x: error here", "done"])).toBe("x: error here … done");
+  });
+  test("the failing line is the last: said once", () => {
+    expect(failureLine(["ok", `${ESC}[31m(fail) one	thing${ESC}[0m`, "  "])).toBe("(fail) one thing");
+  });
+  test("no failing line: the last line, as lastNonBlank", () => {
+    expect(failureLine(["ok", "exit 3"])).toBe("exit 3");
+    expect(failureLine([])).toBe("");
   });
 });
 

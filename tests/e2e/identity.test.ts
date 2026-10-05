@@ -24,6 +24,7 @@ describe("a PID is not an identity: ralph.pid and ralph.lock left by a dead loop
   let stopRc = 0;
   let pidStrangerAlive = false;
   let otherStatus = "";
+  let staleAfter = "";
   let lockStrangerAlive = false;
 
   setup(async () => {
@@ -36,6 +37,7 @@ describe("a PID is not an identity: ralph.pid and ralph.lock left by a dead loop
       writeFileSync(join(stale, "ralph.pid"), `${bystander.pid}\n`);
       staleStatus = fx.cli(home, ["status", "stale"]).out;
       stopRc = fx.cli(home, ["stop", "stale"]).code;
+      staleAfter = fx.cli(home, ["status", "stale"]).out;
       pidStrangerAlive = alive(bystander.pid);
     } finally {
       bystander.kill();
@@ -67,10 +69,13 @@ describe("a PID is not an identity: ralph.pid and ralph.lock left by a dead loop
   });
 
   test("status does not call a recycled PID a running loop", () => {
-    expect(staleStatus).toContain("stopped");
+    // A ralph.pid left behind is a loop killed outright, so it says died.
+    expect(staleStatus).toContain("died");
+    expect(staleStatus).not.toContain("running");
   });
-  test("stop says the loop is not running", () => {
+  test("stop says the loop is not running, and status then says stopped", () => {
     expect(stopRc).not.toBe(0);
+    expect(staleAfter).toContain("stopped");
   });
   test("stop leaves the stranger who now owns that PID alone", () => {
     expect(pidStrangerAlive).toBe(true);

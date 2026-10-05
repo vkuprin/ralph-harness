@@ -35,6 +35,7 @@ export interface Config {
   CI_FEEDBACK: boolean;
   PR_FIX_ITERS: number;
   NEXT_LOOP: string;
+  NEXT_FROM: string;
   SETUP_CMD: string;
   ITER_TIMEOUT: number;
   VERIFY_CMD: string;
@@ -110,6 +111,7 @@ export function defaults(dir: string): Config {
     CI_FEEDBACK: false,
     PR_FIX_ITERS: 0,
     NEXT_LOOP: "",
+    NEXT_FROM: "",
     SETUP_CMD: "",
     ITER_TIMEOUT: 7200,
     VERIFY_CMD: "",
@@ -174,6 +176,7 @@ const KINDS: Record<keyof Config, Kind> = {
   CI_FEEDBACK: "bool",
   PR_FIX_ITERS: "int",
   NEXT_LOOP: "string",
+  NEXT_FROM: "string",
   SETUP_CMD: "string",
   ITER_TIMEOUT: "int",
   VERIFY_CMD: "string",
