@@ -153,21 +153,23 @@ function win32() {
 
 /**
  * Put a command just started into a job of its own. Without one, killTree is
- * taskkill /T alone. The job lets a process that asks for it leave
- * (BREAKAWAY_OK), and only spawnDetached asks: a `ralph start` run as a
- * bounded command, NEXT_LOOP's, otherwise left the next loop in this job and
- * in the finishing loop's, and it died with that loop without a word. Nothing
- * leaves silently, so killTree still ends everything else.
+ * taskkill /T alone. With `breakaway` the job lets a process that asks leave
+ * it (BREAKAWAY_OK): NEXT_LOOP's `ralph start`, whose loop otherwise stayed
+ * in this job and the finishing loop's and died with that loop without a word.
+ * Every other job forbids it, because Git Bash asks for breakaway whenever a
+ * job allows it, and a `&` in a *_CMD then outlived the kill at its timeout.
  */
-function enterJob(pid: number): void {
+function enterJob(pid: number, breakaway: boolean): void {
   const k = IS_WIN ? win32() : null;
   if (!k) return;
   const job = k.CreateJobObjectW(null, null);
   if (!job) return;
-  // JOBOBJECT_EXTENDED_LIMIT_INFORMATION (class 9, 144 bytes); LimitFlags at 16.
-  const info = Buffer.alloc(144);
-  info.writeUInt32LE(JOB_BREAKAWAY_OK, 16);
-  k.SetInformationJobObject(job, 9, info, 144);
+  if (breakaway) {
+    // JOBOBJECT_EXTENDED_LIMIT_INFORMATION (class 9, 144 bytes); LimitFlags at 16.
+    const info = Buffer.alloc(144);
+    info.writeUInt32LE(JOB_BREAKAWAY_OK, 16);
+    k.SetInformationJobObject(job, 9, info, 144);
+  }
   // PROCESS_SET_QUOTA | PROCESS_TERMINATE, what AssignProcessToJobObject needs.
   const proc = k.OpenProcess(0x0101, false, pid);
   const ok = proc ? k.AssignProcessToJobObject(job, proc) : false;
@@ -611,6 +613,8 @@ export interface BoundedOptions {
    * which runs once the loop is parked and nothing it returns reaches a gate.
    */
   afterFreeze?: boolean;
+  /** Windows: let the command take a process out of its job (enterJob). Only NEXT_LOOP's `ralph start`. */
+  breakaway?: boolean;
 }
 
 /**
@@ -671,7 +675,7 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
     await drained(child, pumps);
     return give({ rc, timedOut: false });
   }
-  enterJob(pid);
+  enterJob(pid, opts.breakaway === true);
   current = { pid, done };
   // The wall clock, which is what ps's etime is read against, and not the
   // loop's clock. A mark that cannot be written costs only the cleanup after a

@@ -251,7 +251,8 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | `PR_MERGE_POLL` | `30` | seconds between two looks at the checks |
 | `CI_FEEDBACK` | `true` | with `"pr"`, read the checks on the pushed head before every iteration; a failure (check, step, log tail) leads the next prompt and keeps `DONE_CMD` from being asked |
 | `PR_FIX_ITERS` | `5` | with `PR_MERGE`, iterations the loop may run after its checks fail at the end, to fix them; `0` blocks the merge at once |
-| `NEXT_LOOP` | `""` | with `PR_MERGE`, a loop to start once the pull request merges, with this loop's `## Carry forward` section copied into its `PROGRESS.md` |
+| `NEXT_LOOP` | `""` | with `PR_MERGE`, a loop to start once the pull request merges, with this loop's `## Carry forward` section copied into its `PROGRESS.md`. `{n+1}` in it counts from this loop's name (`polish-{n+1}` after `polish-3` is `polish-4`), and a next loop that is not there yet is made then, from this loop's `config.json` and `PROMPT.md`, so the chain goes on |
+| `NEXT_FROM` | `""` | the loop a next loop that is not there yet is made from, instead of this one |
 | `LAND_OK_CMD` | `""` | your check that `BRANCH` may move now, like "no data load running in production"; while it fails, a push (`true`) or a merge (`PR_MERGE`) waits, asking every `ACTIVE_POLL` seconds |
 | `LAND_OK_TIMEOUT` | `300` | seconds `LAND_OK_CMD` may take |
 

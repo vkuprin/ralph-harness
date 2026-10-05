@@ -548,3 +548,66 @@ describe("NEXT_LOOP: the next loop outlives the loop that started it", () => {
     expect(log).not.toContain("keeps what it starts in a job");
   });
 });
+
+describe("NEXT_LOOP with {n+1}: the next stage is made at hand-over", () => {
+  // An open-ended chain once needed every stage made ahead of it, each a copy
+  // of the last. Now count-1 makes count-2 from its own config.json and
+  // PROMPT.md when its pull request merges. count-2 is done at once (its own
+  // directory is there), so the chain ends with it.
+  const home = fx.p("loops");
+  const two = fx.p("loops/count-2");
+  let one: Case;
+  let finished = false;
+  let fromSeed: Case;
+  let mismatch: Case;
+  let shared: Case;
+
+  setup(async () => {
+    one = await merging("count-1", {
+      checks: [PASS],
+      cfg: { NEXT_LOOP: "count-{n+1}", DONE_CMD: `test -d ${sq(two)}` },
+      progress: "# Progress\n\n## Carry forward\n\n- round one fixed the header\n\n## Log\n",
+    });
+    finished = await until(() => read(join(two, "ralph.log")).includes("ralph finished"), 60);
+
+    // NEXT_FROM: made from another loop's files, not this one's.
+    fx.makeRepo(fx.p("app-seed"), fx.p("remote-seed.git"));
+    fx.makeLoop(fx.p("loops/seed"), fx.p("app-seed"), { DONE_CMD: "true" });
+    writeFileSync(join(fx.p("loops/seed"), "PROMPT.md"), "the seed's job\n");
+    fromSeed = await merging("round-1", { checks: [PASS], cfg: { NEXT_LOOP: "round-{n+1}", NEXT_FROM: "seed" } });
+    await until(() => read(join(home, "round-2", "ralph.log")).includes("ralph finished"), 60);
+
+    mismatch = await merging("count-x", { cfg: { NEXT_LOOP: "count-{n+1}" } });
+    shared = await merging("wt-1", { cfg: { NEXT_LOOP: "wt-{n+1}", WORKTREE_DIR: fx.p("one-worktree") } });
+  });
+
+  test("the stage merged, made count-2 and started it", () => {
+    expect(one.rc).toBe(0);
+    expect(said(one.notes, "next")[0]).toContain("started the next loop, count-2");
+    expect(read(join(fx.p("loops/count-1"), "ralph.log"))).toContain(`NEXT_LOOP: made count-2 from ${fx.p("loops/count-1")}`);
+    expect(finished).toBe(true);
+  });
+  test("count-2 has count-1's config, so it goes on counting, and its prompt", () => {
+    expect(read(join(two, "config.json"))).toBe(read(join(fx.p("loops/count-1"), "config.json")));
+    expect(read(join(two, "PROMPT.md"))).toBe(read(join(fx.p("loops/count-1"), "PROMPT.md")));
+  });
+  test("its PROGRESS.md is fresh, with the Carry forward section", () => {
+    const p = read(join(two, "PROGRESS.md"));
+    expect(p).toContain("## Carried forward from count-1\n\n- round one fixed the header\n");
+    expect(p).not.toContain("## Log\n\n- ");
+  });
+  test("the agent was told the counted name", () => {
+    expect(read(join(one.stub, "prompt.agent.1"))).toContain("the harness starts the loop count-2, the next stage");
+  });
+  test("NEXT_FROM: made from that loop's files", () => {
+    expect(fromSeed.rc).toBe(0);
+    expect(read(join(home, "round-2", "PROMPT.md"))).toBe("the seed's job\n");
+    expect(read(join(home, "round-2", "config.json"))).toBe(read(join(fx.p("loops/seed"), "config.json")));
+  });
+  test("a name with no number to count from, or a shared WORKTREE_DIR, refuses the start", () => {
+    expect(mismatch.rc).toBe(2);
+    expect(read(join(mismatch.loop, "ralph.log"))).toContain("this loop's name, count-x, is not count-<number>");
+    expect(shared.rc).toBe(2);
+    expect(read(join(shared.loop, "ralph.log"))).toContain("would share its WORKTREE_DIR");
+  });
+});
