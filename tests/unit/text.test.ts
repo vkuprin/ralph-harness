@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { inFence, isHeading, lastNonBlank, plain, section, stripEscapes } from "../../src/lib/text.ts";
+import { inFence, isHeading, lastNonBlank, plain, putSection, section, stripEscapes } from "../../src/lib/text.ts";
 
 const ESC = "\x1b";
 
@@ -117,5 +117,30 @@ describe("isHeading: the name, and not a longer word that starts with it", () =>
     expect(isHeading("### Log", "## Log")).toBe(false);
     expect(isHeading(" ## Log", "## Log")).toBe(false);
     expect(isHeading("## Lo", "## Log")).toBe(false);
+  });
+});
+
+describe("putSection: a section's body set, the rest of the file as it was", () => {
+  const doc = "# Progress\n\nIntro.\n\n## Needs a decision\n\n- none\n\n## Log\n\n### one\n";
+  test("a new section goes before the first ## heading", () => {
+    expect(putSection(doc, "## From a", "- keep the cache")).toBe(
+      "# Progress\n\nIntro.\n\n## From a\n\n- keep the cache\n\n## Needs a decision\n\n- none\n\n## Log\n\n### one\n",
+    );
+  });
+  test("one already there has its body replaced, and only its body", () => {
+    const once = putSection(doc, "## From a", "- old");
+    expect(putSection(once, "## From a", "- new\n- more")).toBe(putSection(doc, "## From a", "- new\n- more"));
+    expect(section(putSection(once, "## From a", "- new"), "## From a")).toBe("\n- new");
+    expect(section(putSection(once, "## From a", "- new"), "## Log")).toBe("\n### one");
+  });
+  test("a heading quoted in a code block is not the section", () => {
+    const fenced = "# P\n\n```\n## From a\nquoted\n```\n";
+    const out = putSection(fenced, "## From a", "- real");
+    expect(out).toContain("```\n## From a\nquoted\n```");
+    expect(out.endsWith("## From a\n\n- real\n")).toBe(true);
+  });
+  test("a file with no ## heading gets it at the end", () => {
+    expect(putSection("# P\n", "## From a", "x")).toBe("# P\n\n## From a\n\nx\n");
+    expect(putSection("", "## From a", "x")).toBe("## From a\n\nx\n");
   });
 });

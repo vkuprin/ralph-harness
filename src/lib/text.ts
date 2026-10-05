@@ -124,6 +124,31 @@ export function section(text: string, heading: string): string {
   return chomp(out.length ? `${out.join("\n")}\n` : "");
 }
 
+/**
+ * `text` with the section under `heading` holding `body` (blank lines around it
+ * dropped), the sections read as `section` reads them: the old body replaced, or else a new section put in
+ * before the first `## ` heading, so it reads before the log, or at the end
+ * when there is none.
+ */
+export function putSection(text: string, heading: string, body: string): string {
+  const lines = splitLines(text);
+  const code = inFence(lines);
+  const block = [heading, "", ...splitLines(chomp(body.replace(/^\n+/, ""))), ""];
+  const isNext = (i: number) => !code[i] && lines[i]!.startsWith("## ");
+  const at = lines.findIndex((l, i) => !code[i] && isHeading(l, heading));
+  let out: string[];
+  if (at >= 0) {
+    let end = at + 1;
+    while (end < lines.length && !isNext(end)) end++;
+    out = [...lines.slice(0, at), ...block, ...lines.slice(end)];
+  } else {
+    const first = lines.findIndex((_, i) => isNext(i));
+    if (first >= 0) out = [...lines.slice(0, first), ...block, ...lines.slice(first)];
+    else out = [...lines, ...(lines.length && lines.at(-1) !== "" ? [""] : []), ...block];
+  }
+  return `${chomp(out.join("\n"))}\n`;
+}
+
 /** At most `max` bytes of `text`, never splitting a character. */
 export function headBytes(text: string, max: number): string {
   const buf = Buffer.from(text, "utf8");

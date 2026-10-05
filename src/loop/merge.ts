@@ -1,6 +1,8 @@
 // What GitHub says about a pull request's checks, read from
-// `gh pr view --json url,state,headRefOid,statusCheckRollup`. Pure, so every
-// state GitHub can report is pinned by a unit test rather than by a live CI.
+// `gh pr view --json url,state,headRefOid,statusCheckRollup`, and what a failed
+// run's log says, from `gh run view --log-failed`. Pure, so every state GitHub
+// can report is pinned by a unit test rather than by a live CI.
+import { splitLines } from "../lib/text.ts";
 
 export type Checks =
   | { verdict: "pass" }
@@ -71,4 +73,27 @@ export function readChecks(text: string, head: string): { url: string; checks: C
   const pending = read.filter((c) => c.is === "pending").map((c) => c.name);
   if (pending.length) return { url, checks: { verdict: "pending", names: pending } };
   return { url, checks: { verdict: "pass" } };
+}
+
+/**
+ * What `gh run view --log-failed` prints: one line per log line, as the job,
+ * the step and the line, tab-separated, the line led by its timestamp. Read as
+ * the failing steps ("job / step", once each, in order) and the lines without
+ * their timestamps. A line without the two tabs is kept as it is.
+ */
+export function failedLog(text: string): { steps: string[]; lines: string[] } {
+  const steps: string[] = [];
+  const lines: string[] = [];
+  for (const raw of splitLines(text)) {
+    const a = raw.indexOf("\t");
+    const b = a < 0 ? -1 : raw.indexOf("\t", a + 1);
+    if (b < 0) {
+      if (/\S/.test(raw)) lines.push(raw);
+      continue;
+    }
+    const step = `${raw.slice(0, a)} / ${raw.slice(a + 1, b)}`;
+    if (!steps.includes(step)) steps.push(step);
+    lines.push(raw.slice(b + 1).replace(/^\uFEFF?\d{4}-\d\d-\d\dT[0-9:.]+Z ?/, ""));
+  }
+  return { steps, lines };
 }

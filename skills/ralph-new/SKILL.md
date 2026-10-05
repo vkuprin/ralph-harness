@@ -44,7 +44,10 @@ for every `ralph` command below. If neither exists, tell the user to install ral
   stays a draft while the loop runs and is ready when the stage is done. One loop
   across several stages keeps one pull request across them, and whoever merges it
   midway lands half a stage. Set up the first stage now and say the next one is a
-  new loop.
+  new loop. With `PR_MERGE`, offer to chain them: scaffold every stage now, each
+  with `NEXT_LOOP` naming the one after it (the last with none), and start only the
+  first. Each starts when the one before it merges, with that loop's
+  `## Carry forward` section copied into its PROGRESS.md.
 
 ## 3. Look before asking (read-only)
 
@@ -152,6 +155,7 @@ whatever deploys it.
 | A verify command | `VERIFY_CMD=<command>` |
 | Reviewer off | `REVIEW=false` |
 | A done check | `DONE_CMD=<command>` |
+| The next stage starts after the merge | `NEXT_LOOP=<name>-<next stage>` (needs `PR_MERGE=true`) |
 | Nothing shipped N times | `QUIET_STOP=<N>` |
 | After N iterations | `MAX_ITER=<N>` |
 | Model | `MODEL=opus\|sonnet` |

@@ -125,6 +125,10 @@ What works differently on Windows:
   stop through a `ralph.stop` file in its directory; the loop then kills the
   agent's whole process tree (`taskkill /T`), logs where it stopped, and exits.
   A loop that doesn't answer within 15s is killed together with its tree.
+- `ralph start` takes the loop out of the job object of the shell that ran it,
+  so a loop started from an agent's shell tool outlives that shell. When the job
+  forbids that, `ralph start` says so, and the loop ends with the job: start it
+  from a terminal of its own.
 - `ralph tail` follows the log itself, and `ralph edit` opens `notepad` when
   `EDITOR` isn't set.
 - Loop names and repo paths can't contain characters Windows forbids in file
@@ -199,7 +203,8 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | `QUIET_SLEEP` | `1200` | seconds to wait after an iteration that shipped nothing |
 | `STEP_SLEEP` | `30` | seconds between iterations that shipped |
 | `ITER_TIMEOUT` | `7200` | seconds one agent run may take |
-| `DONE_CMD` | `""` | your "job is done" check, before every iteration; exit 0 stops the loop |
+| `DONE_CMD` | `""` | your "job is done" check, before every iteration; exit 0 stops the loop. Not asked while `HEALTH_CMD` or CI fails |
+| `DONE_TIMEOUT` | `300` | seconds `DONE_CMD` may take |
 | `ACTIVE_HOURS` | `""` | local hours iterations may start in, like `"22-08"`; empty is any time |
 | `ADD_DIRS` | `[]` | extra directories the agent may read |
 | `DENY` | `[]` | tool patterns the agent may never use, like `"Bash(ssh *)"` |
@@ -244,6 +249,9 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | `PR_MERGE_METHOD` | `"merge"` | `"merge"`, `"squash"` or `"rebase"` |
 | `PR_MERGE_WAIT` | `3600` | seconds to wait for checks still running |
 | `PR_MERGE_POLL` | `30` | seconds between two looks at the checks |
+| `CI_FEEDBACK` | `true` | with `"pr"`, read the checks on the pushed head before every iteration; a failure (check, step, log tail) leads the next prompt and keeps `DONE_CMD` from being asked |
+| `PR_FIX_ITERS` | `5` | with `PR_MERGE`, iterations the loop may run after its checks fail at the end, to fix them; `0` blocks the merge at once |
+| `NEXT_LOOP` | `""` | with `PR_MERGE`, a loop to start once the pull request merges, with this loop's `## Carry forward` section copied into its `PROGRESS.md` |
 | `LAND_OK_CMD` | `""` | your check that `BRANCH` may move now, like "no data load running in production"; while it fails, a push (`true`) or a merge (`PR_MERGE`) waits, asking every `ACTIVE_POLL` seconds |
 | `LAND_OK_TIMEOUT` | `300` | seconds `LAND_OK_CMD` may take |
 
@@ -273,8 +281,10 @@ key left out of the file entirely is off for `WORKTREE`, `PUSH`, `PR_DRAFT`, `RE
 | `NOTIFY_CMD` | `""` | shell command run on an event; the event is in `RALPH_EVENT`, `RALPH_LOOP`, `RALPH_DIR`, `RALPH_ITER`, `RALPH_MESSAGE` |
 | `NOTIFY_TIMEOUT` | `30` | seconds it may take; its exit status is ignored |
 
-Events: `stopped`, `refused`, `stuck`, `limit`, `limit-clear`, `decision`, `health`,
-`health-clear`, `churn`, `pr`, `pr-blocked`, `pr-ready`, `land-held`, `merged`, `merge-blocked`.
+Events: `stopped`, `died`, `refused`, `stuck`, `limit`, `limit-clear`, `decision`, `health`,
+`health-clear`, `churn`, `pr`, `pr-blocked`, `pr-ready`, `land-held`, `ci-failed`, `merged`,
+`merge-blocked`, `next`, `next-failed`. `died` is a signal `ralph stop` did not send (a reboot, a
+closed session); a loop killed outright says nothing.
 `template/config.json` has a macOS notification and a Telegram example.
 
 </details>

@@ -4,6 +4,8 @@ import {
   Fx,
   type HookAnswer,
   IS_WIN,
+  alive,
+  cliPath,
   count,
   events,
   field,
@@ -819,5 +821,150 @@ describe("CLI edges", () => {
         expect({ cmd, n, code: r.code, out: r.out }).toEqual({ cmd, n, code: 1, out: "" });
         expect(r.err).toContain(`usage: ralph ${cmd} <name> [n]`);
       }
+  });
+});
+
+describe("a loop stopped while the gates judge a commit judges it at its next start", () => {
+  // The agent had finished and been paid for; VERIFY_CMD was running when the
+  // loop stopped. A start used to set such a commit aside as never judged, and
+  // the whole iteration was paid for again. On POSIX the stop is a TERM nobody
+  // asked for, sent by VERIFY_CMD itself, which is also a loop that died.
+  // Windows has no TERM to send, so there VERIFY_CMD asks through the stop file.
+  const app = fx.p("app-resume");
+  const R = fx.p("remote-resume.git");
+  const loop = fx.p("loops/resume");
+  const notes = fx.p("notify-resume.log");
+  const flag = fx.p("resume.flag");
+  let first = -1;
+  let second = -1;
+  let pending = false;
+  let rowsAtStop: string[][] = [];
+
+  setup(async () => {
+    fx.makeRepo(app, R);
+    const S = fx.stub("stub-resume", ["commit"]);
+    mkNotifier(notes, fx.p("notify-resume.sh"));
+    const stopIt = IS_WIN ? `touch ${sq(join(loop, "ralph.stop"))}` : 'kill -TERM "$PPID"';
+    fx.makeLoop(loop, app, {
+      WORKTREE: true,
+      PUSH: true,
+      PUSH_CONFIRM: "main",
+      MAX_ITER: 1,
+      VERIFY_CMD: `if [ ! -f ${sq(flag)} ]; then touch ${sq(flag)}; ${stopIt}; sleep 30; fi; ./measure.sh`,
+      NOTIFY_CMD: sq(fx.p("notify-resume.sh")),
+    });
+    first = await fx.runLoop(loop, S, { remote: R });
+    pending = existsSync(join(loop, ".judging"));
+    rowsAtStop = rows(loop);
+    second = await fx.runLoop(loop, S, { remote: R });
+  });
+
+  test("the first run stopped in VERIFY_CMD, before any verdict", () => {
+    expect(first).toBe(130);
+    expect(rowsAtStop).toEqual([]);
+    expect(pending).toBe(true);
+    expect(read(join(loop, "ralph.log"))).toContain(`ralph stopped by signal during iteration 1 (${IS_WIN ? "ralph stop" : "SIGTERM"})`);
+  });
+  test.skipIf(IS_WIN)("a signal ralph stop did not send is reported as died", () => {
+    const died = lines(notes).filter((l) => l.startsWith("died\t"));
+    expect(died.length).toBe(1);
+    expect(died[0]).toContain("the loop was ended by SIGTERM, not by ralph stop, during iteration 1");
+    expect(died[0]).toContain("ralph start resume");
+  });
+  test("the next start judged the commit instead of setting it aside", () => {
+    expect(second).toBe(0);
+    expect(statuses(loop)).toBe("keep quiet");
+    const [row] = rows(loop);
+    expect(row?.[1]).toBe("1");
+    expect(row?.[6]).toBe("judged at restart");
+    expect(read(join(loop, "ralph.log"))).toContain("its agent had finished, so it is judged now");
+    expect(read(join(loop, "results.tsv"))).not.toContain("drop:interrupted");
+    expect(existsSync(join(loop, ".judging"))).toBe(false);
+  });
+  test("and it shipped, as a commit the gates passed does", () => {
+    expect(fx.git(R, "log", "--format=%s", "main")).toContain("stub: work (agent call 1)");
+    expect(count(read(join(loop, "ralph.log")), /shipped [0-9a-f]{40}/g)).toBe(1);
+  });
+});
+
+describe("ralph stop is the human's own stop: no died", () => {
+  const home = fx.p("asked-home");
+  const loop = join(home, "asked");
+  const notes = fx.p("notify-asked.log");
+  let napping = false;
+  let gone = false;
+
+  setup(async () => {
+    fx.makeRepo(fx.p("app-asked"), fx.p("remote-asked.git"));
+    const S = fx.stub("stub-asked", ["sleep"]);
+    mkNotifier(notes, fx.p("notify-asked.sh"));
+    fx.makeLoop(loop, fx.p("app-asked"), { MAX_ITER: 1, NOTIFY_CMD: sq(fx.p("notify-asked.sh")) });
+    fx.cli(home, ["start", "asked"], { STUB_DIR: S });
+    napping = await until(() => existsSync(join(S, "sleeper.pid")), 60);
+    fx.cli(home, ["stop", "asked"]);
+    gone = await until(() => read(join(loop, "ralph.log")).includes("ralph stopped by signal"), 30);
+  });
+
+  test("the loop says it was ralph stop, and nobody is told it died", () => {
+    expect(napping).toBe(true);
+    expect(gone).toBe(true);
+    expect(read(join(loop, "ralph.log"))).toContain("ralph stopped by signal during iteration 1 (ralph stop)");
+    expect(events(notes)).not.toContain("died");
+    expect(existsSync(join(loop, "ralph.stop"))).toBe(false);
+  });
+});
+
+describe.if(IS_WIN)("ralph start on Windows: the loop leaves the job of the shell that started it", () => {
+  // An agent's shell tool keeps what it starts in a job object, and closing a
+  // job made with KILL_ON_JOB_CLOSE ends everything in it. A loop started from
+  // there died with the shell's session, by a signal nobody sent on purpose.
+  // ok: a job that lets a process leave it (BREAKAWAY_OK). locked: one that
+  // does not, which ralph start can only report.
+  const home = fx.p("job-home");
+  const cases: Record<string, number> = { ok: 0x2000 | 0x800, locked: 0x2000 };
+  const result: Record<string, { alive: boolean; warned: boolean }> = {};
+
+  setup(async () => {
+    const { dlopen, FFIType } = await import("bun:ffi");
+    const k = dlopen("kernel32.dll", {
+      CreateJobObjectW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.u64 },
+      SetInformationJobObject: { args: [FFIType.u64, FFIType.i32, FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
+      OpenProcess: { args: [FFIType.u32, FFIType.i32, FFIType.u32], returns: FFIType.u64 },
+      AssignProcessToJobObject: { args: [FFIType.u64, FFIType.u64], returns: FFIType.i32 },
+      CloseHandle: { args: [FFIType.u64], returns: FFIType.i32 },
+    }).symbols;
+    for (const [name, flags] of Object.entries(cases)) {
+      const loop = join(home, `job-${name}`);
+      fx.makeRepo(fx.p(`app-job-${name}`), fx.p(`remote-job-${name}.git`));
+      const S = fx.stub(`stub-job-${name}`, ["sleep"]);
+      fx.makeLoop(loop, fx.p(`app-job-${name}`), { MAX_ITER: 1 });
+      const job = k.CreateJobObjectW(null, null);
+      // JOBOBJECT_EXTENDED_LIMIT_INFORMATION (144 bytes); LimitFlags at 16.
+      const info = Buffer.alloc(144);
+      info.writeUInt32LE(flags, 16);
+      k.SetInformationJobObject(job, 9, info, 144);
+      const cli = Bun.spawn([process.execPath, cliPath(), "start", `job-${name}`], {
+        env: fx.env({ RALPH_HOME: home, STUB_DIR: S }),
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      // Into the job before it has loaded far enough to start the loop.
+      const h = k.OpenProcess(0x1fffff, 0, cli.pid);
+      k.AssignProcessToJobObject(job, h);
+      k.CloseHandle(h);
+      await cli.exited;
+      const pid = Number(read(join(loop, "ralph.pid")).trim());
+      k.CloseHandle(job);
+      await Bun.sleep(2000);
+      result[name] = { alive: pid > 0 && alive(pid), warned: read(join(loop, "ralph.log")).includes("keeps what it starts in a job") };
+      fx.cli(home, ["stop", `job-${name}`]);
+    }
+  });
+
+  test("a job that lets it leave: the loop outlives the job, or says it could not leave", () => {
+    expect(result.ok!.alive || result.ok!.warned).toBe(true);
+  });
+  test("a job that does not: ralph start says so in the loop's log", () => {
+    expect(result.locked!.warned).toBe(true);
   });
 });

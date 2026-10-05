@@ -81,6 +81,26 @@
   // Seconds to wait for checks still running, counted while the machine is awake.
   "PR_MERGE_WAIT": 3600,
 
+  // With PUSH "pr": before every iteration, read the checks on the last commit the
+  // harness pushed. When one failed, the failing check, its step and the last
+  // lines of its log (GitHub Actions') lead the next prompt, DONE_CMD is not asked,
+  // and you hear once (ci-failed). Checks still running are not waited for; the
+  // next iteration reads them again. VERIFY_CMD passing says nothing about a CI
+  // step it does not run.
+  "CI_FEEDBACK": true,
+  // With PR_MERGE: when the checks fail once the loop has ended, go back to work
+  // for up to this many iterations in all, with the failure in the prompt, and
+  // merge once they pass. merge-blocked only once they are spent. 0 blocks at once.
+  "PR_FIX_ITERS": 5,
+
+  // With PR_MERGE: a loop, already made with `ralph new`, that starts once this
+  // loop's pull request merges: the next stage of the job. The "## Carry forward"
+  // section of this loop's PROGRESS.md is copied into that loop's PROGRESS.md
+  // first. Nothing starts after `ralph stop`, which never merges, so stopping a
+  // stage ends the chain there.
+  // "NEXT_LOOP": "__NAME__-polish",
+  "NEXT_LOOP": "",
+
   // Your own check that BRANCH may move now, run in the work directory before
   // the harness pushes to BRANCH (PUSH true) or merges into it (PR_MERGE). When
   // BRANCH deploys, a push or a merge in the middle of a long job in production —
@@ -159,6 +179,8 @@
   // wanders into unrelated work. A missing file must not read as "done":
   // "DONE_CMD": "test -f BACKLOG.md && ! grep -q '^- \\[ \\]' BACKLOG.md",
   "DONE_CMD": "",
+  // Seconds DONE_CMD may take before it counts as "not done".
+  "DONE_TIMEOUT": 300,
 
   // Local hours the loop may start iterations in, end hour excluded, wrapping past
   // midnight: "22-08" runs at night and leaves your daytime limit to you. An
@@ -215,6 +237,9 @@
   //
   //   stopped      the loop ended (MAX_ITER, QUIET_STOP, ERROR_STOP, a file of
   //                its own gone, a worktree it could not put back)
+  //   died         a signal `ralph stop` did not send ended the loop: a reboot,
+  //                a session that closed under it. It stays down until started
+  //                again; a loop killed outright (kill -9) says nothing
   //   refused      a start that never ran an iteration
   //   stuck        ESCALATE_AFTER iterations in a row reverted or failed
   //   limit        the first iteration of a limit streak
@@ -231,10 +256,14 @@
   //   pr-ready     PR_DRAFT marked the pull request ready when the loop ended
   //                (without PR_MERGE; with it, merged or merge-blocked says it)
   //   land-held    LAND_OK_CMD failed, so a push to or merge into BRANCH waits
+  //   ci-failed    a check failed on the head the harness pushed (CI_FEEDBACK,
+  //                PR_FIX_ITERS)
   //   merged       PR_MERGE merged the pull request when the loop ended
   //   merge-blocked PR_MERGE did not: a check failed, checks were still running
   //                after PR_MERGE_WAIT, the branch is not on BRANCH, or GitHub
   //                refused (branch protection)
+  //   next         NEXT_LOOP started after the merge
+  //   next-failed  NEXT_LOOP did not start
   //
   // Never on a keep or a quiet iteration: that is the noise that makes you stop
   // reading them. The event arrives in the environment, not pasted into the

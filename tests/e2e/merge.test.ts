@@ -9,6 +9,9 @@ const run = (name: string, conclusion: string, status = "COMPLETED") =>
   JSON.stringify({ __typename: "CheckRun", name, status, conclusion });
 const PASS = `[${run("test", "SUCCESS")}]`;
 const PENDING = `[${run("test", "", "IN_PROGRESS")}]`;
+const FAIL = `[${run("images", "FAILURE")},${run("test", "SUCCESS")}]`;
+// What gh run view --log-failed prints for the failed run: job, step, line.
+const RUN_LOG = "images\tCheck images\t2026-10-04T23:25:04.0000000Z stale snapshot: hero.png differs\n";
 
 /** The notifier log's messages for one event. */
 function said(log: string, event: string): string[] {
@@ -36,7 +39,7 @@ interface Case {
  */
 async function merging(
   name: string,
-  opts: { modes?: string[]; checks?: string[]; files?: Record<string, string>; cfg?: Record<string, unknown> } = {},
+  opts: { modes?: string[]; checks?: string[]; files?: Record<string, string>; cfg?: Record<string, unknown>; progress?: string } = {},
 ): Promise<Case> {
   const modes = opts.modes ?? ["commit"];
   const c: Case = {
@@ -61,6 +64,7 @@ async function merging(
     NOTIFY_CMD: sq(fx.p(`notify-${name}.sh`)),
     ...opts.cfg,
   });
+  if (opts.progress !== undefined) writeFileSync(join(c.loop, "PROGRESS.md"), opts.progress);
   c.rc = await fx.runLoop(c.loop, c.stub, { remote: c.remote });
   return c;
 }
@@ -353,5 +357,164 @@ describe("LAND_OK_CMD: BRANCH does not move while production is busy", () => {
   });
   test("one notification for the one wait", () => {
     expect(said(notes, "land-held").length).toBe(1);
+  });
+});
+
+describe("CI_FEEDBACK: red CI on the pushed head reaches the agent", () => {
+  // Iteration 1 keeps a commit and the harness pushes it. CI on it fails a
+  // step VERIFY_CMD does not run, so iteration 2 is told what failed and
+  // DONE_CMD, which would say done, is not asked. Its fix passes, and the
+  // loop merges at MAX_ITER.
+  let ci: Case;
+
+  setup(async () => {
+    ci = await merging("ci", {
+      modes: ["commit", "commit"],
+      checks: [FAIL, PASS],
+      files: { "gh-runs": "42\n", "gh-run-log": RUN_LOG },
+      cfg: { CI_FEEDBACK: true, DONE_CMD: `[ "$(git rev-list --count HEAD)" -ge 2 ]` },
+    });
+  });
+
+  test("both iterations kept their commits, and the second was merged", () => {
+    expect(statuses(ci.loop)).toBe("keep keep");
+    expect(said(ci.notes, "merged").length).toBe(1);
+  });
+  test("the first prompt says nothing about CI: nothing was pushed yet", () => {
+    expect(read(join(ci.stub, "prompt.agent.1"))).not.toContain("CI failed");
+  });
+  test("the next prompt leads with the failed check, its step and its log", () => {
+    const p = read(join(ci.stub, "prompt.agent.2"));
+    expect(p).toContain("# Harness: CI failed on the pushed head");
+    expect(p).toContain("failed: images.");
+    expect(p).toContain("- images / Check images");
+    expect(p).toContain("stale snapshot: hero.png differs");
+    expect(p).not.toContain("2026-10-04T23:25:04");
+    expect(p).toContain("VERIFY_CMD passed on these commits, so CI runs something it does not.");
+    expect(p.indexOf("CI failed on the pushed head")).toBeLessThan(p.indexOf("# PROGRESS.md"));
+  });
+  test("the log of the failed run is read through gh, for the pushed head", () => {
+    const head = lines(join(ci.stub, "gh.calls")).find((l) => l.startsWith("run list"));
+    expect(head).toMatch(/^run list --branch ralph\/ci --commit [0-9a-f]{40} --status failure /);
+    expect(calls(ci.stub, "run view")).toEqual(["run view 42 --log-failed"]);
+  });
+  test("DONE_CMD is not asked while CI is red", () => {
+    expect(read(join(ci.loop, "ralph.log"))).toMatch(/DONE_CMD not asked: CI failed on [0-9a-f]{40}/);
+  });
+  test("the human hears once, with the check's name and the URL", () => {
+    const m = said(ci.notes, "ci-failed");
+    expect(m.length).toBe(1);
+    expect(m[0]).toContain("images");
+    expect(m[0]).toContain("https://example.invalid/pull/1");
+  });
+});
+
+describe("PR_FIX_ITERS: failed checks at the end send the loop back to work", () => {
+  // fix: one iteration, then checks fail at the merge; the loop runs again with
+  // the failure in its prompt, its fix passes, and it merges.
+  // spent: checks never pass, so the budget runs out and the merge is blocked.
+  let fix: Case;
+  let spent: Case;
+  let off: Case;
+
+  setup(async () => {
+    fix = await merging("fix", {
+      modes: ["commit", "commit"],
+      checks: [FAIL, FAIL, PASS],
+      files: { "gh-runs": "7\n", "gh-run-log": RUN_LOG },
+      cfg: { MAX_ITER: 1, PR_FIX_ITERS: 2 },
+    });
+    spent = await merging("spent", {
+      modes: ["commit", "commit"],
+      checks: [FAIL],
+      cfg: { MAX_ITER: 1, PR_FIX_ITERS: 1, PR_DRAFT: true },
+    });
+    off = await merging("off", { checks: [FAIL], cfg: { MAX_ITER: 1 } });
+  });
+
+  test("the loop went back to work after the checks failed, and the fix was merged", () => {
+    expect(statuses(fix.loop)).toBe("keep keep quiet");
+    expect(said(fix.notes, "merged").length).toBe(1);
+    expect(said(fix.notes, "merge-blocked")).toEqual([]);
+    expect(read(join(fix.loop, "ralph.log"))).toContain("back to work for up to 2 more iteration(s) to fix them (PR_FIX_ITERS)");
+  });
+  test("the iteration after the failure was told what failed", () => {
+    expect(read(join(fix.stub, "prompt.agent.2"))).toContain("stale snapshot: hero.png differs");
+  });
+  test("the round ends with its budget, and the human heard once about the failure", () => {
+    expect(read(join(fix.loop, "ralph.log"))).toContain("stopping: PR_FIX_ITERS=2 spent fixing failed checks");
+    expect(said(fix.notes, "ci-failed").length).toBe(1);
+    const events = lines(fix.notes).map((l) => l.split("\t")[0]);
+    expect(events.filter((e) => e === "stopped").length).toBe(1);
+    expect(events.at(-1)).toBe("stopped");
+  });
+
+  test("checks that never pass block the merge once PR_FIX_ITERS is spent", () => {
+    expect(statuses(spent.loop)).toBe("keep keep");
+    const m = said(spent.notes, "merge-blocked");
+    expect(m.length).toBe(1);
+    expect(m[0]).toContain("PR_FIX_ITERS=1 spent");
+    expect(calls(spent.stub, "pr merge")).toEqual([]);
+  });
+  test("with PR_DRAFT the pull request is a draft again while the loop fixes it", () => {
+    expect(calls(spent.stub, "pr ready")).toEqual(["pr ready ralph/spent", "pr ready --undo ralph/spent", "pr ready ralph/spent"]);
+  });
+  test("without PR_FIX_ITERS a failed check blocks the merge at once, as before", () => {
+    expect(statuses(off.loop)).toBe("keep");
+    expect(said(off.notes, "merge-blocked")[0]).toBe(
+      `checks failed on ${fx.git(off.remote, "rev-parse", "refs/heads/ralph/off")}: images — https://example.invalid/pull/1`,
+    );
+    expect(said(off.notes, "ci-failed")).toEqual([]);
+  });
+});
+
+describe("NEXT_LOOP: a stage that merges starts the next one", () => {
+  const next = fx.p("loops/chain-b");
+  let a: Case;
+  let finished = false;
+  let nopr: Case;
+  let missing: Case;
+  let self: Case;
+
+  setup(async () => {
+    fx.makeRepo(fx.p("app-chain-b"), fx.p("remote-chain-b.git"));
+    // Done before its first iteration: what matters is that it was started.
+    fx.makeLoop(next, fx.p("app-chain-b"), { DONE_CMD: "true" });
+    a = await merging("chain-a", {
+      checks: [PASS],
+      cfg: { NEXT_LOOP: "chain-b" },
+      progress: "# Progress\n\n## Carry forward\n\n- the hero images live in assets/hero, not public/\n\n## Log\n",
+    });
+    finished = await until(() => read(join(next, "ralph.log")).includes("ralph finished"), 60);
+    nopr = await merging("chain-nopr", { cfg: { PR_MERGE: false, NEXT_LOOP: "chain-b" } });
+    missing = await merging("chain-missing", { cfg: { NEXT_LOOP: "nowhere" } });
+    self = await merging("chain-self", { cfg: { NEXT_LOOP: "chain-self" } });
+  });
+
+  test("the stage merged, then started the next loop", () => {
+    expect(a.rc).toBe(0);
+    const events = lines(a.notes).map((l) => l.split("\t")[0]);
+    expect(events.indexOf("merged")).toBeLessThan(events.indexOf("next"));
+    expect(said(a.notes, "next")[0]).toContain("started the next loop, chain-b");
+    expect(finished).toBe(true);
+    expect(read(join(next, "ralph.log"))).toContain("DONE_CMD says the job is done");
+  });
+  test("the agent was told which loop comes next, and to leave it a Carry forward section", () => {
+    expect(read(join(a.stub, "prompt.agent.1"))).toContain(
+      'the harness starts the loop chain-b, the next stage of this job. Keep a "## Carry forward" section',
+    );
+  });
+  test("the Carry forward section went into the next loop's PROGRESS.md, under this loop's name", () => {
+    const p = read(join(next, "PROGRESS.md"));
+    expect(p).toContain("## Carried forward from chain-a\n\n- the hero images live in assets/hero, not public/\n");
+    expect(p.indexOf("## Carried forward from chain-a")).toBeLessThan(p.indexOf("## Needs a decision"));
+  });
+  test("a NEXT_LOOP the harness cannot honour refuses the start", () => {
+    expect(nopr.rc).toBe(2);
+    expect(read(join(nopr.loop, "ralph.log"))).toContain("needs PR_MERGE true");
+    expect(missing.rc).toBe(2);
+    expect(read(join(missing.loop, "ralph.log"))).toContain("is missing — scaffold the next loop before starting this one");
+    expect(self.rc).toBe(2);
+    expect(read(join(self.loop, "ralph.log"))).toContain("a loop cannot be its own next stage");
   });
 });

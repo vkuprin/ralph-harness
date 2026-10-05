@@ -6,13 +6,13 @@ import { isCheckout, rewrite, sameDir } from "../lib/files.ts";
 import type { Log } from "../lib/log.ts";
 import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
-import { shq } from "../lib/shq.ts";
-import { chomp, headBytes, lastNonBlank, section, splitLines, stripEscapes, tailLines } from "../lib/text.ts";
-import { APPROVE_PLAN, CHILD_FILE, REFUSED, STEER_HOOK, refPrefix, sortRefs } from "../paths.ts";
+import { hint, shq } from "../lib/shq.ts";
+import { chomp, headBytes, lastNonBlank, putSection, section, splitLines, stripEscapes, tailLines } from "../lib/text.ts";
+import { APPROVE_PLAN, CHILD_FILE, CLI_ENTRY, REFUSED, STEER_HOOK, refPrefix, sortRefs } from "../paths.ts";
 import { type Window, inWindow, parseHours } from "./active-hours.ts";
 import { addCost, addTokens, claudeText } from "./cost.ts";
 import { resetAt, limitLine, type Reset } from "./limits.ts";
-import { type Checks, readChecks } from "./merge.ts";
+import { type Checks, failedLog, readChecks } from "./merge.ts";
 import { ARCHIVE_HEADER, capProgress, decisions, injectProgress } from "./progress.ts";
 
 // One loop over one repository. Every iteration is a NEW `claude -p` with an
@@ -136,6 +136,21 @@ export class Stop extends Error {
   }
 }
 
+/**
+ * Where the loop names the commits an iteration's agent finished and the gates
+ * have yet to judge, from the moment the agent exits until the verdict's row.
+ */
+const JUDGING = ".judging";
+
+interface Judging {
+  before: string;
+  after: string;
+  iter: number;
+  cost: string;
+  tokens: string;
+  timedOut: boolean;
+}
+
 interface Review {
   status: "accept" | "reject" | "unavailable";
   reason: string;
@@ -174,6 +189,16 @@ export class Loop {
    * notifier) does not write it.
    */
   holdsLock = false;
+  /** CI on the head the harness last pushed, when it failed: what failed, for the prompt and the DONE gate. */
+  private ciRed: { head: string; names: string[]; url: string; steps: string[]; tail: string } | null = null;
+  /** The head a ci-failed notification was last sent about. */
+  private ciTold = "";
+  /** Iterations PR_FIX_ITERS rounds have run, where the round running now began, and where it ends. */
+  private fixUsed = 0;
+  private roundStart = 0;
+  private iterCap: number | null = null;
+  /** An interrupted iteration's commits that `run()` judges before anything else. */
+  private resume: Judging | null = null;
   /** The last iteration's commits that VERIFY_CMD failed, for the next prompt. */
   private verifyFailed: { before: string; after: string; tail: string } | null = null;
 
@@ -235,7 +260,7 @@ export class Loop {
   private bounded(
     secs: number,
     argv: string[],
-    opts: { stdin?: string; out: string; err?: string; env?: Record<string, string>; cwd?: string },
+    opts: { stdin?: string; out: string; err?: string; env?: Record<string, string>; cwd?: string; afterFreeze?: boolean },
   ) {
     return runBounded(secs, argv, {
       ...opts,
@@ -246,7 +271,7 @@ export class Loop {
   }
 
   /** A *_CMD setting, bounded: the user's own text, run by bash. */
-  private shell(secs: number, command: string, opts: { out: string; env?: Record<string, string>; cwd?: string }) {
+  private shell(secs: number, command: string, opts: { out: string; env?: Record<string, string>; cwd?: string; afterFreeze?: boolean }) {
     const sh = shellCommand(command);
     return this.bounded(secs, sh.argv, { ...opts, env: { ...opts.env, ...sh.env } });
   }
@@ -268,11 +293,12 @@ export class Loop {
    * NOTIFY_TIMEOUT, its exit status dropped, and it returns nothing a gate
    * could read.
    */
-  async notify(event: string, message: string): Promise<void> {
+  async notify(event: string, message: string, afterFreeze = false): Promise<void> {
     if (!this.cfg.NOTIFY_CMD) return;
     const secs = this.cfg.NOTIFY_TIMEOUT >= 1 ? this.cfg.NOTIFY_TIMEOUT : 30;
     const r = await this.shell(secs, this.cfg.NOTIFY_CMD, {
       out: this.log.file,
+      afterFreeze,
       env: {
         RALPH_EVENT: event,
         RALPH_LOOP: this.name,
@@ -288,6 +314,21 @@ export class Loop {
     });
     if (r.timedOut) this.log.line(`notify: ${event} timed out after ${secs}s and its process group was killed`);
     else if (r.rc !== 0) this.log.line(`notify: ${event} exited ${r.rc} (ignored; a notifier is not a gate)`);
+  }
+
+  /**
+   * The loop was ended by a signal `ralph stop` did not send: a reboot, a
+   * session that closed under it, a kill from a script. Called by the signal
+   * handler once the loop is frozen, so the notifier is the one command that
+   * still returns; bounded by NOTIFY_TIMEOUT like any other. A loop killed
+   * outright (SIGKILL, TerminateProcess) runs no handler and says nothing.
+   */
+  async died(how: string): Promise<void> {
+    await this.notify(
+      "died",
+      `the loop was ended by ${how}, not by ralph stop, during iteration ${this.iter}; it stays down until it is started again: ${hint("ralph", "start", this.name)}`,
+      true,
+    );
   }
 
   /**
@@ -479,18 +520,52 @@ export class Loop {
     writeFileSync(this.p(".gated-head"), `${sha}\n`);
   }
 
+  /** What JUDGING says is waiting on the gates, or null when it says nothing usable. */
+  private judging(): Judging | null {
+    let j: unknown;
+    try {
+      j = JSON.parse(this.read(this.p(JUDGING)));
+    } catch {
+      return null;
+    }
+    if (!j || typeof j !== "object") return null;
+    const o = j as Record<string, unknown>;
+    const sha = (v: unknown) => typeof v === "string" && /^[0-9a-f]{7,64}$/.test(v);
+    if (!sha(o.before) || !sha(o.after) || typeof o.iter !== "number") return null;
+    return {
+      before: o.before as string,
+      after: o.after as string,
+      iter: o.iter,
+      cost: typeof o.cost === "string" ? o.cost : "-",
+      tokens: typeof o.tokens === "string" ? o.tokens : "-",
+      timedOut: o.timedOut === true,
+    };
+  }
+
   /**
    * An iteration killed by `ralph stop`, a crash or a reboot can leave commits
-   * no gate has seen; at the next start they are set aside instead of being
-   * judged by nobody and pushed by the next sync.
+   * no gate has seen. When its agent had finished and they were waiting on the
+   * gates (JUDGING names them, and HEAD is still theirs), `run()` judges them
+   * first. Anything else — an agent stopped mid-run, HEAD moved since — is set
+   * aside instead of being judged by nobody and pushed by the next sync.
    */
   private async dropUnjudged(): Promise<void> {
     const gated = this.p(".gated-head");
+    const pending = this.judging();
+    rmSync(this.p(JUDGING), { force: true });
     if (!existsSync(gated)) return this.markGated();
     const judged = this.read(gated).trim();
     const head = await this.gitOut(["rev-parse", "HEAD"]);
     if (judged === head) return;
     if (!(await this.gitOk(["cat-file", "-e", `${judged}^{commit}`], { quiet: true }))) return this.markGated();
+    if (pending && pending.before === judged && pending.after === head) {
+      // Back in place until the verdict, so a stop during this judging too
+      // leaves it to the start after.
+      writeFileSync(this.p(JUDGING), `${JSON.stringify(pending)}\n`);
+      this.resume = pending;
+      this.log.line(`start: ${head} was waiting on the gates when the loop stopped; its agent had finished, so it is judged now`);
+      return;
+    }
     await this.saveRef("dropped", head);
     if (!(await this.revertTo(judged))) {
       this.log.line(`cannot reset ralph/${this.name} to the last judged commit ${judged} — fix the worktree by hand`);
@@ -547,6 +622,10 @@ export class Loop {
         REFUSED,
       );
     }
+    if (c.NEXT_LOOP) {
+      const next = this.nextProblem();
+      if (next) await this.refuse(`ralph: NEXT_LOOP ${JSON.stringify(c.NEXT_LOOP)}: ${next}`, REFUSED);
+    }
     // The frozen-file check stops the loop when git cannot run it, which is
     // after an agent has been paid for; say so before the first one instead.
     if (c.WORKTREE && c.FROZEN.length) {
@@ -563,6 +642,25 @@ export class Loop {
         REFUSED,
       );
     }
+  }
+
+  private nextDir(): string {
+    return join(dirname(this.dir), this.cfg.NEXT_LOOP);
+  }
+
+  /**
+   * Why NEXT_LOOP names no loop this one can start once its pull request
+   * merges, or "". Asked at start, so a chain with a broken link refuses its
+   * first stage rather than finding out after the merge.
+   */
+  private nextProblem(): string {
+    const c = this.cfg;
+    const n = c.NEXT_LOOP;
+    if (!c.PR_MERGE) return "the next loop starts once this loop's pull request merges, so it needs PR_MERGE true";
+    if (n.includes("/") || n.includes("\\") || n === "." || n === "..") return `a loop is one directory in ${dirname(this.dir)}`;
+    if (n === this.name) return "a loop cannot be its own next stage";
+    const gone = missingFile(this.nextDir(), "config.json", "PROMPT.md", "PROGRESS.md");
+    return gone ? `${join(this.nextDir(), gone)} is missing — scaffold the next loop before starting this one` : "";
   }
 
   /**
@@ -665,16 +763,41 @@ export class Loop {
   // ------------------------------------------------------------ the loop
 
   async run(): Promise<void> {
-    const c = this.cfg;
     // What the loop was already being asked before it started is not news.
     const seen = decisions(this.read(this.p("PROGRESS.md")));
     writeFileSync(this.p(".decision-seen"), seen.map((l) => `${l}\n`).join(""));
 
+    let going = this.resume ? await this.judgeInterrupted(this.resume) : true;
+    this.resume = null;
+    while (going) {
+      await this.iterate();
+      going = false;
+      if (this.iterCap !== null) this.fixUsed += Math.max(1, this.iter - this.roundStart);
+      if (this.broken) break;
+      // While the pid file is still there: `ralph status` shows a loop waiting on
+      // its pull request's checks as running.
+      this.ended = true;
+      await this.prReady();
+      const end = await this.mergeAtEnd();
+      if (end === "fix") going = await this.fixRound();
+      else if (end === "merged") await this.startNext();
+    }
+    rmSync(this.p("ralph.pid"), { force: true });
+    this.log.line(`ralph finished after ${this.iter} iterations`);
+    // The one stop notification, for every way the loop can end by itself. A
+    // signal never gets here: `ralph stop` is the human's own doing, and any
+    // other signal says died from its handler.
+    await this.notify("stopped", `${this.stopWhy || "the loop ended"} (after ${this.iter} iterations)`);
+  }
+
+  /** Iterations until one says the loop should stop. */
+  private async iterate(): Promise<void> {
+    const c = this.cfg;
     for (;;) {
       // Before the window: a loop whose last iteration ended as the window
       // closed has nothing left to wait for.
-      if (this.iter >= c.MAX_ITER) {
-        this.stop(`hit MAX_ITER=${c.MAX_ITER}`);
+      if (this.iter >= this.limit()) {
+        this.stop(this.iterCap === null ? `hit MAX_ITER=${c.MAX_ITER}` : `PR_FIX_ITERS=${c.PR_FIX_ITERS} spent fixing failed checks`);
         break;
       }
       await this.waitForActiveHours();
@@ -692,19 +815,39 @@ export class Loop {
       }
       if (!(await this.iteration())) break;
     }
+  }
 
-    // While the pid file is still there: `ralph status` shows a loop waiting on
-    // its pull request's checks as running.
-    if (!this.broken) {
-      this.ended = true;
-      await this.prReady();
-      await this.mergeAtEnd();
+  /** The iteration the loop stops at: MAX_ITER, or the end of a PR_FIX_ITERS round. */
+  private limit(): number {
+    return this.iterCap ?? this.cfg.MAX_ITER;
+  }
+
+  /**
+   * PR_FIX_ITERS: the checks on the pull request failed once the loop had
+   * ended, so it goes back to work, for at most PR_FIX_ITERS iterations over
+   * every round, with what failed at the top of each prompt and DONE_CMD not
+   * asked while CI stays red. The streaks start over, or QUIET_STOP would end
+   * the round before its first iteration. With PR_DRAFT the pull request is a
+   * draft again: the loop is running, and nobody merges a fix half done.
+   */
+  private async fixRound(): Promise<boolean> {
+    const c = this.cfg;
+    this.roundStart = this.iter;
+    this.iterCap = this.iter + (c.PR_FIX_ITERS - this.fixUsed);
+    this.ended = false;
+    this.quiet = 0;
+    this.trouble = 0;
+    this.errors = 0;
+    if (c.PR_DRAFT && this.ghOk) {
+      const branch = `ralph/${this.name}`;
+      if (await this.ghRun(60, ["pr", "ready", "--undo", branch]))
+        this.log.line(`PR_DRAFT: the pull request from ${branch} is a draft again while the loop fixes its checks`);
+      else
+        this.log.line(
+          `PR_DRAFT: gh pr ready --undo ${branch} failed (exit ${this.lastGhRc}): ${lastNonBlank(splitLines(this.read(this.p(".gh.out"))))}`,
+        );
     }
-    rmSync(this.p("ralph.pid"), { force: true });
-    this.log.line(`ralph finished after ${this.iter} iterations`);
-    // The one stop notification, for every way the loop can end. Not for a
-    // signal: `ralph stop` and a reboot are the human's own doing.
-    await this.notify("stopped", `${this.stopWhy || "the loop ended"} (after ${this.iter} iterations)`);
+    return true;
   }
 
   /**
@@ -744,8 +887,11 @@ export class Loop {
     // After the sync, so it judges what is about to be worked on, and before
     // DONE_CMD, because a job is not done while the system it runs is broken.
     const healthy = await this.health();
+    await this.readCi();
     if (c.DONE_CMD && !healthy) {
       this.log.line("DONE_CMD not asked: HEALTH_CMD is failing");
+    } else if (c.DONE_CMD && this.ciRed) {
+      this.log.line(`DONE_CMD not asked: CI failed on ${this.ciRed.head}`);
     } else if (c.DONE_CMD && (await this.done())) {
       return false;
     }
@@ -838,45 +984,17 @@ export class Loop {
         status = "quiet";
       }
     } else if (!status && c.WORKTREE) {
-      // A check git could not run is not a pass. git refuses a pathspec it
-      // cannot read with nothing on stdout, and reading stdout alone kept every
-      // commit, the ones that edited a frozen file too.
-      let touched = "";
-      if (c.FROZEN.length) {
-        const d = await run(["git", "diff", "--name-only", before, "HEAD", "--", ...c.FROZEN]);
-        if (d.code !== 0) unchecked = `git diff exited ${d.code}: ${lastNonBlank(splitLines(d.stderr))}`;
-        else
-          touched = splitLines(d.stdout)
-            .map((f) => `${f} `)
-            .join("");
-      }
-      const v = touched || unchecked ? null : await this.verify();
-      if (unchecked) {
-        status = "revert:frozen";
-        reason = `could not check the frozen files: ${unchecked}`;
-      } else if (touched) {
-        status = "revert:frozen";
-        reason = `touched frozen files: ${touched}`;
-      } else if (v !== null) {
-        status = "revert:verify";
-        reason = v;
-      } else if (c.REVIEW) {
-        const r = await this.review(before);
-        reviewCost = r.cost;
-        reviewTokens = r.tokens;
-        if (r.status === "accept") status = "keep";
-        else if (r.status === "reject") {
-          status = "revert:review";
-          reason = r.reason;
-        } else if (c.VERIFY_CMD) {
-          status = "keep:unreviewed";
-          reason = `${r.reason}; VERIFY_CMD passed`;
-        } else {
-          // With no VERIFY_CMD the reviewer is the only gate; do not ship unjudged work.
-          status = "revert:review-unavailable";
-          reason = r.reason;
-        }
-      }
+      // The agent is done and its commits wait on the gates. A loop stopped
+      // before their verdict judges them at its next start instead of setting
+      // aside work already paid for.
+      const pending: Judging = { before, after, iter: this.iter, cost: agentOut.cost, tokens: agentOut.tokens, timedOut: agent.timedOut };
+      writeFileSync(this.p(JUDGING), `${JSON.stringify(pending)}\n`);
+      const g = await this.judge(before);
+      status = g.status;
+      reason = g.reason;
+      unchecked = g.unchecked;
+      reviewCost = g.cost;
+      reviewTokens = g.tokens;
     }
     if (!status) status = "keep";
     if (agent.timedOut && status.split(":")[0] !== "timeout") {
@@ -884,35 +1002,7 @@ export class Loop {
     }
     const cost = addCost(agentOut.cost, reviewCost);
     const tokens = addTokens(agentOut.tokens, reviewTokens);
-    // Read now: a sync before the next iteration can run VERIFY_CMD again and
-    // overwrite verify.out. Kept through an iteration that judged nothing (a
-    // limit, a crash), so the retry still hears about it.
-    if (status === "revert:verify") this.verifyFailed = { before, after, tail: this.lastLines(this.p("verify.out")) };
-    else if (!["ratelimit", "timeout", "error"].includes(status)) this.verifyFailed = null;
-
-    if (status.startsWith("revert:")) {
-      await this.saveRef("reverted", after);
-      if (!(await this.revertTo(before))) {
-        record(this.results, this.iter, { before, after, status, secs: took, reason, cost, tokens });
-        this.stop(`could not reset ralph/${this.name} to ${before} after ${status} — fix the worktree by hand`, true);
-        return false;
-      }
-    }
-    record(this.results, this.iter, { before, after, status, secs: took, reason, cost, tokens });
-    // Judged, and remembered as judged in the same tick as the row, before
-    // anything below awaits. A stop during the notifications once left
-    // .gated-head at `before`, and the next start set aside a commit its own
-    // keep row called kept, as never judged, and the log never said shipped.
-    if (status.startsWith("keep")) {
-      if (c.WORKTREE) this.gated(after);
-      this.log.line(`iteration ${this.iter} shipped ${after} in ${took}s${reason ? ` (${reason})` : ""}`);
-    }
-    if (unchecked) {
-      // It fails the same way next time, and every agent after this one would
-      // be paid for and then reset.
-      this.stop(`the frozen-file check could not run (${unchecked}); reset to ${before} — fix FROZEN in config.json`, true);
-      return false;
-    }
+    if (!(await this.recordVerdict({ iter: this.iter, before, after, status, reason, secs: took, cost, tokens, unchecked }))) return false;
 
     // A limit streak clears the moment claude answers again, whatever the
     // verdict of that iteration is. Said once, at the end of the streak.
@@ -977,6 +1067,134 @@ export class Loop {
     return true;
   }
 
+  /**
+   * The gates on the commits since `before`, as HEAD holds them in the
+   * worktree: the frozen files, VERIFY_CMD, then the reviewer. `status` is ""
+   * when every gate that ran passed and none has a verdict of its own to give;
+   * `unchecked` is why git could not run the frozen-file check, which stops
+   * the loop.
+   */
+  private async judge(before: string): Promise<{ status: string; reason: string; unchecked: string; cost: string; tokens: string }> {
+    const c = this.cfg;
+    const none = { status: "", reason: "", unchecked: "", cost: "-", tokens: "-" };
+    // A check git could not run is not a pass. git refuses a pathspec it
+    // cannot read with nothing on stdout, and reading stdout alone kept every
+    // commit, the ones that edited a frozen file too.
+    if (c.FROZEN.length) {
+      const d = await run(["git", "diff", "--name-only", before, "HEAD", "--", ...c.FROZEN]);
+      if (d.code !== 0) {
+        const unchecked = `git diff exited ${d.code}: ${lastNonBlank(splitLines(d.stderr))}`;
+        return { ...none, status: "revert:frozen", reason: `could not check the frozen files: ${unchecked}`, unchecked };
+      }
+      const touched = splitLines(d.stdout)
+        .map((f) => `${f} `)
+        .join("");
+      if (touched) return { ...none, status: "revert:frozen", reason: `touched frozen files: ${touched}` };
+    }
+    const v = await this.verify();
+    if (v !== null) return { ...none, status: "revert:verify", reason: v };
+    if (!c.REVIEW) return none;
+    const r = await this.review(before);
+    const paid = { ...none, cost: r.cost, tokens: r.tokens };
+    if (r.status === "accept") return { ...paid, status: "keep" };
+    if (r.status === "reject") return { ...paid, status: "revert:review", reason: r.reason };
+    if (c.VERIFY_CMD) return { ...paid, status: "keep:unreviewed", reason: `${r.reason}; VERIFY_CMD passed` };
+    // With no VERIFY_CMD the reviewer is the only gate; do not ship unjudged work.
+    return { ...paid, status: "revert:review-unavailable", reason: r.reason };
+  }
+
+  /**
+   * Record a verdict: the reset a revert asks for, the row, and the commit
+   * remembered as judged. False when the loop has to stop.
+   */
+  private async recordVerdict(v: {
+    iter: number;
+    before: string;
+    after: string;
+    status: string;
+    reason: string;
+    secs: number;
+    cost: string;
+    tokens: string;
+    unchecked: string;
+  }): Promise<boolean> {
+    const { iter, before, after, status, reason, secs, cost, tokens } = v;
+    const row = { before, after, status, secs, reason, cost, tokens };
+    // Read now: a sync before the next iteration can run VERIFY_CMD again and
+    // overwrite verify.out. Kept through an iteration that judged nothing (a
+    // limit, a crash), so the retry still hears about it.
+    if (status === "revert:verify") this.verifyFailed = { before, after, tail: this.lastLines(this.p("verify.out")) };
+    else if (!["ratelimit", "timeout", "error"].includes(status)) this.verifyFailed = null;
+
+    if (status.startsWith("revert:")) {
+      await this.saveRef("reverted", after);
+      if (!(await this.revertTo(before))) {
+        record(this.results, iter, row);
+        rmSync(this.p(JUDGING), { force: true });
+        this.stop(`could not reset ralph/${this.name} to ${before} after ${status} — fix the worktree by hand`, true);
+        return false;
+      }
+    }
+    record(this.results, iter, row);
+    // Judged, and remembered as judged in the same tick as the row, before
+    // anything after it awaits. A stop during the notifications once left
+    // .gated-head at `before`, and the next start set aside a commit its own
+    // keep row called kept, as never judged, and the log never said shipped.
+    rmSync(this.p(JUDGING), { force: true });
+    if (status.startsWith("keep")) {
+      if (this.cfg.WORKTREE) this.gated(after);
+      this.log.line(`iteration ${iter} shipped ${after} in ${secs}s${reason ? ` (${reason})` : ""}`);
+    }
+    if (v.unchecked) {
+      // It fails the same way next time, and every agent after this one would
+      // be paid for and then reset.
+      this.stop(`the frozen-file check could not run (${v.unchecked}); reset to ${before} — fix FROZEN in config.json`, true);
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * The commits of an iteration that was stopped after its agent finished and
+   * before the gates gave their verdict: judged now, by the same gates, and
+   * recorded under that iteration's number. In `run()` and not in `start()`, so
+   * `ralph start` does not wait behind a long VERIFY_CMD. Setting them aside, as
+   * a start once did, threw away an agent's whole run that nothing had found
+   * wrong. False when the loop has to stop.
+   */
+  private async judgeInterrupted(j: Judging): Promise<boolean> {
+    const { before, after } = j;
+    const started = nowSec();
+    this.log.line(`start: judging ${after}, which iteration ${j.iter} committed before the loop stopped`);
+    let g = { status: "", reason: "", unchecked: "", cost: "-", tokens: "-" };
+    const unclean = await this.cleanTree();
+    const branch = await this.gitOut(["rev-parse", "--abbrev-ref", "HEAD"], { quiet: true });
+    if (branch !== `ralph/${this.name}` || !(await this.gitOk(["merge-base", "--is-ancestor", before, "HEAD"], { quiet: true }))) {
+      g = { ...g, status: "revert:history", reason: `the agent left ralph/${this.name} or rewrote its history` };
+    } else if (unclean) {
+      g = { ...g, status: "revert:unclean", reason: `could not clean the worktree: ${unclean}` };
+    } else {
+      g = await this.judge(before);
+    }
+    const status = g.status || "keep";
+    let reason = g.reason;
+    if (j.timedOut) reason = `${reason ? `${reason}; ` : ""}agent timed out after ${this.cfg.ITER_TIMEOUT}s`;
+    reason = reason ? `judged at restart: ${reason}` : "judged at restart";
+    const ok = await this.recordVerdict({
+      iter: j.iter,
+      before,
+      after,
+      status,
+      reason,
+      secs: nowSec() - started,
+      cost: addCost(j.cost, g.cost),
+      tokens: addTokens(j.tokens, g.tokens),
+      unchecked: g.unchecked,
+    });
+    if (ok && status.startsWith("revert:")) this.log.line(`iteration ${j.iter} reverted to ${before}: ${status} — ${reason}`);
+    return ok;
+  }
+
   /** The log from byte `offset` on: what this iteration's agent said. */
   private logSince(offset: number): string {
     try {
@@ -991,7 +1209,7 @@ export class Loop {
     const c = this.cfg;
     const out = this.p("done.out");
     writeFileSync(out, "");
-    const r = await this.shell(300, c.DONE_CMD, {
+    const r = await this.shell(c.DONE_TIMEOUT >= 1 ? c.DONE_TIMEOUT : 300, c.DONE_CMD, {
       out,
       env: { RALPH_DIR: this.dir, RALPH_LOOP: this.name },
     });
@@ -1033,13 +1251,13 @@ export class Loop {
   }
 
   /**
-   * The pause between this iteration and the next. After the last there is no
-   * next, so nothing to space out: the loop ends at once, and PR_MERGE does not
-   * wait behind a backoff. A limit is not this: it gives back its iteration
+   * The pause between this iteration and the next. After the last (MAX_ITER, or
+   * the end of a PR_FIX_ITERS round) there is no next, so nothing to space out:
+   * the loop ends at once, and PR_MERGE does not wait behind a backoff. A limit is not this: it gives back its iteration
    * (`iter--`), so its wait comes before one that will run.
    */
   private async pause(s: number): Promise<void> {
-    if (this.iter >= this.cfg.MAX_ITER) return;
+    if (this.iter >= this.limit()) return;
     await nap(s);
   }
 
@@ -1216,6 +1434,77 @@ export class Loop {
   }
 
   /**
+   * CI on the head the harness last pushed to ralph/<name>, read before each
+   * iteration with CI_FEEDBACK (or PR_FIX_ITERS), and never waited for: checks
+   * still running are not red, and the next iteration reads them again. Red
+   * leads the prompt with what failed and keeps DONE_CMD from being asked.
+   * VERIFY_CMD passing says nothing about a CI step it does not run, and a loop
+   * that read CI only once it had ended finished with nobody left to fix it.
+   */
+  private async readCi(): Promise<void> {
+    const c = this.cfg;
+    this.ciRed = null;
+    if (!(c.CI_FEEDBACK || c.PR_FIX_ITERS > 0) || c.PUSH !== "pr" || !this.harnessPushes() || !this.ghOk) return;
+    const head = await this.gitOut(["rev-parse", "HEAD"]);
+    if (this.read(this.p(".pr-pushed")).trim() !== head) return;
+    const branch = `ralph/${this.name}`;
+    if (!(await this.ghRun(60, ["pr", "view", branch, "--json", "url,state,headRefOid,statusCheckRollup"]))) return;
+    const { url, checks } = readChecks(this.read(this.p(".gh.out")), head);
+    if (checks.verdict !== "fail") return;
+    // The logs are GitHub Actions' only, and at most two runs of them: the
+    // prompt carries the last lines either way.
+    const steps: string[] = [];
+    const lines: string[] = [];
+    const listed = await this.ghRun(60, [
+      "run",
+      "list",
+      "--branch",
+      branch,
+      "--commit",
+      head,
+      "--status",
+      "failure",
+      "--limit",
+      "3",
+      "--json",
+      "databaseId",
+      "--jq",
+      ".[].databaseId",
+    ]);
+    const ids = listed ? splitLines(this.read(this.p(".gh.out"))).filter((l) => /^\d+$/.test(l.trim())) : [];
+    for (const id of ids.slice(0, 2)) {
+      if (!(await this.ghRun(60, ["run", "view", id.trim(), "--log-failed"]))) continue;
+      const f = failedLog(this.read(this.p(".gh.out")));
+      for (const step of f.steps) if (!steps.includes(step)) steps.push(step);
+      lines.push(...f.lines);
+    }
+    writeFileSync(this.p("ci.out"), lines.map((l) => `${l}\n`).join(""));
+    this.ciRed = { head, names: checks.names, url, steps, tail: this.lastLines(this.p("ci.out")) };
+    if (this.ciTold === head) return;
+    this.ciTold = head;
+    const message = `checks failed on ${head}: ${checks.names.join(", ")}${url ? ` — ${url}` : ""}`;
+    this.log.line(`ci: ${message} — every prompt leads with them until they pass`);
+    await this.notify("ci-failed", message);
+  }
+
+  private ciSection(): string {
+    const r = this.ciRed;
+    if (!r) return "";
+    const cut = (l: string) => [...l].slice(0, 200).join("");
+    let s = "\n---\n\n# Harness: CI failed on the pushed head — this comes first\n\n";
+    s += `The checks on ${r.head}, the last commit the harness pushed to ralph/${this.name}, failed: ${r.names.map(cut).join(", ")}.${r.url ? ` ${r.url}` : ""}\n`;
+    if (r.steps.length)
+      s += `\nThe steps that failed (job / step):\n\n${r.steps
+        .slice(0, 10)
+        .map((x) => `- ${cut(x)}`)
+        .join("\n")}\n`;
+    if (r.tail) s += `\nThe last lines of their log:\n\n\`\`\`\n${r.tail}\n\`\`\`\n`;
+    else s += "\nThe harness could not read their log (it reads GitHub Actions' logs only).\n";
+    s += `\n${this.cfg.VERIFY_CMD ? "VERIFY_CMD passed on these commits, so CI runs something it does not. " : ""}Reproduce the failing step locally, fix the cause and commit; do not weaken or skip the check. If the cause is outside the code (a secret, a runner, a third party), write it under "Needs a decision" in PROGRESS.md and change nothing.\n`;
+    return s;
+  }
+
+  /**
    * The files that at least CHURN_AT of the last CHURN_WINDOW kept iterations
    * changed, from git and the keep rows — ground truth, not what the agents
    * wrote about themselves. A human hears about a file the first time it turns
@@ -1302,6 +1591,7 @@ export class Loop {
     const c = this.cfg;
     let s = this.read(this.p("PROMPT.md"));
     s += await this.healthSection();
+    s += this.ciSection();
     s += "\n---\n\n# PROGRESS.md (your memory of previous iterations — read this before doing anything)\n\n";
     const progressFile = this.p("PROGRESS.md");
     const injected = injectProgress(this.read(progressFile), c.PROGRESS_MAX_BYTES, progressFile);
@@ -1331,6 +1621,9 @@ export class Loop {
           ? `and merges its pull request into ${c.BRANCH} when the loop ends, if every check on it passes`
           : `and a human merges its pull request into ${c.BRANCH}`;
         s += `Commit your work, but do not push: the harness checks each commit, pushes the ones it keeps to ralph/${this.name}, ${merges}. A rejected commit is reset, and the verdict shows up above next time.\n`;
+        if (c.NEXT_LOOP) {
+          s += `\nWhen that pull request merges, the harness starts the loop ${c.NEXT_LOOP}, the next stage of this job. Keep a "## Carry forward" section in PROGRESS.md with what that stage needs to know from this one; the harness copies it into that loop's PROGRESS.md.\n`;
+        }
       } else {
         s += `Commit your work, but do not push. A human merges ralph/${this.name}.\n`;
       }
@@ -1865,13 +2158,13 @@ VERDICT: REJECT: <one sentence saying why>
    * by PR_MERGE_WAIT, because it holds work whose last gate has not answered.
    * A signal never gets here: a stop is the human's call, and so is the merge.
    */
-  private async mergeAtEnd(): Promise<void> {
+  private async mergeAtEnd(): Promise<"merged" | "fix" | "end"> {
     const c = this.cfg;
-    if (!c.PR_MERGE || c.PUSH !== "pr" || !this.harnessPushes()) return;
+    if (!c.PR_MERGE || c.PUSH !== "pr" || !this.harnessPushes()) return "end";
     const branch = `ralph/${this.name}`;
     if (!this.ghOk) {
       this.log.line(`PR_MERGE: gh is missing or not logged in — merge the pull request from ${branch} by hand`);
-      return;
+      return "end";
     }
     const upstream = `origin/${c.BRANCH}`;
     const poll = c.PR_MERGE_POLL >= 1 ? c.PR_MERGE_POLL : 30;
@@ -1889,7 +2182,7 @@ VERDICT: REJECT: <one sentence saying why>
       const head = await this.gitOut(["rev-parse", "HEAD"]);
       if ((await this.gitOut(["rev-list", `${upstream}..HEAD`])) === "") {
         this.log.line(`PR_MERGE: ${c.BRANCH} already holds everything on ${branch}; nothing to merge`);
-        return;
+        return "end";
       }
       if (!(await this.gitOk(["merge-base", "--is-ancestor", upstream, "HEAD"], { quiet: true }))) {
         return this.mergeBlocked(
@@ -1908,10 +2201,19 @@ VERDICT: REJECT: <one sentence saying why>
         const k = r.checks;
         if (k.verdict === "merged") {
           this.log.line(`PR_MERGE: ${url || `the pull request from ${branch}`} is already merged`);
-          return;
+          return "end";
         }
         if (k.verdict === "closed") return this.mergeBlocked(`the pull request from ${branch} was closed without merging`, url);
-        if (k.verdict === "fail") return this.mergeBlocked(`checks failed on ${head}: ${k.names.join(", ")}`, url);
+        if (k.verdict === "fail") {
+          const failed = `checks failed on ${head}: ${k.names.join(", ")}`;
+          const left = c.PR_FIX_ITERS - this.fixUsed;
+          if (left <= 0) return this.mergeBlocked(c.PR_FIX_ITERS > 0 ? `${failed}; PR_FIX_ITERS=${c.PR_FIX_ITERS} spent` : failed, url);
+          const message = `${failed} — back to work for up to ${left} more iteration(s) to fix them (PR_FIX_ITERS)${url ? ` — ${url}` : ""}`;
+          this.log.line(`PR_MERGE: ${message}`);
+          this.ciTold = head;
+          await this.notify("ci-failed", message);
+          return "fix";
+        }
         if (k.verdict === "pass") {
           if (await this.landHeld(`the merge of ${branch} into ${c.BRANCH}`)) continue;
           return this.mergePr(branch, head, url, "every check passed");
@@ -1965,7 +2267,7 @@ VERDICT: REJECT: <one sentence saying why>
     if (!c.PR_MERGE) await this.notify("pr-ready", `the loop ended; the pull request from ${branch} into ${c.BRANCH} is ready to merge`);
   }
 
-  private async mergePr(branch: string, head: string, url: string, why: string): Promise<void> {
+  private async mergePr(branch: string, head: string, url: string, why: string): Promise<"merged" | "end"> {
     const c = this.cfg;
     const pr = url || `the pull request from ${branch}`;
     if (!(await this.ghRun(120, ["pr", "merge", branch, `--${c.PR_MERGE_METHOD}`, "--match-head-commit", head]))) {
@@ -1975,11 +2277,60 @@ VERDICT: REJECT: <one sentence saying why>
     const message = `merged ${pr} into ${c.BRANCH} at ${head} (${c.PR_MERGE_METHOD}: ${why})`;
     this.log.line(`PR_MERGE: ${message}`);
     await this.notify("merged", message);
+    return "merged";
   }
 
-  private async mergeBlocked(message: string, url: string): Promise<void> {
+  private async mergeBlocked(message: string, url: string): Promise<"end"> {
     const full = `${message}${url ? ` — ${url}` : ""}`;
     this.log.line(`PR_MERGE: ${full}`);
     await this.notify("merge-blocked", full);
+    return "end";
+  }
+
+  // ------------------------------------------------------------ the next stage
+
+  /**
+   * NEXT_LOOP: this stage's pull request merged, so the next stage starts. The
+   * "## Carry forward" section of this loop's PROGRESS.md goes into the next
+   * loop's PROGRESS.md first, under a heading naming this loop (replacing one
+   * an earlier run put there), and then `ralph start` starts it, detached from
+   * this process, which is about to exit. Only after a merge the harness made:
+   * a signal never merges, so `ralph stop` on a stage ends the chain there.
+   */
+  private async startNext(): Promise<void> {
+    const next = this.cfg.NEXT_LOOP;
+    if (!next) return;
+    const dir = this.nextDir();
+    const gone = missingFile(dir, "config.json", "PROMPT.md", "PROGRESS.md");
+    if (gone) return this.nextFailed(`${join(dir, gone)} is gone or unreadable`);
+    const carry = section(this.read(this.p("PROGRESS.md")), "## Carry forward");
+    if (/\S/.test(carry)) {
+      const file = join(dir, "PROGRESS.md");
+      try {
+        rewrite(file, putSection(this.read(file), `## Carried forward from ${this.name}`, carry));
+      } catch (e) {
+        return this.nextFailed(`could not write ${file}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    const out = this.p("next.out");
+    writeFileSync(out, "");
+    // RALPH_HOME is where this loop lives, so `ralph start` finds the next one
+    // beside it whatever this process was started with.
+    const r = await this.bounded(300, [process.execPath, CLI_ENTRY, "start", next], { out, env: { RALPH_HOME: dirname(this.dir) } });
+    const said = stripEscapes(this.read(out));
+    this.log.raw(said);
+    if (r.timedOut || r.rc !== 0) {
+      return this.nextFailed(
+        r.timedOut ? "ralph start timed out after 300s" : `ralph start exited ${r.rc}: ${lastNonBlank(splitLines(said))}`,
+      );
+    }
+    this.log.line(`NEXT_LOOP: started ${next}${/\S/.test(carry) ? ", with this loop's Carry forward section in its PROGRESS.md" : ""}`);
+    await this.notify("next", `the pull request merged; started the next loop, ${next}`);
+  }
+
+  private async nextFailed(why: string): Promise<void> {
+    const message = `the pull request merged, but the next loop ${this.cfg.NEXT_LOOP} did not start: ${why}`;
+    this.log.line(`NEXT_LOOP: ${message}`);
+    await this.notify("next-failed", message);
   }
 }

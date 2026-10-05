@@ -135,15 +135,17 @@ async function lock(): Promise<void> {
   // Windows has no TERM to send: process.kill there ends a process on the spot,
   // with no handler run and the agent under it left running on its own. So
   // `ralph stop` asks through a file, and the loop answers it exactly as it
-  // answers a signal. One left behind by a loop that was killed means nothing.
-  // Only once the lock is ours: before that the file is the running loop's.
+  // answers a signal. Elsewhere it writes the same file before its TERM, so a
+  // signal with no file beside it is one nobody asked for. One left behind by
+  // a loop that was killed means nothing. Only once the lock is ours: before
+  // that the file is the running loop's.
+  const stopFile = join(dir, STOP_FILE);
+  rmSync(stopFile, { force: true });
   if (IS_WIN) {
-    const stopFile = join(dir, STOP_FILE);
-    rmSync(stopFile, { force: true });
     setInterval(() => {
       if (!existsSync(stopFile)) return;
       rmSync(stopFile, { force: true });
-      void onSignal();
+      void onSignal("ralph stop");
     }, 250).unref();
   }
 
@@ -162,18 +164,25 @@ async function lock(): Promise<void> {
 
 // The CLI writes ralph.pid; clearing it here keeps `ralph status` honest.
 let stopping = false;
-async function onSignal(): Promise<void> {
+async function onSignal(how: string): Promise<void> {
   if (stopping) return;
   stopping = true;
   freeze();
   if (current) await killGroup(current.pid, current.done);
   for (const c of plainChildren) c.kill("SIGTERM");
   rmSync(join(dir, "ralph.pid"), { force: true });
-  log.line(`ralph stopped by signal during iteration ${loop.iter}`);
+  // `ralph stop` writes the stop file before its TERM. Without it the signal is
+  // a reboot, a closed session, a kill from a script: nobody told the human,
+  // and a loop that ends that way stays down until someone notices.
+  const stopFile = join(dir, STOP_FILE);
+  const asked = how === "ralph stop" || existsSync(stopFile);
+  if (loop.holdsLock) rmSync(stopFile, { force: true });
+  log.line(`ralph stopped by signal during iteration ${loop.iter} (${asked ? "ralph stop" : how})`);
+  if (!asked) await loop.died(how);
   process.exit(130);
 }
-process.on("SIGTERM", () => void onSignal());
-process.on("SIGINT", () => void onSignal());
+process.on("SIGTERM", () => void onSignal("SIGTERM"));
+process.on("SIGINT", () => void onSignal("SIGINT"));
 process.on("SIGHUP", () => {});
 
 try {
