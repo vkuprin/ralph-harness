@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { constants, devNull } from "node:os";
-import { dlopen, FFIType } from "bun:ffi";
+import { dlopen, FFIType, ptr } from "bun:ffi";
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
 import { LOOP_MARK } from "../paths.ts";
@@ -109,6 +109,32 @@ function openKernel32() {
     AssignProcessToJobObject: { args: [FFIType.u64, FFIType.u64], returns: FFIType.bool },
     TerminateJobObject: { args: [FFIType.u64, FFIType.u32], returns: FFIType.bool },
     CloseHandle: { args: [FFIType.u64], returns: FFIType.bool },
+    // BOOL is a 32-bit int: declared as i32, so no upper byte of it is left to chance.
+    CreateFileW: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    InitializeProcThreadAttributeList: { args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr], returns: FFIType.i32 },
+    UpdateProcThreadAttribute: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.u64, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    DeleteProcThreadAttributeList: { args: [FFIType.ptr], returns: FFIType.void },
+    CreateProcessW: {
+      args: [
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.i32,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+      ],
+      returns: FFIType.i32,
+    },
   }).symbols;
 }
 
@@ -197,6 +223,147 @@ export function killTree(pid: number): void {
     try {
       process.kill(pid, "SIGKILL");
     } catch {}
+  }
+}
+
+/**
+ * An argv as one Windows command line, quoted the way CommandLineToArgvW and
+ * the C runtime read it back: an argument holding a space, a tab or a quote
+ * goes in double quotes, a quote inside it is escaped, and backslashes are
+ * doubled only where they come before a quote. This is not a shell: no shell
+ * reads the line, the program does, and every program bun or node starts on
+ * Windows gets its arguments through the same quoting.
+ */
+export function winQuote(argv: string[]): string {
+  return argv
+    .map((a) => {
+      if (a !== "" && !/[\s"]/.test(a)) return a;
+      let out = '"';
+      let slashes = 0;
+      for (const ch of a) {
+        if (ch === "\\") {
+          slashes++;
+          continue;
+        }
+        out += ch === '"' ? `${"\\".repeat(slashes * 2 + 1)}"` : `${"\\".repeat(slashes)}${ch}`;
+        slashes = 0;
+      }
+      return `${out}${"\\".repeat(slashes * 2)}"`;
+    })
+    .join(" ");
+}
+
+export interface Detached {
+  pid: number;
+  /** The process has exited: from its exit event where a dead child is a zombie that answers kill -0. */
+  exited: () => boolean;
+  /**
+   * The process could not leave the job its starter runs in, and ends when
+   * that job is closed. Windows only, and only when the job forbids breakaway.
+   */
+  inJob: boolean;
+}
+
+/**
+ * Start a process that outlives the one starting it: the loop, from `ralph
+ * start`. stdin and stdout go nowhere and stderr is appended to `errFile`.
+ *
+ * On POSIX it is a session of its own. On Windows node and bun leave out
+ * CREATE_BREAKAWAY_FROM_JOB (libuv does, on purpose), so a loop started from a
+ * shell that keeps its processes in a job — an agent's shell tool does —
+ * stayed in that job and died with it. So there it is started with
+ * CreateProcessW: away from the job when the job allows that, in a process
+ * group of its own, with a console that has no window, and inheriting only
+ * the handles given here and none of its starter's, whose pipes a shell tool
+ * waits on. A job that forbids breakaway gets the start without it, said in
+ * `inJob`.
+ */
+export function spawnDetached(argv: string[], errFile: string): Detached {
+  const k = IS_WIN ? win32() : null;
+  if (k) {
+    try {
+      let pid = createDetached(k, argv, errFile, true);
+      let inJob = false;
+      if (pid === null) {
+        pid = createDetached(k, argv, errFile, false);
+        inJob = pid !== null;
+      }
+      if (pid !== null) {
+        const p = pid;
+        return { pid: p, exited: () => !alive(p), inJob };
+      }
+    } catch {}
+  }
+  const fd = openSync(errFile, "a");
+  const [cmd, ...args] = argv;
+  const child = spawn(cmd!, args, { detached: true, windowsHide: true, stdio: ["ignore", "ignore", fd] });
+  closeSync(fd);
+  child.unref();
+  let gone = false;
+  child.once("exit", () => (gone = true));
+  child.once("error", () => (gone = true));
+  return { pid: child.pid ?? 0, exited: () => gone, inJob: false };
+}
+
+const INVALID_HANDLE = 0xffffffffffffffffn;
+const wide = (s: string) => Buffer.from(`${s}\0`, "utf16le");
+const handleOk = (h: bigint) => h !== 0n && h !== INVALID_HANDLE;
+
+/**
+ * The environment as CreateProcessW takes it: NAME=value strings, each ended
+ * by a NUL, sorted by name without case, and one more NUL after the last.
+ */
+function envBlock(): Buffer {
+  const vars = Object.entries(process.env)
+    .filter((e): e is [string, string] => e[1] !== undefined && e[0] !== "" && !e[0].includes("="))
+    .sort(([a], [b]) => (a.toUpperCase() < b.toUpperCase() ? -1 : a.toUpperCase() > b.toUpperCase() ? 1 : 0));
+  return Buffer.from(`${vars.map(([n, v]) => `${n}=${v}\0`).join("") || "\0"}\0`, "utf16le");
+}
+
+/** `spawnDetached` on Windows: the PID, or null when CreateProcessW refused (with breakaway: the job forbids it). */
+function createDetached(k: NonNullable<ReturnType<typeof win32>>, argv: string[], errFile: string, breakaway: boolean): number | null {
+  // SECURITY_ATTRIBUTES { nLength, lpSecurityDescriptor, bInheritHandle }: handles the child may inherit.
+  const sa = Buffer.alloc(24);
+  sa.writeUInt32LE(24, 0);
+  sa.writeInt32LE(1, 16);
+  // GENERIC_READ | GENERIC_WRITE, shared, OPEN_EXISTING.
+  const nul = k.CreateFileW(wide("NUL"), 0xc0000000, 3, sa, 3, 0, 0n);
+  // FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE, shared, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL.
+  const err = k.CreateFileW(wide(errFile), 0x00100084, 7, sa, 4, 0x80, 0n);
+  try {
+    if (!handleOk(nul) || !handleOk(err)) return null;
+    const size = Buffer.alloc(8);
+    k.InitializeProcThreadAttributeList(null, 1, 0, size);
+    const list = Buffer.alloc(Number(size.readBigUInt64LE(0)) || 64);
+    if (!k.InitializeProcThreadAttributeList(list, 1, 0, size)) return null;
+    try {
+      const handles = Buffer.alloc(16);
+      handles.writeBigUInt64LE(nul, 0);
+      handles.writeBigUInt64LE(err, 8);
+      // PROC_THREAD_ATTRIBUTE_HANDLE_LIST: these two are inherited, and nothing else of ours.
+      if (!k.UpdateProcThreadAttribute(list, 0, 0x20002n, handles, 16n, null, null)) return null;
+      // STARTUPINFOEXW: a STARTUPINFOW (104 bytes on 64-bit Windows), then the attribute list.
+      const si = Buffer.alloc(112);
+      si.writeUInt32LE(112, 0);
+      si.writeUInt32LE(0x100, 60); // STARTF_USESTDHANDLES
+      si.writeBigUInt64LE(nul, 80);
+      si.writeBigUInt64LE(nul, 88);
+      si.writeBigUInt64LE(err, 96);
+      si.writeBigUInt64LE(BigInt(ptr(list)), 104);
+      const pi = Buffer.alloc(24);
+      // EXTENDED_STARTUPINFO_PRESENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW |
+      // CREATE_UNICODE_ENVIRONMENT, and CREATE_BREAKAWAY_FROM_JOB when asked.
+      const flags = 0x00080000 | 0x00000200 | 0x08000000 | 0x00000400 | (breakaway ? 0x01000000 : 0);
+      if (!k.CreateProcessW(null, wide(winQuote(argv)), null, null, 1, flags, envBlock(), null, si, pi)) return null;
+      k.CloseHandle(pi.readBigUInt64LE(0));
+      k.CloseHandle(pi.readBigUInt64LE(8));
+      return pi.readUInt32LE(16);
+    } finally {
+      k.DeleteProcThreadAttributeList(list);
+    }
+  } finally {
+    if (handleOk(nul)) k.CloseHandle(nul);
+    if (handleOk(err)) k.CloseHandle(err);
   }
 }
 
@@ -397,6 +564,11 @@ export interface BoundedOptions {
   pollGapMax: number;
   /** A file that names the command while it runs, for `reapOrphan`. */
   mark?: string;
+  /**
+   * Return even after `freeze()`. Only for the signal handler's own notifier,
+   * which runs once the loop is parked and nothing it returns reaches a gate.
+   */
+  afterFreeze?: boolean;
 }
 
 /**
@@ -416,6 +588,7 @@ export interface BoundedOptions {
  * counts as nothing.
  */
 export async function runBounded(secs: number, argv: string[], opts: BoundedOptions): Promise<Bounded> {
+  const give = (b: Bounded) => (opts.afterFreeze ? Promise.resolve(b) : settle(b));
   // Not an opt-out: a tolerance of 0 or less falls back to the default rather
   // than to no cap, because no cap is the defect above.
   const cap = opts.pollGapMax >= 1 ? opts.pollGapMax : 60;
@@ -446,7 +619,7 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
     try {
       appendFileSync(errFile, refused);
     } catch {}
-    return settle({ rc: 127, timedOut: false });
+    return give({ rc: 127, timedOut: false });
   }
   const pumps = pumped ? [pumpTo(child.stdout, opts.out), pumpTo(child.stderr, errFile)] : [];
   const done = exited(child);
@@ -454,7 +627,7 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
   if (pid === undefined) {
     const rc = await done;
     await drained(child, pumps);
-    return settle({ rc, timedOut: false });
+    return give({ rc, timedOut: false });
   }
   enterJob(pid);
   current = { pid, done };
@@ -496,7 +669,7 @@ export async function runBounded(secs: number, argv: string[], opts: BoundedOpti
   leaveJob(pid);
   current = null;
   if (opts.mark) rmSync(opts.mark, { force: true });
-  return settle({ rc, timedOut });
+  return give({ rc, timedOut });
 }
 
 /**

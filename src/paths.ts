@@ -7,6 +7,8 @@ import { join, resolve } from "node:path";
 // template/ and hooks/ next to the real checkout.
 export const HARNESS = realpathSync(resolve(import.meta.dir, ".."));
 export const LOOP_ENTRY = join(HARNESS, "src/loop/main.ts");
+/** The CLI, which a loop runs as `ralph start` to start NEXT_LOOP. */
+export const CLI_ENTRY = join(HARNESS, "src/cli/main.ts");
 export const STEER_HOOK = join(HARNESS, "hooks/steer.ts");
 export const APPROVE_PLAN = join(HARNESS, "hooks/approve-plan.ts");
 export const TEMPLATE = join(HARNESS, "template");

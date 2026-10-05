@@ -104,6 +104,24 @@
     "PR_MERGE_POLL": {
       "type": "integer"
     },
+    "CI_FEEDBACK": {
+      "type": [
+        "boolean",
+        "integer"
+      ],
+      "enum": [
+        true,
+        false,
+        0,
+        1
+      ]
+    },
+    "PR_FIX_ITERS": {
+      "type": "integer"
+    },
+    "NEXT_LOOP": {
+      "type": "string"
+    },
     "SETUP_CMD": {
       "type": "string"
     },
@@ -139,6 +157,9 @@
     },
     "DONE_CMD": {
       "type": "string"
+    },
+    "DONE_TIMEOUT": {
+      "type": "integer"
     },
     "ACTIVE_HOURS": {
       "type": "string"

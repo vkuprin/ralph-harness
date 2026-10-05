@@ -12,8 +12,10 @@
 //                 script pending, then pass. No file: no checks at all.
 //   gh-merge-fail present: `pr merge` fails with its text, as branch protection does
 //   gh-draft      present: the open pull request is a draft. `pr create --draft`
-//                 writes it, `pr ready` removes it, and `pr merge` refuses a
-//                 draft, as GitHub does
+//                 writes it, `pr ready` removes it, `pr ready --undo` writes it
+//                 again, and `pr merge` refuses a draft, as GitHub does
+//   gh-runs       the IDs `run list` prints, one a line, as its --jq does
+//   gh-run-log    what `run view <id> --log-failed` prints
 //
 // `pr merge` really merges, in a human's clone of $STUB_REMOTE, and only the
 // head --match-head-commit names, the way GitHub refuses a head that moved.
@@ -50,6 +52,13 @@ if (line === "auth status") {
   if (args.includes("--draft")) writeFileSync(join(d, "gh-draft"), "");
   else rmSync(join(d, "gh-draft"), { force: true });
   process.stdout.write(url);
+} else if (args[0] === "pr" && args[1] === "ready" && args[2] === "--undo") {
+  if (!cat("gh-open")) {
+    process.stderr.write(`no pull requests found for branch "${args[3] ?? ""}"\n`);
+    process.exit(1);
+  }
+  writeFileSync(join(d, "gh-draft"), "");
+  process.stdout.write(`✓ Pull request ${cat("gh-open").trim()} is converted to "draft"\n`);
 } else if (args[0] === "pr" && args[1] === "ready") {
   if (!cat("gh-open")) {
     process.stderr.write(`no pull requests found for branch "${args[2] ?? ""}"\n`);
@@ -113,6 +122,10 @@ if (line === "auth status") {
   writeFileSync(join(d, "gh-merged"), `${head}\n`);
   rmSync(join(d, "gh-open"), { force: true });
   process.stdout.write(`✓ Merged pull request from ${branch}\n`);
+} else if (args[0] === "run" && args[1] === "list") {
+  process.stdout.write(cat("gh-runs"));
+} else if (args[0] === "run" && args[1] === "view" && args.includes("--log-failed")) {
+  process.stdout.write(cat("gh-run-log"));
 } else {
   process.stderr.write(`gh stub: unhandled: ${line}\n`);
   process.exit(2);

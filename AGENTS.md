@@ -158,6 +158,12 @@ What stands in for what:
   which is usually WSL's. The MSYS bash drops every write to a handle opened for
   appending, so on Windows output bound for a file is pumped through a pipe
   (`pumped`); pass the file, never a descriptor, and the pump is yours for free.
+- `ralph start` starts the loop with `spawnDetached`: CreateProcessW with
+  CREATE_BREAKAWAY_FROM_JOB, which node and bun leave out, so a loop started
+  from a shell that keeps its processes in a job (an agent's shell tool) does
+  not die with that job. It inherits only the handles it is given, through a
+  handle list, never its starter's, whose pipes a shell tool waits on. A job
+  that forbids breakaway gets the start without it, and `ralph start` says so.
 - The agent is `claude.exe`. An npm `claude.cmd` is refused at start
   (`claudeProblem`), because starting a batch file means cmd.exe reading the
   agent's arguments, which is the shell this file forbids.
@@ -193,8 +199,16 @@ What stands in for what:
 - A wait that holds work no gate has judged is bounded; a wait with nothing
   pending need not be. The agent's limit is waited out for ever on purpose — it
   costs nothing. The reviewer's is not, so it has a ceiling
-  (`REVIEW_LIMIT_TRIES`): while it waits, the commit is ungated, `MAX_ITER` does
-  not advance, and a restart sets that commit aside. Do not unify the two.
+  (`REVIEW_LIMIT_TRIES`): while it waits, the commit is ungated and `MAX_ITER` does
+  not advance. Do not unify the two.
+- A commit the agent finished is judged, not thrown away. From the moment the
+  agent exits until the verdict's row, `.judging` names its `before` and
+  `after`; a loop stopped in between (in VERIFY_CMD, in the reviewer's wait)
+  judges that commit with the same gates at its next start, in `run()` so `ralph
+  start` is not held behind them, if HEAD is still that `after`. Anything else
+  unjudged — an agent stopped mid-run, HEAD moved since — is set aside under
+  `refs/ralph/<name>/dropped/` as before. `.judging` goes in the same tick as
+  the row, like `.gated-head`.
 - A timeout is a budget of seconds the machine was awake, not of wall clock.
   `runBounded` sums the gaps between its polls, each capped at `POLL_GAP_MAX`,
   instead of comparing `now - start`. The two are the same arithmetic while the
@@ -253,7 +267,11 @@ What stands in for what:
   is told and the reason in the log cannot drift apart and a stop added later is
   heard about without its author knowing any of this. The refusals before
   `config.json` is read cannot notify at all: the setting is in the file they
-  could not read.
+  could not read. A signal is the one exception, and it is not a stop the loop
+  chose: `ralph stop` writes `ralph.stop` before its TERM on every platform, and
+  a signal without that file says `died` from `onSignal`, after the freeze,
+  through `runBounded`'s `afterFreeze` — the one caller allowed to return once
+  frozen, because nothing it returns reaches a gate.
 - With `PUSH: "pr"`, sync never discards a kept commit. `syncOnce` may drop one
   iteration's unpushed work on a conflict or a failed re-verify; `syncPr` holds
   everything since the last merge, so it leaves the branch on its old base and
@@ -269,7 +287,17 @@ What stands in for what:
   whose last gate has not answered. "No checks" counts as passing only with a
   `VERIFY_CMD`, and only when two readings a poll apart say so: GitHub can take a
   moment to register the checks a push starts. A stop that means the loop's own
-  state is broken (`stop(why, true)`) does not merge.
+  state is broken (`stop(why, true)`) does not merge. With `PR_FIX_ITERS`, checks
+  that fail at the end send the loop back to work instead (`fixRound`), for at
+  most that many iterations over every round, each round counting at least one
+  so a round that runs none cannot repeat for ever; `merge-blocked` once spent.
+  The one `stopped` notification still comes once, after the last round. Only
+  after a merge the harness made does `NEXT_LOOP` start, through `ralph start`,
+  so a signal, which never merges, ends a chain of stages too.
+- CI is read, not waited for. With `CI_FEEDBACK` (or `PR_FIX_ITERS`) the checks
+  on the head the harness pushed are read before each iteration; a failure leads
+  the prompt and keeps DONE_CMD from being asked, as HEALTH_CMD's does. Checks
+  still running are not red, and no iteration waits on them.
 - A reset time read from a limit message never lengthens the reviewer's wait.
   With `LIMIT_RESET` the ceiling is `REVIEW_LIMIT_TRIES × RATE_LIMIT_SLEEP`
   seconds, the same bound the retries always added up to; a reset past it gives
@@ -302,7 +330,8 @@ What stands in for what:
 - With `PR_DRAFT` the pull request is a draft while the loop runs, which GitHub
   will not merge, and `prReady` marks it ready only when the loop ends by itself,
   before `mergeAtEnd` waits for checks (some CI skips drafts). After a signal it
-  stays a draft, as a signal never merges.
+  stays a draft, as a signal never merges. A `PR_FIX_ITERS` round makes it a
+  draft again (`gh pr ready --undo`) while the loop runs.
 - A started loop is not believed until it has run its first lines. Bun on Linux
   now and then never finishes loading `src/loop/main.ts`: the process sits in
   epoll with no child and no line of its own, and `ralph status` calls it

@@ -23,7 +23,17 @@ import { readResults } from "../lib/results.ts";
 import { Log } from "../lib/log.ts";
 import { hint } from "../lib/shq.ts";
 import { splitLines } from "../lib/text.ts";
-import { IS_WIN, claudeProblem, commandLineSync, killTree, orphanSync, reapOrphan, shellCommand, upTimeSync } from "../lib/proc.ts";
+import {
+  IS_WIN,
+  claudeProblem,
+  commandLineSync,
+  killTree,
+  orphanSync,
+  reapOrphan,
+  shellCommand,
+  spawnDetached,
+  upTimeSync,
+} from "../lib/proc.ts";
 import {
   CHILD_FILE,
   HARNESS,
@@ -581,15 +591,14 @@ async function cmdStart(name?: string): Promise<void> {
     // Not stdout: every line the loop logs goes there too, for a loop run by
     // hand in a terminal, and here that made ralph.out a second ralph.log that
     // nothing rotates. stderr is what bun says on its own, a crash, in no log.
-    const fd = openSync(join(dir, "ralph.out"), "a");
-    const child = spawn(process.execPath, [LOOP_ENTRY, dir], { detached: true, windowsHide: true, stdio: ["ignore", "ignore", fd] });
-    closeSync(fd);
-    child.unref();
-    const pid = child.pid!;
-    let exitedNow = false;
-    child.once("exit", () => (exitedNow = true));
-    const exited = () => exitedNow;
+    const { pid, exited, inJob } = spawnDetached([process.execPath, LOOP_ENTRY, dir], join(dir, "ralph.out"));
     writeFileSync(join(dir, "ralph.pid"), `${pid}\n`);
+    if (inJob && attempt === 1) {
+      const why =
+        "the shell that ran ralph start keeps what it starts in a job that does not let a process leave it, so the loop ends when that job does — start it from a terminal of its own to keep it running";
+      log.line(`ralph start: ${why}`);
+      dim(`  ${why}`);
+    }
     for (let waited = 0; waited < BOOT_WAIT * 10 && !booted(dir, pid, exited); waited++) await Bun.sleep(100);
     if (booted(dir, pid, exited)) {
       // The lock is not the end of a start: the worktree and SETUP_CMD come
@@ -638,10 +647,11 @@ async function cmdStop(name?: string): Promise<void> {
   // TERM lets the loop take down the agent's whole process group (tests, dev
   // servers, MCP servers) and log where it stopped. That can take a few
   // seconds, so wait before reaching for SIGKILL. Windows has no TERM, so
-  // there the loop is asked through a file it watches for.
-  if (IS_WIN) {
-    writeFileSync(join(dir, STOP_FILE), "");
-  } else {
+  // there the loop is asked through a file it watches for. The file goes first
+  // everywhere: it is how the loop tells a stop asked for here from a signal
+  // nobody asked for, which it reports as died.
+  writeFileSync(join(dir, STOP_FILE), "");
+  if (!IS_WIN) {
     try {
       process.kill(Number(pid), "SIGTERM");
     } catch {}

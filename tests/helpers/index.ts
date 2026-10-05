@@ -478,17 +478,15 @@ export async function waitProc(pid: number, text: string): Promise<boolean> {
 }
 
 /**
- * What `ralph stop` sends a loop: TERM, or on Windows, which has no TERM a
- * program can catch, the stop file the loop watches for. `run` is stopped
+ * What `ralph stop` sends a loop: the stop file, then TERM; on Windows, which
+ * has no TERM a program can catch, the file alone, which the loop watches for. `run` is stopped
  * whatever happens, so its boot watch starts nothing after this. `pid` when
  * the loop is not the run's process (one `ralph start` put in the background).
  */
 export function term(dir: string, run: LoopRun | null, pid?: number): void {
   if (run) run.stopped = true;
-  if (IS_WIN) {
-    writeFileSync(join(dir, "ralph.stop"), "");
-    return;
-  }
+  writeFileSync(join(dir, "ralph.stop"), "");
+  if (IS_WIN) return;
   try {
     if (pid) process.kill(pid, "SIGTERM");
     else run?.kill("SIGTERM");

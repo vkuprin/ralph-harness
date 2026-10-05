@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readChecks } from "../../src/loop/merge.ts";
+import { failedLog, readChecks } from "../../src/loop/merge.ts";
 
 const HEAD = "a".repeat(40);
 const view = (rollup: unknown, extra: Record<string, unknown> = {}) =>
@@ -60,5 +60,25 @@ describe("the pull request's checks, as gh pr view reports them", () => {
       expect(verdict(t).verdict).toBe("unreadable");
     }
     expect(verdict(view(["weird"]))).toEqual({ verdict: "pending", names: ["(unreadable check)"] });
+  });
+});
+
+describe("failedLog: what gh run view --log-failed prints", () => {
+  // The log file of each step starts with a byte order mark, which gh passes on.
+  const log = [
+    "build\tRun tests\t\uFEFF2026-10-04T23:25:01.1234567Z ##[group]Run bun test",
+    "build\tRun tests\t2026-10-04T23:25:02.0000000Z error: expected 3, got 4",
+    "build\tRun tests\t2026-10-04T23:25:03.0000000Z (fail) adds",
+    "images\tCheck images\t2026-10-04T23:25:04Z stale snapshot: hero.png",
+    "",
+  ].join("\n");
+  test("each failing step once, as job / step, in the order they came", () => {
+    expect(failedLog(log).steps).toEqual(["build / Run tests", "images / Check images"]);
+  });
+  test("the lines without the job, the step, the mark or the timestamp", () => {
+    expect(failedLog(log).lines).toEqual(["##[group]Run bun test", "error: expected 3, got 4", "(fail) adds", "stale snapshot: hero.png"]);
+  });
+  test("a line without the two tabs is kept as it is, and a blank one dropped", () => {
+    expect(failedLog("no tabs here\n\n  \n")).toEqual({ steps: [], lines: ["no tabs here"] });
   });
 });

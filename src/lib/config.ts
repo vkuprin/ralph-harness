@@ -32,6 +32,9 @@ export interface Config {
   PR_MERGE_METHOD: MergeMethod;
   PR_MERGE_WAIT: number;
   PR_MERGE_POLL: number;
+  CI_FEEDBACK: boolean;
+  PR_FIX_ITERS: number;
+  NEXT_LOOP: string;
   SETUP_CMD: string;
   ITER_TIMEOUT: number;
   VERIFY_CMD: string;
@@ -40,6 +43,7 @@ export interface Config {
   REVIEW: boolean;
   REVIEW_LIMIT_TRIES: number;
   DONE_CMD: string;
+  DONE_TIMEOUT: number;
   ACTIVE_HOURS: string;
   ACTIVE_POLL: number;
   DENY: string[];
@@ -103,6 +107,9 @@ export function defaults(dir: string): Config {
     PR_MERGE_METHOD: "merge",
     PR_MERGE_WAIT: 3600,
     PR_MERGE_POLL: 30,
+    CI_FEEDBACK: false,
+    PR_FIX_ITERS: 0,
+    NEXT_LOOP: "",
     SETUP_CMD: "",
     ITER_TIMEOUT: 7200,
     VERIFY_CMD: "",
@@ -111,6 +118,7 @@ export function defaults(dir: string): Config {
     REVIEW: false,
     REVIEW_LIMIT_TRIES: 12,
     DONE_CMD: "",
+    DONE_TIMEOUT: 300,
     ACTIVE_HOURS: "",
     ACTIVE_POLL: 300,
     DENY: [],
@@ -163,6 +171,9 @@ const KINDS: Record<keyof Config, Kind> = {
   PR_MERGE_METHOD: "method",
   PR_MERGE_WAIT: "int",
   PR_MERGE_POLL: "int",
+  CI_FEEDBACK: "bool",
+  PR_FIX_ITERS: "int",
+  NEXT_LOOP: "string",
   SETUP_CMD: "string",
   ITER_TIMEOUT: "int",
   VERIFY_CMD: "string",
@@ -171,6 +182,7 @@ const KINDS: Record<keyof Config, Kind> = {
   REVIEW: "bool",
   REVIEW_LIMIT_TRIES: "int",
   DONE_CMD: "string",
+  DONE_TIMEOUT: "int",
   ACTIVE_HOURS: "string",
   ACTIVE_POLL: "int",
   DENY: "strings",

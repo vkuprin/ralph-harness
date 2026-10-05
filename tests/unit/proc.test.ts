@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { etime, killGroup, orphanSync, parseEtime, reapOrphan, run, runBounded, shellCommand } from "../../src/lib/proc.ts";
+import { etime, killGroup, orphanSync, parseEtime, reapOrphan, run, runBounded, shellCommand, winQuote } from "../../src/lib/proc.ts";
 import { endsWithArg, markThen } from "../../src/paths.ts";
 
 const T = realpathSync(mkdtempSync(join(tmpdir(), "ralph-unit-proc.")));
@@ -396,5 +396,66 @@ describe("shellCommand", () => {
     const r = await runBounded(10, sh.argv, { out, env: { ...process.env, ...sh.env }, pollGapMax: 60 });
     expect(readFileSync(out, "utf8")).toBe("ok\n");
     expect(r.rc).toBe(0);
+  });
+});
+
+/** A command line read back into an argv, by the rules CommandLineToArgvW and the C runtime use. */
+function argvOf(line: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  for (;;) {
+    while (line[i] === " " || line[i] === "\t") i++;
+    if (i >= line.length) return out;
+    let arg = "";
+    let quoted = false;
+    while (i < line.length && (quoted || (line[i] !== " " && line[i] !== "\t"))) {
+      if (line[i] === "\\") {
+        let n = 0;
+        while (line[i] === "\\") {
+          n++;
+          i++;
+        }
+        if (line[i] !== '"') arg += "\\".repeat(n);
+        else {
+          arg += "\\".repeat(n >> 1);
+          if (n & 1) {
+            arg += '"';
+            i++;
+          }
+        }
+      } else if (line[i] === '"') {
+        quoted = !quoted;
+        i++;
+      } else {
+        arg += line[i++];
+      }
+    }
+    out.push(arg);
+  }
+}
+
+describe("winQuote: an argv as the one command line Windows hands a program", () => {
+  test("a plain argument goes bare, backslashes and all", () => {
+    expect(winQuote(["C:\\bun\\bun.exe", "C:\\loops\\a\\"])).toBe("C:\\bun\\bun.exe C:\\loops\\a\\");
+  });
+  test("a space, a tab or an empty argument is quoted", () => {
+    expect(winQuote(["C:\\Program Files\\bun.exe", "", "a\tb"])).toBe('"C:\\Program Files\\bun.exe" "" "a\tb"');
+  });
+  test("a quote is escaped, and only the backslashes before a quote are doubled", () => {
+    expect(winQuote(['say "hi"'])).toBe('"say \\"hi\\""');
+    expect(winQuote(['a\\"b'])).toBe('"a\\\\\\"b"');
+    expect(winQuote(["dir with space\\"])).toBe('"dir with space\\\\"');
+  });
+  test("whatever it holds reads back as the argv it was", () => {
+    const argv = [
+      "C:\\Program Files\\bun\\bun.exe",
+      "C:\\x\\src\\loop\\main.ts",
+      'C:\\Users\\a b\\loops\\l&o;o|p$`\'"q"\\',
+      "",
+      " ",
+      '\\\\"',
+      "ø ü",
+    ];
+    expect(argvOf(winQuote(argv))).toEqual(argv);
   });
 });
