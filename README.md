@@ -127,8 +127,8 @@ What works differently on Windows:
   A loop that doesn't answer within 15s is killed together with its tree.
 - `ralph start` takes the loop out of the job object of the shell that ran it,
   so a loop started from an agent's shell tool outlives that shell. When the job
-  forbids that, `ralph start` says so, and the loop ends with the job: start it
-  from a terminal of its own.
+  forbids that, `ralph start` starts the loop outside it through WMI, with no
+  window. `ralph start --in-job` keeps the loop in the job, so it ends with it.
 - `ralph tail` follows the log itself, and `ralph edit` opens `notepad` when
   `EDITOR` isn't set.
 - Loop names and repo paths can't contain characters Windows forbids in file

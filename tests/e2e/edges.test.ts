@@ -919,10 +919,15 @@ describe.if(IS_WIN)("ralph start on Windows: the loop leaves the job of the shel
   // job made with KILL_ON_JOB_CLOSE ends everything in it. A loop started from
   // there died with the shell's session, by a signal nobody sent on purpose.
   // ok: a job that lets a process leave it (BREAKAWAY_OK). locked: one that
-  // does not, which ralph start can only report.
+  // does not, which ralph start leaves through WMI. pinned: the same job, and
+  // --in-job, which keeps the loop in it.
   const home = fx.p("job-home");
-  const cases: Record<string, number> = { ok: 0x2000 | 0x800, locked: 0x2000 };
-  const result: Record<string, { alive: boolean; warned: boolean }> = {};
+  const cases: Record<string, { flags: number; args: string[] }> = {
+    ok: { flags: 0x2000 | 0x800, args: [] },
+    locked: { flags: 0x2000, args: [] },
+    pinned: { flags: 0x2000, args: ["--in-job"] },
+  };
+  const result: Record<string, { alive: boolean; warned: boolean; wmi: boolean; said: string; envLeft: boolean }> = {};
 
   setup(async () => {
     const { dlopen, FFIType } = await import("bun:ffi");
@@ -933,7 +938,7 @@ describe.if(IS_WIN)("ralph start on Windows: the loop leaves the job of the shel
       AssignProcessToJobObject: { args: [FFIType.u64, FFIType.u64], returns: FFIType.i32 },
       CloseHandle: { args: [FFIType.u64], returns: FFIType.i32 },
     }).symbols;
-    for (const [name, flags] of Object.entries(cases)) {
+    for (const [name, { flags, args }] of Object.entries(cases)) {
       const loop = join(home, `job-${name}`);
       fx.makeRepo(fx.p(`app-job-${name}`), fx.p(`remote-job-${name}.git`));
       const S = fx.stub(`stub-job-${name}`, ["sleep"]);
@@ -943,20 +948,28 @@ describe.if(IS_WIN)("ralph start on Windows: the loop leaves the job of the shel
       const info = Buffer.alloc(144);
       info.writeUInt32LE(flags, 16);
       k.SetInformationJobObject(job, 9, info, 144);
-      const cli = Bun.spawn([process.execPath, cliPath(), "start", `job-${name}`], {
+      const cli = Bun.spawn([process.execPath, cliPath(), "start", `job-${name}`, ...args], {
         env: fx.env({ RALPH_HOME: home, STUB_DIR: S }),
-        stdout: "ignore",
+        stdout: "pipe",
         stderr: "ignore",
       });
       // Into the job before it has loaded far enough to start the loop.
       const h = k.OpenProcess(0x1fffff, 0, cli.pid);
       k.AssignProcessToJobObject(job, h);
       k.CloseHandle(h);
+      const said = await new Response(cli.stdout).text();
       await cli.exited;
       const pid = Number(read(join(loop, "ralph.pid")).trim());
       k.CloseHandle(job);
       await Bun.sleep(2000);
-      result[name] = { alive: pid > 0 && alive(pid), warned: read(join(loop, "ralph.log")).includes("keeps what it starts in a job") };
+      const log = read(join(loop, "ralph.log"));
+      result[name] = {
+        alive: pid > 0 && alive(pid),
+        warned: log.includes("so the loop ends when that job does"),
+        wmi: log.includes("starting the loop outside it, through WMI"),
+        said,
+        envLeft: existsSync(join(loop, "ralph.start-env")),
+      };
       fx.cli(home, ["stop", `job-${name}`]);
     }
   });
@@ -964,7 +977,16 @@ describe.if(IS_WIN)("ralph start on Windows: the loop leaves the job of the shel
   test("a job that lets it leave: the loop outlives the job, or says it could not leave", () => {
     expect(result.ok!.alive || result.ok!.warned).toBe(true);
   });
-  test("a job that does not: ralph start says so in the loop's log", () => {
-    expect(result.locked!.warned).toBe(true);
+  test("a job that does not: ralph start starts the loop outside it, through WMI, and it outlives the job", () => {
+    expect(result.locked!.wmi).toBe(true);
+    expect(result.locked!.warned).toBe(false);
+    expect(result.locked!.alive).toBe(true);
+    expect(result.locked!.said).toContain("started job-locked as PID");
+    expect(result.locked!.envLeft).toBe(false);
+  });
+  test("--in-job keeps it in the job, and says the loop ends with it", () => {
+    expect(result.pinned!.wmi).toBe(false);
+    expect(result.pinned!.warned).toBe(true);
+    expect(result.pinned!.alive).toBe(false);
   });
 });

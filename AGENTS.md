@@ -162,8 +162,13 @@ What stands in for what:
   CREATE_BREAKAWAY_FROM_JOB, which node and bun leave out, so a loop started
   from a shell that keeps its processes in a job (an agent's shell tool) does
   not die with that job. It inherits only the handles it is given, through a
-  handle list, never its starter's, whose pipes a shell tool waits on. A job
-  that forbids breakaway gets the start without it, and `ralph start` says so.
+  handle list, never its starter's, whose pipes a shell tool waits on. From a
+  job that forbids breakaway, `ralph start` runs itself again through WMI
+  (`startOutOfJob`, `src/cli/relaunch.ts`): a process WMI starts is outside the
+  caller's jobs, with the service's environment, so the caller's goes across in
+  a file the relaunched start reads and removes first. `--in-job`, or WMI
+  refusing, gets the start in the job, and `ralph start` says the loop ends
+  with it.
   The harness's own jobs (`enterJob`) allow breakaway, because NEXT_LOOP runs
   `ralph start` as a bounded command: in a job that forbade it, the next loop
   stayed in the finishing loop's jobs and was killed with it. A process killed

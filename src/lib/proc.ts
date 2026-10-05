@@ -289,15 +289,17 @@ export interface Detached {
  * group of its own, with a console that has no window, and inheriting only
  * the handles given here and none of its starter's, whose pipes a shell tool
  * waits on. A job that forbids breakaway gets the start without it, said in
- * `inJob`.
+ * `inJob`; with `stayInJob` false it gets no start at all, `pid` 0, so the
+ * caller can start it some other way (startOutOfJob).
  */
-export function spawnDetached(argv: string[], errFile: string): Detached {
+export function spawnDetached(argv: string[], errFile: string, stayInJob = true): Detached {
   const k = IS_WIN ? win32() : null;
   if (k) {
     try {
       let pid = createDetached(k, argv, errFile, true);
       let inJob = false;
       if (pid === null) {
+        if (!stayInJob) return { pid: 0, exited: () => true, inJob: true };
         pid = createDetached(k, argv, errFile, false);
         inJob = pid !== null;
       }
@@ -483,8 +485,35 @@ const CIM =
   '$p = Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$env:RALPH_PID)"; ' +
   'if ($p) { [Console]::Out.Write([string][int64](([DateTimeOffset]$p.CreationDate).ToUnixTimeSeconds()) + "`n" + $p.CommandLine) }';
 
-function cimArgv(): string[] {
-  return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", CIM];
+function cimArgv(script = CIM): string[] {
+  return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script];
+}
+
+// Win32_Process.Create starts the process from the WMI service, outside every
+// job its caller is in. DETACHED_PROCESS (8): no console, so no window opens on
+// the desktop; WMI refuses CREATE_NO_WINDOW. The command line and directory
+// come in the environment, never in the script.
+const CIM_CREATE =
+  "$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0; CreateFlags=[uint32]8}; " +
+  "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$env:RALPH_CMDLINE; CurrentDirectory=$env:RALPH_CWD; ProcessStartupInformation=$si}; " +
+  "if ($r.ReturnValue -eq 0) { [Console]::Out.Write([string]$r.ProcessId) }";
+
+/**
+ * Start `argv` on Windows outside every job of this process, through WMI, and
+ * return its PID, or null when WMI would not. The process gets the WMI
+ * service's environment, not this one's: pass what it needs some other way.
+ */
+export function startOutOfJob(argv: string[], cwd: string): number | null {
+  if (!IS_WIN) return null;
+  const [cmd, ...args] = cimArgv(CIM_CREATE);
+  const r = spawnSync(cmd!, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    env: { ...process.env, RALPH_CMDLINE: winQuote(argv), RALPH_CWD: cwd },
+    windowsHide: true,
+  });
+  const pid = Number.parseInt((r.stdout ?? "").trim(), 10);
+  return pid > 0 ? pid : null;
 }
 
 function cimSplit(text: string): { started: number; command: string } | null {
