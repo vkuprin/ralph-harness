@@ -1,5 +1,18 @@
 # @vkuprin/ralph-harness
 
+## 2.3.0
+
+### Minor Changes
+
+- ed50a09: `NEXT_LOOP` can count: with `{n+1}` in it, the next loop's name is this loop's number plus one, so `polish-3` with `"NEXT_LOOP": "polish-{n+1}"` hands over to `polish-4`. A next loop that does not exist yet is made at hand-over from this loop's `config.json` and `PROMPT.md`, so an open-ended chain of rounds needs no loops made ahead of time. The new `NEXT_FROM` setting names a different loop to make it from. Both are checked when the loop starts, as an existing next loop is.
+- ed50a09: On Windows, `ralph start` run from a shell whose job object lets nothing leave it, such as an agent's shell tool, no longer leaves the loop to die with that shell. It starts itself again through WMI, outside every job of the shell and with no window, and the loop keeps running. `ralph start <name> --in-job` keeps the old behaviour, where the loop stays in the job and ends with it.
+- ed50a09: A failed `VERIFY_CMD` is easier to read after the fact. The reason in `results.tsv`, the log and the next prompt now leads with the first line of its output that reports a failure, followed by the summary line, instead of the summary alone. The whole output of every failed run is kept under `verify-failed/<epoch>-<iteration>.out` in the loop directory, bounded by `REF_KEEP`, and the next prompt names the file. `HEALTH_CMD`'s notification picks its line the same way.
+
+### Patch Changes
+
+- ed50a09: On Windows, a loop that `NEXT_LOOP` starts no longer dies with the loop that started it. `ralph start` runs for the next stage in a job object that lets it take the next loop out. `ralph status` now says `died`, not `stopped`, for a loop that was killed outright, one that left its `ralph.pid` behind and could send no `died` event. `ralph stop` on such a loop clears it.
+- ed50a09: The docs and the log now say what happens to what `NOTIFY_CMD` starts: at `NOTIFY_TIMEOUT` it is killed with the notifier, `nohup` and `&` included. A notifier that times out logs that, and points at `NEXT_LOOP` for starting a next stage.
+
 ## 2.2.0
 
 ### Minor Changes
