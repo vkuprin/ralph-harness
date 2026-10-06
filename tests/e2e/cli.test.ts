@@ -981,7 +981,9 @@ describe("ralph start says so when the loop did not start", () => {
   for (const c of cases) {
     test(`${c.name}: the start fails, and says why in the loop's words`, () => {
       const r = ran[c.name]!;
-      expect(r.out).not.toContain("started");
+      // The success line, not the word: a boot retry logs "killed it and
+      // started it again" before the loop refuses, and that is not a start.
+      expect(r.out).not.toContain(`started ${c.name} as PID`);
       expect(r.err).toContain(`${c.name} did not start`);
       expect(r.err).toContain(c.why);
       expect(r.code).not.toBe(0);
