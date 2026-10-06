@@ -12,6 +12,7 @@
 </p>
 
 <p align="center">
+  <a href="#why-not-a-bash-loop">Why</a> ·
   <a href="#install">Install</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-it-works">How it works</a> ·
@@ -28,6 +29,31 @@ whether that commit ships. What the model says about its work never counts.
 
 Needs `bun`, `git` and the `claude` CLI. macOS, Linux and [Windows](#windows).
 No npm dependencies.
+
+## Why not a bash loop
+
+The original Ralph is one line of bash,
+`while :; do cat PROMPT.md | claude -p; done`, and it works. What goes wrong
+when it runs for a day, and what ralph does instead:
+
+- **A bad commit lands like a good one.** Git, your `VERIFY_CMD`, `FROZEN` and a
+  reviewer that can't write decide what ships. A commit that fails is reset and
+  kept under `refs/ralph/<name>/`. The agent's account of its own work never
+  counts.
+- **It works in your checkout and pushes where it likes.** Each loop has its own
+  worktree and branch, only the harness pushes, and the whole run is one pull
+  request, not one per iteration.
+- **The notes file grows until it fills the prompt.** `PROGRESS.md` is trimmed to
+  its last entries and capped in bytes before it goes in.
+- **A usage limit turns it into a tight loop of failed runs.** The limit is
+  waited out and doesn't count toward `MAX_ITER`. A rate-limited reviewer is
+  retried only up to a ceiling, because the commit it holds is ungated.
+- **The laptop sleeps, and a timeout kills a healthy agent on wake.** Time the
+  machine spent asleep doesn't count against a timeout.
+- **Ctrl-C leaves its test servers running.** `ralph stop` stops them too.
+
+Claude Code's `/loop` and the `ralph-loop` plugin repeat inside one session, so
+the context window fills. Every ralph iteration is a new `claude -p` process.
 
 ## How it works
 
@@ -48,12 +74,38 @@ No npm dependencies.
 
 ## Real runs
 
-ralph worked on this repository in a loop for 18 hours on September 21: 24
-iterations, 22 commits kept, 2 reset. `VERIFY_CMD` reset one that broke the
-tests. The reviewer reset the other: it added a rule to `AGENTS.md` saying every
-printed hint is now quoted, while the same unquoted hint was still live in the
-script. The next iteration shipped the whole fix
+On October 1 and 2 a loop worked on this repository for 17 hours, with the whole
+suite (`bun run check`) as its `VERIFY_CMD`: 40 iterations, 38 kept, 1 reset when
+the suite went red, 1 with nothing left to do. The run is one pull request,
+[#12](https://github.com/vkuprin/ralph-harness/pull/12). 46 of its 50 commits are
+the loop's; the other 4 are mine, fixing Windows CI afterwards.
+
+```
+$ ralph status self
+self                 stopped
+  repo        ~/Desktop/Coding/ralph-harness
+  worktree    ~/Desktop/Coding/ralph-harness-ralph-self (ralph/self)
+  iterations  40 run, 38 shipped a commit
+  verdicts    38 keep, 1 quiet, 1 revert:verify
+  cost        $140.30 API-equivalent (a lower bound), 1772859 tokens, $3.69 per kept commit
+  last        [2026-10-02 15:20:39] ralph finished after 40 iterations
+```
+
+An earlier loop on September 21 ran for 18 hours: 24 iterations, 22 commits
+kept, 2 reset. `VERIFY_CMD` reset one that broke the tests. The reviewer reset
+the other: it added a rule to `AGENTS.md` saying every printed hint is now
+quoted, while the same unquoted hint was still live in the script. The next
+iteration shipped the whole fix
 ([c423e1e](https://github.com/vkuprin/ralph-harness/commit/c423e1e)).
+
+Across the eight loops I've run since September 22, on this repository and on
+private ones (as of October 6): 106 iterations, 95 commits kept, 7 reset by
+`VERIFY_CMD`, 3 with nothing to do, 1 stopped mid-run and set aside.
+
+The dollar amounts are what `claude -p` reports each run would have cost at API
+prices, the reviewer's run included. On a subscription they are not a bill, and
+they are a lower bound: a run killed before it answers reports nothing. Across
+those eight loops: $572, about $6 per kept commit.
 
 ## Install
 
@@ -327,22 +379,6 @@ to `.exe` on the fly, and no other `claude` on PATH is ever reached.
 A change users would notice comes with a changeset (`bunx changeset`). Merging
 the release PR it produces publishes the new version.
 
-## How it differs
-
-There are many Ralph loops. What this one does on purpose:
-
-- The gate is outside the model. Git, your `VERIFY_CMD`, `FROZEN` and a
-  reviewer that can't write decide what ships. The agent's account of its own
-  work never does.
-- One worktree and branch per loop, and one pull request for the whole run, not
-  one per iteration.
-- Every iteration is a new `claude -p` process, so a run lasts days without a
-  context window filling up. Claude Code's `/loop` and the `ralph-loop` plugin
-  repeat inside one session.
-- A usage limit is waited out for as long as it takes. A rate-limited reviewer
-  is retried only up to a ceiling, because the commit it holds is ungated. Time
-  the machine spent asleep doesn't count against a timeout.
-
 ## Credits
 
 [Geoffrey Huntley](https://ghuntley.com/ralph/) for the technique;
@@ -356,7 +392,8 @@ for the steering hook, which `hooks/steer.ts` is adapted from (Apache-2.0).
 
 ## License
 
-MIT, except `hooks/steer.ts` (Apache-2.0). See [LICENSE](LICENSE).
+MIT, except `hooks/steer.ts` (Apache-2.0). See [LICENSE](LICENSE) and
+[NOTICE](NOTICE).
 
 <p align="center">
   <img src="./assets/readme/logo.svg" width="64" alt="ralph logo">

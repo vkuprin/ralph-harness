@@ -1,0 +1,12 @@
+ralph-harness
+Copyright (c) 2026 Vitaly Kuprin
+
+ralph-harness is licensed under the MIT License (see LICENSE), except for the
+file below.
+
+hooks/steer.ts is adapted from anthropics/cwc-long-running-agents
+(claude-code-config/.claude/hooks/steer.sh), Copyright 2026 Anthropic PBC,
+https://github.com/anthropics/cwc-long-running-agents. It was ported to
+TypeScript and modified for ralph, and it remains under the Apache License,
+Version 2.0, as its SPDX header says. A copy of that license is at
+https://www.apache.org/licenses/LICENSE-2.0.
