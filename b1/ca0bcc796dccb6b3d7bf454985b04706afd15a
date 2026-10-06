@@ -1,0 +1,28 @@
+README.md
+  s_5b07006159bc97::t_043215881ada7b 33-34,38-57
+  s_5b07006159bc97::t_735f1d2c193b38 15
+  s_5b07006159bc97::t_ed55ec363c0899 35-37
+  s_5b07006159bc97::t_d0541c55b9edf1 395-396
+  s_5b07006159bc97::t_d9b58b84d4a52f 77-98,101-108
+  s_5b07006159bc97::t_0df6ff5817cb12 109
+NOTICE
+  s_5b07006159bc97::t_3e3dda4c6c829c 1-12
+package.json
+  s_5b07006159bc97::t_6bc0a9ceafa57a 30-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b1ca0bcc796dccb6b3d7bf454985b04706afd15a",
+  "prompts": {},
+  "sessions": {
+    "s_5b07006159bc97": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9503d30a-52bc-435a-8b14-88be92edaca3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
