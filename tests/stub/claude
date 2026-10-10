@@ -283,6 +283,19 @@ switch (mode) {
     writeFileSync(progress(), out.join("\n"));
     break;
   }
+  case "rewrap": {
+    // The agent rewrites PROGRESS.md whole and works on the open question:
+    // a sub-bullet and a paragraph under it, nothing new asked.
+    const out: string[] = [];
+    for (const line of readFileSync(progress(), "utf8").split("\n")) {
+      out.push(line);
+      if (line.includes("only a human can settle this one")) {
+        out.push("  - (a) ask ops for the key", "", "  checked again: the vault still has no staging entry");
+      }
+    }
+    writeFileSync(progress(), out.join("\n"));
+    break;
+  }
   case "settle": {
     // The agent settles one question and moves another up, the way an agent
     // rewriting PROGRESS.md whole does: the section changes, nothing new is asked.
@@ -357,6 +370,17 @@ switch (mode) {
       ["git", "push", "-q", "origin", "HEAD:main"],
     );
     commit("work");
+    break;
+  case "follow-main":
+    // a human pushes to main meanwhile, and the agent pulls it in and commits
+    // nothing of its own: the branch moved, the loop shipped nothing
+    human(
+      ["sh", "-c", "echo human > followed.txt"],
+      ["git", "add", "followed.txt"],
+      ["git", "commit", "-qm", "human: add followed.txt"],
+      ["git", "push", "-q", "origin", "HEAD:main"],
+    );
+    writeFileSync(join(d, "follow.rc"), `${git("fetch", "-q", "origin", "main") || git("merge", "-q", "--ff-only", "FETCH_HEAD")}\n`);
     break;
   case "squash": {
     // a human squash-merges the loop's branch into main and the host deletes the
@@ -442,6 +466,13 @@ switch (mode) {
     const steerText = join(d, "steer-text");
     if (existsSync(steerText) && process.env.RALPH_STEER_FILE) {
       appendFileSync(process.env.RALPH_STEER_FILE, readFileSync(steerText, "utf8"));
+    }
+    // $STUB_DIR/steer-cli, when it is there, is the real `ralph steer` run
+    // mid-iteration: {argv, home}. It writes PROMPT.md and STEER.md both.
+    const steerCli = join(d, "steer-cli");
+    if (existsSync(steerCli)) {
+      const { argv: cli, home } = JSON.parse(readFileSync(steerCli, "utf8")) as { argv: string[]; home: string };
+      spawnSync(cli[0]!, cli.slice(1), { stdio: "ignore", env: { ...process.env, RALPH_HOME: home } });
     }
     const settings = argv[argv.indexOf("--settings") + 1] ?? "";
     let command = "";

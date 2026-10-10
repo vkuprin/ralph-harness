@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { capProgress, decisions, injectProgress } from "../../src/loop/progress.ts";
+import { capProgress, decisionKey, decisions, injectProgress } from "../../src/loop/progress.ts";
 
 const seeded = (n: number) => {
   let s = "# Progress\n\n## Needs a decision\n\n- _(nothing yet)_\n\n## Log\n\n";
@@ -59,6 +59,52 @@ describe("decisions", () => {
   });
   test("no section, no questions", () => {
     expect(decisions("# Progress\n")).toEqual([]);
+  });
+
+  // An agent hard-wraps its bullets and rewrites the file whole: read line by
+  // line, every iteration asked a "new" question.
+  const asked =
+    "## Needs a decision\n\nThings only the human can settle. The loop records them here and does not act.\n\n" +
+    "- **Should the old API stay behind a flag?** Removing it breaks two\n  callers outside this repo. Options:\n" +
+    "  (a) keep the flag; (b) remove it now.\n" +
+    "- **The e2e suite is flaky on CI.** One run in five fails\n  on a timeout.\n\n## Log\n";
+  const rewrapped =
+    "## Needs a decision\n\nThings only the human can settle. The loop records them here and does not act.\n\n" +
+    "- **Should the old API stay behind a flag?**\n  Removing it breaks two callers outside this repo.\n" +
+    "  - checked again: both callers still use it\n  Options: (a) keep the flag; (b) remove it now.\n\n" +
+    "- **The e2e suite is flaky on CI.** One run in five\n  fails on a timeout.\n\n## Log\n";
+  test("an item is the bullet with every line that continues it", () => {
+    expect(decisions(asked)).toEqual([
+      "- **Should the old API stay behind a flag?** Removing it breaks two\n  callers outside this repo. Options:\n  (a) keep the flag; (b) remove it now.",
+      "- **The e2e suite is flaky on CI.** One run in five fails\n  on a timeout.",
+    ]);
+  });
+  test("re-wrapping a question or adding to it keeps its key", () => {
+    expect(decisions(rewrapped).map(decisionKey)).toEqual(decisions(asked).map(decisionKey));
+    expect(decisions(asked).map(decisionKey)).toEqual(["should the old api stay behind a flag?", "the e2e suite is flaky on ci."]);
+  });
+  test("a new question has a key of its own", () => {
+    const more = asked.replace("\n## Log", "- **Is the staging key in the vault?**\n\n## Log");
+    expect(decisions(more).map(decisionKey)).toContain("is the staging key in the vault?");
+  });
+  test("the template's sentence and a placeholder are not questions", () => {
+    for (const none of ["- _(nothing yet)_", "(none open)", "- None.", "- nothing open", "_(nothing yet)_"]) {
+      const t = `## Needs a decision\n\nThings only the human can settle. The loop records them here and does not act.\n\n${none}\n\n## Log\n`;
+      expect([none, decisions(t)]).toEqual([none, []]);
+    }
+  });
+  test("a question written as a paragraph or under a ### heading still counts", () => {
+    const t =
+      "## Needs a decision\n\nShould the loop stop on main?\nIt meets the targets.\n\n### Staging key\n\nIt is not in the vault.\n\n## Log\n";
+    expect(decisions(t).map(decisionKey)).toEqual(["should the loop stop on main?", "staging key"]);
+  });
+  test("a question with no full stop keeps its key when a sub-bullet or a paragraph is added", () => {
+    const one = "## Needs a decision\n\n- the staging key is not in the vault\n";
+    const more = "## Needs a decision\n\n- the staging key is not in the vault\n  - (a) ask ops for it\n\n  checked again in iteration 4\n";
+    expect(decisions(more).map(decisionKey)).toEqual(decisions(one).map(decisionKey));
+  });
+  test("a hard-wrapped line without indent continues its bullet", () => {
+    expect(decisions("## Needs a decision\n\n- the key is not\nin the vault\n")).toEqual(["- the key is not\nin the vault"]);
   });
 });
 

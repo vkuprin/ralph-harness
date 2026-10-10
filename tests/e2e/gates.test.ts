@@ -417,7 +417,7 @@ describe("a failed VERIFY_CMD: the failing line leads the reason, and its output
       MAX_ITER: 2,
       ESCALATE_AFTER: 3,
       REF_KEEP: 1,
-      VERIFY_CMD: `printf 'lint: 0 errors\\nweb:test: FAIL src/a.test.ts\\nweb:test: expected 1\\n ERROR run failed: command exited (1)\\n'; exit 1`,
+      VERIFY_CMD: `printf '\\033]1337;RemoteHost=me@box\\007\\033[32mlint: 0 errors\\033[0m\\nweb:test: FAIL src/a.test.ts\\nweb:test: expected 1\\n ERROR run failed: command exited (1)\\n'; exit 1`,
     });
     await fx.runLoop(loop, S);
   });
@@ -431,6 +431,11 @@ describe("a failed VERIFY_CMD: the failing line leads the reason, and its output
     expect(kept).toHaveLength(1);
     expect(kept[0]).toMatch(/^\d+-2\.out$/);
     expect(read(join(loop, "verify-failed", kept[0]!))).toContain("web:test: expected 1");
+  });
+  test("as plain text, without the shell's escape sequences", () => {
+    const kept = read(join(loop, "verify-failed", readdirSync(join(loop, "verify-failed"))[0]!));
+    expect(kept.startsWith("lint: 0 errors\n")).toBe(true);
+    expect(kept).not.toContain("\x1b");
   });
   test("the next prompt names the kept file", () => {
     expect(read(join(S, "prompt.agent.2"))).toContain(join(loop, "verify-failed"));

@@ -138,6 +138,14 @@ it *exited* (`await proc.exited`), not whether its PID answers `kill -0`: a
 child of the test process stays a zombie until the test reaps it, and a zombie
 answers.
 
+What the agent writes is compared by meaning, not by line. It rewrites
+PROGRESS.md whole every iteration and re-wraps as it goes, so a set of lines
+read every re-wrap as new: the `decision` event fired on eight iterations of
+eight. `decisions()` reads the section as items, and `decisionKey` names one by
+the first sentence of its opening paragraph; `.decision-seen` holds keys.
+Likewise a HEAD that moved is not the loop's work when `BRANCH` already holds
+it (`followed`): that is the agent pulling in a human's merge.
+
 Windows is a platform, not a port kept on the side, and every difference lives
 in `src/lib/proc.ts` behind `IS_WIN`, so the loop reads the same on all three.
 What stands in for what:

@@ -7,14 +7,25 @@ import type { Log } from "../lib/log.ts";
 import { type Bounded, DEV_NULL, IS_WIN, type Ran, claudeProblem, nap, run, runBounded, shellCommand } from "../lib/proc.ts";
 import { keepRows, readResults, record } from "../lib/results.ts";
 import { hint, shq } from "../lib/shq.ts";
-import { chomp, failureLine, headBytes, lastNonBlank, putSection, section, splitLines, stripEscapes, tailLines } from "../lib/text.ts";
+import {
+  chomp,
+  failureLine,
+  headBytes,
+  lastNonBlank,
+  putSection,
+  section,
+  splitLines,
+  stripEscapes,
+  tailBytes,
+  tailLines,
+} from "../lib/text.ts";
 import { APPROVE_PLAN, CHILD_FILE, CLI_ENTRY, REFUSED, STEER_HOOK, TEMPLATE, refPrefix, sortRefs } from "../paths.ts";
 import { type Window, inWindow, parseHours } from "./active-hours.ts";
 import { addCost, addTokens, claudeText } from "./cost.ts";
 import { resetAt, limitLine, type Reset } from "./limits.ts";
 import { type Checks, failedLog, readChecks } from "./merge.ts";
 import { counts, nextName } from "./next.ts";
-import { ARCHIVE_HEADER, capProgress, decisions, injectProgress } from "./progress.ts";
+import { ARCHIVE_HEADER, capProgress, decisionKey, decisions, injectProgress } from "./progress.ts";
 
 // One loop over one repository. Every iteration is a NEW `claude -p` with an
 // empty context; the only thing that crosses from one to the next is
@@ -145,6 +156,8 @@ const JUDGING = ".judging";
 
 /** Where a failed VERIFY_CMD's output is kept, as <epoch>-<iteration>.out. */
 const VERIFY_KEPT = "verify-failed";
+/** The most of one failed VERIFY_CMD's output kept there, from its end. */
+const VERIFY_KEPT_MAX = 1_000_000;
 
 interface Judging {
   before: string;
@@ -409,15 +422,18 @@ export class Loop {
    * numerically. The loop's name is in the ref because refs belong to the
    * repository, which other loops share: without it a loop pruned theirs too.
    * Refs an older version saved (refs/ralph/<ns>/<epoch>-<iter>) name no loop,
-   * so no loop prunes them; `ralph review` lists them on their own.
+   * so no loop prunes them; `ralph review` lists them on their own. Returns the
+   * ref it wrote.
    */
-  private async saveRef(ns: string, commit: string): Promise<void> {
+  private async saveRef(ns: string, commit: string): Promise<string> {
     const prefix = refPrefix(this.name, ns);
-    await this.git(["update-ref", `${prefix}${nowSec()}-${this.iter}`, commit], { quiet: true });
-    if (!(this.cfg.REF_KEEP >= 1)) return;
+    const name = `${prefix}${nowSec()}-${this.iter}`;
+    await this.git(["update-ref", name, commit], { quiet: true });
+    if (!(this.cfg.REF_KEEP >= 1)) return name;
     const refs = splitLines(await this.gitOut(["for-each-ref", "--format=%(refname)", prefix]));
     sortRefs(refs);
     for (const ref of refs.slice(this.cfg.REF_KEEP)) await this.git(["update-ref", "-d", ref]);
+    return name;
   }
 
   /**
@@ -583,21 +599,23 @@ export class Loop {
       this.log.line(`start: ${head} was waiting on the gates when the loop stopped; its agent had finished, so it is judged now`);
       return;
     }
-    await this.saveRef("dropped", head);
+    const ref = await this.saveRef("dropped", head);
     if (!(await this.revertTo(judged))) {
       this.log.line(`cannot reset ralph/${this.name} to the last judged commit ${judged} — fix the worktree by hand`);
       throw new Stop(1);
     }
+    // Which of the two it was, the harness cannot tell: no .judging names it.
+    // Once the only words were "an iteration was interrupted", for a commit a
+    // human's own session had made in the worktree while the loop was down.
+    const why = "an iteration stopped before its agent finished, or a commit made in the worktree while the loop was down";
     record(this.results, this.iter, {
       before: head,
       after: judged,
       status: "drop:interrupted",
       secs: 0,
-      reason: `commits from an interrupted iteration were never judged; saved under ${refPrefix(this.name, "dropped")}`,
+      reason: `commits no gate judged (${why}); saved as ${ref}`,
     });
-    this.log.line(
-      `start: ${head} was never judged (an iteration was interrupted); reset to ${judged}, saved under ${refPrefix(this.name, "dropped")}`,
-    );
+    this.log.line(`start: ${head} is past the last judged commit with no verdict (${why}); reset to ${judged}, saved as ${ref}`);
   }
 
   // ------------------------------------------------------------ start
@@ -809,7 +827,7 @@ export class Loop {
     }
 
     this.log.line(
-      `ralph start: loop=${this.name} repo=${c.REPO} work=${this.work} model=${c.MODEL} max_iter=${c.MAX_ITER} quiet_stop=${c.QUIET_STOP} worktree=${c.WORKTREE ? 1 : 0} push=${pushWord(c.PUSH)} review=${c.REVIEW ? 1 : 0} verify=${c.VERIFY_CMD ? "yes" : ""} health=${c.HEALTH_CMD ? "yes" : ""} churn_at=${c.CHURN_AT} limit_reset=${c.LIMIT_RESET ? 1 : 0} plan_first=${c.PLAN_FIRST ? 1 : 0} land_ok=${c.LAND_OK_CMD ? "yes" : ""}`,
+      `ralph start: loop=${this.name} repo=${c.REPO} work=${this.work} model=${c.MODEL} max_iter=${c.MAX_ITER} quiet_stop=${c.QUIET_STOP} worktree=${c.WORKTREE ? 1 : 0} push=${pushWord(c.PUSH)} review=${c.REVIEW ? 1 : 0} verify=${c.VERIFY_CMD ? "yes" : ""} health=${c.HEALTH_CMD ? "yes" : ""} churn_at=${c.CHURN_AT} limit_reset=${c.LIMIT_RESET ? 1 : 0} plan_first=${c.PLAN_FIRST ? 1 : 0} land_ok=${c.LAND_OK_CMD ? "yes" : ""} auth=${process.env.ANTHROPIC_API_KEY ? "api-key" : "login"}`,
     );
   }
 
@@ -817,8 +835,8 @@ export class Loop {
 
   async run(): Promise<void> {
     // What the loop was already being asked before it started is not news.
-    const seen = decisions(this.read(this.p("PROGRESS.md")));
-    writeFileSync(this.p(".decision-seen"), seen.map((l) => `${l}\n`).join(""));
+    const seen = decisions(this.read(this.p("PROGRESS.md"))).map(decisionKey);
+    writeFileSync(this.p(".decision-seen"), seen.map((k) => `${k}\n`).join(""));
 
     let going = this.resume ? await this.judgeInterrupted(this.resume) : true;
     this.resume = null;
@@ -994,6 +1012,9 @@ export class Loop {
       }
     }
     this.log.raw(agentOut.text);
+    // Neither `ralph steer` nor the hook writes to the log.
+    const steered = c.LIVE_STEER ? (splitLines(this.read(this.p("STEER.md.delivered"))).find((l) => /\S/.test(l)) ?? "") : "";
+    if (steered) this.log.line(`steer delivered mid-iteration: ${headBytes(steered, 200)}`);
     let reviewCost = "-";
     let reviewTokens = "-";
 
@@ -1037,17 +1058,27 @@ export class Loop {
         status = "quiet";
       }
     } else if (!status && c.WORKTREE) {
-      // The agent is done and its commits wait on the gates. A loop stopped
-      // before their verdict judges them at its next start instead of setting
-      // aside work already paid for.
-      const pending: Judging = { before, after, iter: this.iter, cost: agentOut.cost, tokens: agentOut.tokens, timedOut: agent.timedOut };
-      writeFileSync(this.p(JUDGING), `${JSON.stringify(pending)}\n`);
-      const g = await this.judge(before);
-      status = g.status;
-      reason = g.reason;
-      unchecked = g.unchecked;
-      reviewCost = g.cost;
-      reviewTokens = g.tokens;
+      const upstream = await this.followed(after);
+      if (upstream) {
+        status = "quiet";
+        reason = `followed ${upstream}: no commit of its own`;
+        this.gated(after);
+        this.log.line(
+          `iteration ${this.iter}: HEAD moved to ${after}, which ${upstream} already holds — nothing of the loop's own to judge`,
+        );
+      } else {
+        // The agent is done and its commits wait on the gates. A loop stopped
+        // before their verdict judges them at its next start instead of setting
+        // aside work already paid for.
+        const pending: Judging = { before, after, iter: this.iter, cost: agentOut.cost, tokens: agentOut.tokens, timedOut: agent.timedOut };
+        writeFileSync(this.p(JUDGING), `${JSON.stringify(pending)}\n`);
+        const g = await this.judge(before);
+        status = g.status;
+        reason = g.reason;
+        unchecked = g.unchecked;
+        reviewCost = g.cost;
+        reviewTokens = g.tokens;
+      }
     }
     if (!status) status = "keep";
     if (agent.timedOut && status.split(":")[0] !== "timeout") {
@@ -1118,6 +1149,27 @@ export class Loop {
     this.capProgress();
     await this.pause(c.STEP_SLEEP);
     return true;
+  }
+
+  /**
+   * The branch an iteration's new HEAD already sits on, when none of it is the
+   * loop's own: the agent merged or fast-forwarded to BRANCH after a human
+   * moved it (a pull request merged mid-iteration). Judged as the loop's, a
+   * human's merge ran the gates, was logged as shipped, reset the quiet streak
+   * and was listed in every later prompt as what this loop shipped. No fetch:
+   * the agent's own fetch or pull is what moved the ref it merged, and one more
+   * against a remote that hangs held every kept iteration for its timeout.
+   */
+  private async followed(after: string): Promise<string | null> {
+    const b = this.cfg.BRANCH;
+    for (const [ref, name] of [
+      [`refs/remotes/origin/${b}`, `origin/${b}`],
+      [`refs/heads/${b}`, b],
+    ] as const) {
+      if (!(await this.gitOk(["rev-parse", "-q", "--verify", `${ref}^{commit}`], { quiet: true }))) continue;
+      if (await this.gitOk(["merge-base", "--is-ancestor", after, ref], { quiet: true })) return name;
+    }
+    return null;
   }
 
   /**
@@ -1339,18 +1391,19 @@ export class Loop {
 
   /**
    * The "Needs a decision" section is how the agent hands a blocker back.
-   * Notified once per new line: an agent rewrites PROGRESS.md whole every
-   * iteration, so a question settled, reworded or moved changes the section
-   * without asking anything new.
+   * Notified once per new question, by its key: an agent rewrites PROGRESS.md
+   * whole every iteration, so a question settled, re-wrapped, added to or moved
+   * changes the section without asking anything new.
    */
   private async checkDecisions(): Promise<void> {
     const file = this.p("PROGRESS.md");
     if (!existsSync(file)) return;
     const now = decisions(this.read(file));
+    const keys = now.map(decisionKey);
     const seenFile = this.p(".decision-seen");
     const seen = existsSync(seenFile) ? new Set(splitLines(this.read(seenFile))) : null;
-    const added = seen ? now.filter((l) => !seen.has(l)) : now;
-    writeFileSync(seenFile, now.map((l) => `${l}\n`).join(""));
+    const added = seen ? now.filter((_, i) => !seen.has(keys[i]!)) : now;
+    writeFileSync(seenFile, keys.map((k) => `${k}\n`).join(""));
     if (!added.length) return;
     this.log.line('PROGRESS.md has a new question under "Needs a decision" — the agent is asking a human');
     await this.notify("decision", headBytes(added.join("\n"), 1000));
@@ -1730,14 +1783,18 @@ export class Loop {
   /**
    * A failed VERIFY_CMD's output, kept under verify-failed/ beside the refs the
    * gate keeps, because the next run overwrites verify.out and a sync can run
-   * it again before anyone looks. Bounded by REF_KEEP, as the refs are.
+   * it again before anyone looks. Bounded by REF_KEEP, as the refs are, and
+   * each file by VERIFY_KEPT_MAX. Plain text: a login shell's colours and
+   * terminal sequences made the file unreadable outside a terminal.
    */
   private keepVerify(text: string): void {
     const dir = this.p(VERIFY_KEPT);
     try {
       mkdirSync(dir, { recursive: true });
       const file = join(dir, `${nowSec()}-${this.iter}.out`);
-      writeFileSync(file, text);
+      const clean = stripEscapes(text);
+      const cut = Buffer.byteLength(clean, "utf8") - VERIFY_KEPT_MAX;
+      writeFileSync(file, cut > 0 ? `[cut: the first ${cut} bytes]\n${tailBytes(clean, VERIFY_KEPT_MAX)}` : clean);
       this.verifyKept = file;
       if (!(this.cfg.REF_KEEP >= 1)) return;
       const kept = sortRefs(readdirSync(dir).filter((n) => n.endsWith(".out")));
@@ -1816,9 +1873,13 @@ export class Loop {
       );
     }
     const checkedBlock = `\n## What the harness already checked\n\n${checked.join("\n")}\n`;
-    // Steering handed to the agent mid-iteration by the steer hook.
-    const delivered = this.read(this.p("STEER.md.delivered"));
-    if (delivered !== "") steering = steering ? `${steering}\n${chomp(delivered)}` : chomp(delivered);
+    // Steering handed to the agent mid-iteration by the steer hook. `ralph
+    // steer` writes the Steering section as well, and the reviewer was handed
+    // every such steer twice; only lines the section lacks are added.
+    const flat = (t: string) => t.replace(/\s+/g, " ").trim();
+    const known = flat(steering);
+    const news = splitLines(this.read(this.p("STEER.md.delivered"))).filter((l) => /\S/.test(l) && !known.includes(flat(l)));
+    if (news.length) steering = steering ? `${steering}\n${news.join("\n")}` : news.join("\n");
     writeFileSync(
       this.p(".review-prompt"),
       `You are reviewing commits that another agent just made in ${this.work}. You cannot change
@@ -1951,6 +2012,16 @@ VERDICT: REJECT: <one sentence saying why>
     return false;
   }
 
+  /**
+   * Said when a sync rebases: the hashes results.tsv and "shipped" name are
+   * the ones from before it, and VERIFY_CMD running again was minutes of
+   * output in the log under no line at all.
+   */
+  private async rebased(upstream: string, head: string): Promise<void> {
+    const now = await this.gitOut(["rev-parse", "HEAD"]);
+    this.log.line(`sync: rebased onto ${upstream}: ${head} is now ${now}${this.cfg.VERIFY_CMD ? ", running VERIFY_CMD again" : ""}`);
+  }
+
   private async syncOnce(): Promise<void> {
     const upstream = `origin/${this.cfg.BRANCH}`;
     if (!(await this.syncClean())) return;
@@ -1978,6 +2049,7 @@ VERDICT: REJECT: <one sentence saying why>
           this.log.line(`sync: rebase conflicted, dropped unpushed commits (saved under ${refPrefix(this.name, "dropped")})`);
           return;
         }
+        await this.rebased(upstream, head);
         const v = await this.verify();
         if (v !== null) {
           await this.saveRef("dropped", await this.gitOut(["rev-parse", "HEAD"]));
@@ -2092,6 +2164,7 @@ VERDICT: REJECT: <one sentence saying why>
         this.log.line(`sync: every commit on ralph/${this.name} is already on ${upstream}; following it`);
         return;
       } else {
+        await this.rebased(upstream, head);
         const v = await this.verify();
         if (v !== null) {
           await this.git(["reset", "-q", "--hard", head]);

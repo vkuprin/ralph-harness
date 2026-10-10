@@ -253,8 +253,8 @@
   //   stuck        ESCALATE_AFTER iterations in a row reverted or failed
   //   limit        the first iteration of a limit streak
   //   limit-clear  claude answered again
-  //   decision     new text under "Needs a decision" in PROGRESS.md — the agent
-  //                asking you something it cannot settle
+  //   decision     a new question under "Needs a decision" in PROGRESS.md — the
+  //                agent asking you something it cannot settle
   //   health       HEALTH_CMD started failing
   //   health-clear HEALTH_CMD passes again
   //   churn        a file joined the ones the loop keeps changing (CHURN_AT)

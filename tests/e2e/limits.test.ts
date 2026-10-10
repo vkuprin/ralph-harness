@@ -76,6 +76,15 @@ describe("limits heal themselves; interrupted iterations are set aside", () => {
     expect(refs.length).toBeGreaterThan(0);
     expect(fx.git(W, "log", "--format=%s", ...refs)).toContain("interrupted");
   });
+  // The harness cannot tell an interrupted iteration from a commit someone
+  // made in the worktree while the loop was down, so it names both, and the
+  // ref the commit can be had back from.
+  test("the log names both causes and the exact ref", () => {
+    const ref = fx.git(W, "for-each-ref", "--format=%(refname)", "refs/ralph/f/dropped/").split("\n")[0]!;
+    const log = read(join(loop, "ralph.log"));
+    expect(log).toContain("while the loop was down");
+    expect(log).toContain(`saved as ${ref}`);
+  });
 });
 
 describe("a stop after the verdict: the commit was judged, and a restart keeps it", () => {

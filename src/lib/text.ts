@@ -177,6 +177,16 @@ export function headBytes(text: string, max: number): string {
   return buf.subarray(0, max).toString("utf8").replace(/�$/, "");
 }
 
+/** At most the last `max` bytes of `text`, never splitting a character. */
+export function tailBytes(text: string, max: number): string {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= max) return text;
+  return buf
+    .subarray(buf.length - max)
+    .toString("utf8")
+    .replace(/^\uFFFD/, "");
+}
+
 /** A JSON encoding with object keys sorted, as perl's JSON::PP canonical gave. */
 export function canonicalJson(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;

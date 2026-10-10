@@ -67,6 +67,14 @@ describe("PUSH=pr: the harness pushes a branch and a human merges the pull reque
   test("every commit was kept", () => {
     expect(statuses(loop)).toBe("keep keep keep keep quiet");
   });
+  test("a rebase onto main says so, and that VERIFY_CMD runs again", () => {
+    expect(read(join(loop, "ralph.log"))).toMatch(
+      /sync: rebased onto origin\/main: [0-9a-f]{40} is now [0-9a-f]{40}, running VERIFY_CMD again/,
+    );
+  });
+  test("the start says the agent signs in with its login", () => {
+    expect(read(join(loop, "ralph.log"))).toContain(" auth=login");
+  });
   test("the agent is told a human merges its pull request", () => {
     expect(read(join(S, "prompt.agent.1"))).toContain("a human merges its pull request");
   });
@@ -137,5 +145,43 @@ describe("PUSH=pr: the harness pushes a branch and a human merges the pull reque
   });
   test("and no pull request is attempted", () => {
     expect(read(join(S3, "gh.calls"))).not.toContain("pr create");
+  });
+});
+
+describe("a human's merge the agent pulls in is not the loop's commit", () => {
+  // The pull request is merged mid-iteration and the agent fast-forwards to
+  // main. HEAD moved, but nothing on it is the loop's: judged as its own, a
+  // human's merge ran the gates, was logged as shipped and listed in every
+  // later prompt as what this loop had shipped.
+  const loop = fx.p("loops/pr4");
+  const R = fx.p("remote-pr4.git");
+  let S = "";
+
+  setup(async () => {
+    fx.makeRepo(fx.p("app-pr4"), R);
+    S = fx.stub("stub-pr4", ["follow-main", "nothing"]);
+    fx.makeLoop(loop, fx.p("app-pr4"), { WORKTREE: true, PUSH: "pr", REVIEW: true, MAX_ITER: 2, VERIFY_CMD: "./measure.sh" });
+    // Not a key: the start only says whether one is set, so the log shows what billed.
+    await fx.runLoop(loop, S, { remote: R, env: { ANTHROPIC_API_KEY: "not-a-real-key" } });
+  });
+
+  test("the start says an API key is set", () => {
+    expect(read(join(loop, "ralph.log"))).toContain(" auth=api-key");
+  });
+  test("the agent did move HEAD onto main", () => {
+    expect(read(join(S, "follow.rc")).trim()).toBe("0");
+  });
+  test("the iteration shipped nothing", () => {
+    expect(statuses(loop)).toBe("quiet quiet");
+    expect(read(join(loop, "ralph.log"))).not.toMatch(/shipped [0-9a-f]{40}/);
+  });
+  test("no gate ran on the human's commit", () => {
+    expect(read(join(S, "review_calls"))).toBe("");
+  });
+  test("the log says why", () => {
+    expect(read(join(loop, "ralph.log"))).toContain("which origin/main already holds");
+  });
+  test("and a restart would not set it aside as unjudged", () => {
+    expect(read(join(loop, ".gated-head")).trim()).toBe(fx.git(R, "rev-parse", "main"));
   });
 });

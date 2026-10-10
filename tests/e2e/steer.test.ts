@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
-import { Fx, hookArgv, join, read, setup, statuses } from "../helpers/index.ts";
+import { cliPath, Fx, hookArgv, join, read, setup, statuses } from "../helpers/index.ts";
 
 const fx = new Fx("steer");
 
@@ -181,5 +181,35 @@ describe("a steer of several lines stays one entry of the Steering section", () 
   });
   test("the steered iteration ran and its commit was kept", () => {
     expect(statuses(loop)).toBe("keep");
+  });
+});
+
+describe("a steer delivered mid-iteration reaches the reviewer once", () => {
+  // `ralph steer` writes PROMPT.md's Steering section and STEER.md, and the
+  // hook keeps what it delivered for the reviewer. The reviewer was handed the
+  // section and the delivered copy both: every mid-iteration steer twice.
+  const app = fx.p("app-once");
+  const home = fx.p("home-once");
+  const loop = join(home, "once");
+  const text = "focus on the login flow, not the CSS";
+  let S = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-once.git"));
+    S = fx.stub("stub-once", ["run-hook"], ["ACCEPT"]);
+    writeFileSync(join(S, "steer-cli"), JSON.stringify({ argv: [process.execPath, cliPath(), "steer", "once", text], home }));
+    fx.makeLoop(loop, app, { WORKTREE: true, PUSH: false, REVIEW: true, MAX_ITER: 1, ITER_TIMEOUT: 30 });
+    await fx.runLoop(loop, S);
+  });
+
+  test("the steer went to PROMPT.md and was delivered by the hook", () => {
+    expect(read(join(loop, "PROMPT.md"))).toContain(text);
+    expect(read(join(loop, "STEER.md.delivered"))).toContain(text);
+  });
+  test("the reviewer's brief holds it once", () => {
+    expect(read(join(S, "prompt.review.1")).split(text).length - 1).toBe(1);
+  });
+  test("the log says a steer was delivered", () => {
+    expect(read(join(loop, "ralph.log"))).toContain(`steer delivered mid-iteration: ${text}`);
   });
 });
