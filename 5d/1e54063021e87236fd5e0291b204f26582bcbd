@@ -1,0 +1,19 @@
+.github/workflows/test.yml
+  s_0114385e124f95::t_cbba96d442e979 22-24,50-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5d1e54063021e87236fd5e0291b204f26582bcbd",
+  "prompts": {},
+  "sessions": {
+    "s_0114385e124f95": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d1cae7f7-94b2-4413-a206-0fe752519868",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
