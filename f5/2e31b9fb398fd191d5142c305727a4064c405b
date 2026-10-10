@@ -1,0 +1,64 @@
+tests/e2e/pr.test.ts
+  s_0114385e124f95::t_8119d68c701a56 70-71,73-77,164-165,168-170
+  s_0114385e124f95::t_59e79e8306c80c 72
+  s_0114385e124f95::t_5e378e81b3a44f 150-163,166-167,171-187
+template/config.json
+  s_0114385e124f95::t_4b3544b2fe7da0 256-257
+.changeset/decision-items.md
+  s_0114385e124f95::t_4b3544b2fe7da0 1-5
+tests/unit/text.test.ts
+  s_0114385e124f95::t_ee84ee16aa89d9 178
+  s_0114385e124f95::t_4b6064c8f5f908 2,165-177
+tests/e2e/gates.test.ts
+  s_0114385e124f95::t_4dee3e9bf2d243 420,435-438
+  s_0114385e124f95::t_e8f51000ea91d4 439
+src/loop/loop.ts
+  s_0114385e124f95::t_5af692f5bfef2d 425-426
+  s_0114385e124f95::t_bd5bc80ee87076 20,830,1067,2015-2018,2020-2022,2024,2052,2167
+  s_0114385e124f95::t_4dee3e9bf2d243 10-19,21,159-160,1786-1788,1795-1797
+  s_0114385e124f95::t_55a947f8256873 428,430-432,436,602,607-610,616,618
+  s_0114385e124f95::t_3b1dfb8d4c2be3 28,838-839,1015-1017,1061-1066,1068-1081,1154-1174,1394-1396,1402,1405-1406,1876-1882,2019,2023
+tests/unit/progress.test.ts
+  s_0114385e124f95::t_56c17098cf4967 63,66-67,71-72,76-77,80-83,85-100,106-108
+  s_0114385e124f95::t_2f1ba8987dfee9 101-105
+  s_0114385e124f95::t_f230da7af3350f 2
+  s_0114385e124f95::t_30fda7de73d4b3 64-65,68-70,73-75,78-79,84
+AGENTS.md
+  s_0114385e124f95::t_319ec35d4de7bc 141-148
+.changeset/followed-upstream.md
+  s_0114385e124f95::t_4b3544b2fe7da0 1-5
+.changeset/field-check-small.md
+  s_0114385e124f95::t_4b3544b2fe7da0 1-10
+tests/e2e/limits.test.ts
+  s_0114385e124f95::t_473ab27b556bd1 79-87
+src/lib/text.ts
+  s_0114385e124f95::t_4dee3e9bf2d243 180-189
+src/loop/progress.ts
+  s_0114385e124f95::t_acc34df8b7fcf0 74-78,80-87,90,93-96,99-109,112-155,157-159
+tests/e2e/notify.test.ts
+  s_0114385e124f95::t_3b40b1d3a0ac58 178
+  s_0114385e124f95::t_8c86c39538407a 79-81,83
+tests/stub/claude
+  s_0114385e124f95::t_b6cec78172395c 286-298
+  s_0114385e124f95::t_0835874946b0c7 374-384
+  s_0114385e124f95::t_6588707cfe9520 470-476
+tests/e2e/steer.test.ts
+  s_0114385e124f95::t_ca2898b7c034d9 3,186-214
+  s_0114385e124f95::t_3dbf912f58724b 215
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f52e31b9fb398fd191d5142c305727a4064c405b",
+  "prompts": {},
+  "sessions": {
+    "s_0114385e124f95": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d1cae7f7-94b2-4413-a206-0fe752519868",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}
