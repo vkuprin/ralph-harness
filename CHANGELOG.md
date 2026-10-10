@@ -1,5 +1,18 @@
 # @vkuprin/ralph-harness
 
+## 2.3.1
+
+### Patch Changes
+
+- fc738c3: The `decision` notification fires once per new question, not after every iteration. The "Needs a decision" section is now read as items (a bullet with its wrapped lines and sub-bullets, a paragraph, or a `###` heading), each identified by the first sentence of its opening paragraph. An agent re-wrapping its bullets or adding detail under a question no longer reads as a new question, and the template's own sentence and placeholders such as "(none open)" are no longer questions at all.
+- fc738c3: Smaller fixes from real runs:
+  - A steer sent mid-iteration reaches the reviewer once, not twice, and the log says it was delivered.
+  - `verify-failed/` files are plain text, without a login shell's escape sequences, and each is capped at its last 1 MB.
+  - A commit set aside at start names both possible causes (an iteration stopped mid-run, or a commit made in the worktree while the loop was down), and gives the exact ref it was saved under.
+  - A sync that rebases says so, with the old and new hash, before `VERIFY_CMD` runs again.
+  - The start line says `auth=api-key` when `ANTHROPIC_API_KEY` is set, which `claude -p` bills instead of a Claude login, or `auth=login` otherwise.
+- fc738c3: A merge the agent pulls in from `BRANCH` is no longer recorded as the loop's commit. When an iteration's new HEAD is already on `origin/BRANCH` or `BRANCH` (a pull request merged mid-iteration, and the agent fast-forwarded to it), the iteration is quiet: no gate runs on the human's commits, no `shipped` line is written, and they stay out of "What this loop shipped recently" and the churn counts.
+
 ## 2.3.0
 
 ### Minor Changes

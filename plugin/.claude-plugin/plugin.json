@@ -1,6 +1,6 @@
 {
   "name": "ralph-harness",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Set up a ralph loop: a Claude Code loop that runs for days, where git and your own checks decide which commits ship. Needs the ralph CLI.",
   "author": {
     "name": "Vitaly Kuprin",
