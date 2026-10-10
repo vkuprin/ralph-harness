@@ -76,11 +76,11 @@ describe("NOTIFY_CMD: the loop tells the human instead of failing quietly", () =
     seedOldQuestion(nc);
     await fx.runLoop(nc, ncStub);
 
-    // A question settled, or the list reordered, changes the section without
-    // asking anything new.
-    const ncsStub = fx.stub("stub-ncs", ["decide", "settle", "nothing"]);
+    // A question worked on, settled, or the list reordered, changes the section
+    // without asking anything new.
+    const ncsStub = fx.stub("stub-ncs", ["decide", "rewrap", "settle", "nothing"]);
     mkNotifier(ncsLog, fx.p("notify-ncs.sh"));
-    fx.makeLoop(ncs, app, { MAX_ITER: 3, NOTIFY_CMD: sq(fx.p("notify-ncs.sh")) });
+    fx.makeLoop(ncs, app, { MAX_ITER: 4, NOTIFY_CMD: sq(fx.p("notify-ncs.sh")) });
     seedOldQuestion(ncs);
     await fx.runLoop(ncs, ncsStub);
 
@@ -175,7 +175,7 @@ describe("NOTIFY_CMD: the loop tells the human instead of failing quietly", () =
     expect(read(join(nc, "ralph.log"))).toContain("Needs a decision");
   });
 
-  test("a question settled, or the list reordered, is not a new question", () => {
+  test("a question worked on, settled, or the list reordered, is not a new question", () => {
     expect(events(ncsLog)).toEqual(["decision", "stopped"]);
   });
 

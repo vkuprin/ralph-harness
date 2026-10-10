@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { failureLine, inFence, isHeading, lastNonBlank, plain, putSection, section, stripEscapes } from "../../src/lib/text.ts";
+import { failureLine, inFence, isHeading, lastNonBlank, plain, putSection, section, stripEscapes, tailBytes } from "../../src/lib/text.ts";
 
 const ESC = "\x1b";
 
@@ -160,5 +160,19 @@ describe("putSection: a section's body set, the rest of the file as it was", () 
   test("a file with no ## heading gets it at the end", () => {
     expect(putSection("# P\n", "## From a", "x")).toBe("# P\n\n## From a\n\nx\n");
     expect(putSection("", "## From a", "x")).toBe("## From a\n\nx\n");
+  });
+});
+
+describe("tailBytes: the end of a text, by bytes", () => {
+  test("a text that fits is returned whole", () => {
+    expect(tailBytes("abc", 3)).toBe("abc");
+  });
+  test("the last bytes are kept", () => {
+    expect(tailBytes("abcdef", 2)).toBe("ef");
+  });
+  test("a cut inside a character drops what is left of it", () => {
+    // "é" is two bytes: three from the end of "aéb" lands in the middle of it.
+    expect(tailBytes("aéb", 2)).toBe("b");
+    expect(tailBytes("aéb", 3)).toBe("éb");
   });
 });
