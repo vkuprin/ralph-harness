@@ -381,9 +381,15 @@ export class Fx {
       const name = args.find((a, i) => i > 0 && !a.startsWith("--"));
       if (!home || args[0] !== "start" || !name) throw e;
       const tails = ["ralph.log", "ralph.out", "ralph.start-out"]
-        .map((f) => `--- ${f}\n${read(join(home, name, f)).split("\n").slice(-40).join("\n")}`)
+        .map(
+          (f) =>
+            `--- ${f}\n${read(join(home, name, f))
+              .split("\n")
+              .slice(-40)
+              .join("\n")}`,
+        )
         .join("\n");
-      throw new Error(`${(e as Error).message}\n${tails}`);
+      throw new Error(`${(e as Error).message}\n${tails}`, { cause: e });
     }
   }
 }

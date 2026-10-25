@@ -24,6 +24,7 @@ import { type Window, inWindow, parseHours } from "./active-hours.ts";
 import { addCost, addTokens, claudeText } from "./cost.ts";
 import { resetAt, limitLine, type Reset } from "./limits.ts";
 import { type Checks, failedLog, readChecks } from "./merge.ts";
+import { HARD, HARD_ADDED, HARD_STEER, expectedHard, isPlaceholder, readAdded, sameHard } from "./constraints.ts";
 import { counts, nextName } from "./next.ts";
 import { ARCHIVE_HEADER, capProgress, decisionKey, decisions, injectProgress } from "./progress.ts";
 
@@ -187,6 +188,8 @@ export class Loop {
   private errors = 0;
   private limits = 0;
   private stopWhy = "";
+  /** PROMPT.md's Hard constraints as the iteration in flight was handed them. */
+  private hardBefore = "";
   private broken = false;
   private ghOk = false;
   private window: Window | null = null;
@@ -1012,6 +1015,7 @@ export class Loop {
       }
     }
     this.log.raw(agentOut.text);
+    this.holdConstraints();
     // Neither `ralph steer` nor the hook writes to the log.
     const steered = c.LIVE_STEER ? (splitLines(this.read(this.p("STEER.md.delivered"))).find((l) => /\S/.test(l)) ?? "") : "";
     if (steered) this.log.line(`steer delivered mid-iteration: ${headBytes(steered, 200)}`);
@@ -1202,7 +1206,9 @@ export class Loop {
     const r = await this.review(before);
     const paid = { ...none, cost: r.cost, tokens: r.tokens };
     if (r.status === "accept") return { ...paid, status: "keep" };
-    if (r.status === "reject") return { ...paid, status: "revert:review", reason: r.reason };
+    // A hard constraint failed is its own verdict, so results.tsv says why.
+    if (r.status === "reject")
+      return { ...paid, status: /^reviewer: constraint\b/i.test(r.reason) ? "revert:constraint" : "revert:review", reason: r.reason };
     if (c.VERIFY_CMD) return { ...paid, status: "keep:unreviewed", reason: `${r.reason}; VERIFY_CMD passed` };
     // With no VERIFY_CMD the reviewer is the only gate; do not ship unjudged work.
     return { ...paid, status: "revert:review-unavailable", reason: r.reason };
@@ -1697,7 +1703,12 @@ export class Loop {
 
   private async buildPrompt(): Promise<void> {
     const c = this.cfg;
+    // Emptied before PROMPT.md is read, and `ralph steer --hard` writes
+    // PROMPT.md before this file: an entry is then in the snapshot, in the
+    // file, or in both, however the two interleave, and never in neither.
+    writeFileSync(this.p(HARD_ADDED), "");
     let s = this.read(this.p("PROMPT.md"));
+    this.hardBefore = section(s, HARD);
     s += await this.healthSection();
     s += this.ciSection();
     s += "\n---\n\n# PROGRESS.md (your memory of previous iterations — read this before doing anything)\n\n";
@@ -1761,6 +1772,32 @@ export class Loop {
       );
     }
     if (injected.cut !== null) this.injectWarned = true;
+  }
+
+  /**
+   * PROMPT.md's Hard constraints are the human's, and the agent can write in
+   * the loop directory. An iteration that changed them gets them put back: the
+   * section it was handed, plus what `ralph steer --hard` added while it ran.
+   * Before the gates, so the reviewer judges against the human's list. A list
+   * that was never set is not held: there is nothing to loosen.
+   */
+  private holdConstraints(): void {
+    if (this.missing("PROMPT.md")) return;
+    const file = this.p("PROMPT.md");
+    const prompt = this.read(file);
+    const added = readAdded(this.read(this.p(HARD_ADDED)));
+    if (isPlaceholder(this.hardBefore) && !added.length) return;
+    const want = expectedHard(this.hardBefore, added);
+    if (sameHard(section(prompt, HARD), want)) return;
+    try {
+      rewrite(file, putSection(prompt, HARD, want));
+    } catch (e) {
+      this.log.line(`hard constraints: iteration ${this.iter} changed them, and they could not be put back: ${(e as Error).message}`);
+      return;
+    }
+    this.log.line(
+      `hard constraints: iteration ${this.iter} changed them; put back as they were (change them between iterations, or with ralph steer --hard)`,
+    );
   }
 
   // ------------------------------------------------------------ the gates
@@ -1841,6 +1878,11 @@ export class Loop {
     // reviewer reads all of it than judges the diff against nothing.
     const job = section(prompt, "## The job") || chomp(prompt);
     let steering = section(prompt, "## Steering");
+    const hard = section(prompt, HARD);
+    let hardBlock = "";
+    if (!isPlaceholder(hard)) {
+      hardBlock = `\n## Hard constraints (from the human, each one pass/fail)\n\n${chomp(hard.replace(/^\s*\n/, ""))}\n\nReject a commit whose deliverable recommends, ranks or lists as an option anything\nthat fails one of these, including when it is labelled conditional, near-miss or\nfallback. A result that says no option passes is acceptable and complete. When a\nconstraint is why you reject, end with\n\nVERDICT: REJECT: constraint <number>: <one sentence saying why>\n`;
+    }
     const doneLike = section(prompt, "## Done looks like");
     let doneBlock = "";
     if (/\S/.test(doneLike) && !/^\s*<.*>\s*$/.test(doneLike.split("\n").join(""))) {
@@ -1877,8 +1919,11 @@ export class Loop {
     // steer` writes the Steering section as well, and the reviewer was handed
     // every such steer twice; only lines the section lacks are added.
     const flat = (t: string) => t.replace(/\s+/g, " ").trim();
-    const known = flat(steering);
-    const news = splitLines(this.read(this.p("STEER.md.delivered"))).filter((l) => /\S/.test(l) && !known.includes(flat(l)));
+    // A hard steer is in the Hard constraints section already.
+    const known = `${flat(steering)} ${flat(hard)}`;
+    const news = splitLines(this.read(this.p("STEER.md.delivered"))).filter(
+      (l) => /\S/.test(l) && !known.includes(flat(l.startsWith(HARD_STEER) ? l.slice(HARD_STEER.length) : l)),
+    );
     if (news.length) steering = steering ? `${steering}\n${news.join("\n")}` : news.join("\n");
     writeFileSync(
       this.p(".review-prompt"),
@@ -1892,7 +1937,7 @@ ${job}
 ## Steering from the human (outranks the job)
 
 ${steering || "(none)"}
-${doneBlock}${churnBlock}${checkedBlock}
+${hardBlock}${doneBlock}${churnBlock}${checkedBlock}
 ## What to review
 
 The commits are in ${this.p("review.diff")}: each commit's message, then a stat, then

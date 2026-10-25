@@ -29,6 +29,9 @@ const fx = new Fx("cli");
 // sleeps, no push, no reviewer.
 const TAME = { QUIET_SLEEP: 0, STEP_SLEEP: 0, ERROR_SLEEP: 0, PUSH: false, REVIEW: false, MAX_ITER: 1 };
 
+/** A steer that escapes, a heading and a second line once mangled on the way to STEER.md. */
+const ASTYPED = String.raw`look in C:\temp\new, split on \t, keep a & b` + "\n## Why\n  indented";
+
 /** stdout and stderr together, the way `2>&1` hands them over. */
 const both = (r: { out: string; err: string }) => r.out + r.err;
 
@@ -68,6 +71,7 @@ describe("CLI: new, start, status, steer, results, stop", () => {
   let runningStatus = "";
   let secondRefused = false;
   let steerFile = "";
+  let steerSaid = "";
   let promptFile = "";
   let stoppedStatus = "";
   let lockLeft = true;
@@ -98,7 +102,8 @@ describe("CLI: new, start, status, steer, results, stop", () => {
         timeout: 60_000,
       });
       secondRefused = second.exitCode !== null && second.exitCode !== 0 && !second.signalCode;
-      fx.cli(home, ["steer", "demo", "look at the login flow first"]);
+      steerSaid = fx.cli(home, ["steer", "demo", "look at the login flow first"]).out;
+      fx.cli(home, ["steer", "demo", ASTYPED]);
       steerFile = read(join(loop, "STEER.md"));
       promptFile = read(join(loop, "PROMPT.md"));
     } finally {
@@ -141,6 +146,12 @@ describe("CLI: new, start, status, steer, results, stop", () => {
   });
   test("steer reaches the running iteration (STEER.md)", () => {
     expect(steerFile).toContain("login flow");
+  });
+  test("STEER.md holds each steer as typed, for the steer hook", () => {
+    expect(steerFile).toBe(`look at the login flow first\n${ASTYPED}\n`);
+  });
+  test("steer on a running loop says the running iteration sees it", () => {
+    expect(steerSaid).toContain("the running iteration sees it at its next tool call");
   });
   test("steer holds for later iterations (PROMPT.md)", () => {
     expect(promptFile).toContain("login flow");

@@ -22,7 +22,8 @@ import { isCheckout, rewrite } from "../lib/files.ts";
 import { readResults } from "../lib/results.ts";
 import { Log } from "../lib/log.ts";
 import { hint } from "../lib/shq.ts";
-import { splitLines } from "../lib/text.ts";
+import { putSection, section, splitLines } from "../lib/text.ts";
+import { HARD, HARD_ADDED, HARD_STEER, appendEntry } from "../loop/constraints.ts";
 import {
   IS_WIN,
   claudeProblem,
@@ -86,7 +87,10 @@ Commands
   ralph results <name> [n]       the harness verdict for each iteration (default 20)
   ralph log <name> [n]           last n lines of the log, rotated files included (default 40)
   ralph tail <name>              follow the log, across rotations
-  ralph steer <name> "text"      redirect a running loop, starting with the iteration in flight
+  ralph steer <name> "text"      redirect a loop, starting with the iteration in flight if one runs
+  ralph steer --hard <name> "text"
+                                 add a pass/fail test every result must pass:
+                                 one more item of PROMPT.md's Hard constraints
   ralph edit <name>              open PROMPT.md in $EDITOR
   ralph migrate <name>           convert a loop's config.sh to config.json
   ralph --version                the installed version
@@ -228,6 +232,7 @@ interface Conf {
   push: false | true | "pr";
   merge: boolean;
   work: string;
+  liveSteer: boolean;
 }
 
 /**
@@ -248,7 +253,7 @@ function loopConf(dir: string): Conf {
   const push = raw.PUSH === "pr" ? "pr" : bool(raw.PUSH);
   let work = repo;
   if (worktree && repo) work = str("WORKTREE_DIR", "") || join(dirname(repo), `${basename(repo)}-ralph-${basename(dir)}`);
-  return { repo, worktree, branch: str("BRANCH", "main"), push, merge: bool(raw.PR_MERGE), work };
+  return { repo, worktree, branch: str("BRANCH", "main"), push, merge: bool(raw.PR_MERGE), work, liveSteer: raw.LIVE_STEER !== false };
 }
 
 /**
@@ -960,11 +965,51 @@ function cmdResults(name?: string, nArg?: string): void {
  * Two channels. PROMPT.md is re-read at the start of every iteration, so the
  * steer holds for every iteration after this one. STEER.md is picked up by a
  * PreToolUse hook at the running agent's next tool call (LIVE_STEER), so the
- * iteration in flight hears it too.
+ * iteration in flight hears it too, when there is one. A stopped loop has none,
+ * and telling the human the running iteration sees it had them wait for an
+ * effect that never came.
+ *
+ * `--hard` makes the text a numbered item of PROMPT.md's Hard constraints, a
+ * filter rather than a preference, and records it in HARD_ADDED after
+ * PROMPT.md is written, so the loop keeps it when it lands mid-iteration.
  */
-function cmdSteer(name?: string, ...words: string[]): void {
+function cmdSteer(args: string[]): void {
+  const hard = args[0] === "--hard";
+  const [name, ...words] = hard ? args.slice(1) : args;
   const text = words.join(" ");
-  if (!/\S/.test(text)) die('usage: ralph steer <name> "what to do instead"');
+  if (!/\S/.test(text)) {
+    die(hard ? 'usage: ralph steer --hard <name> "what every result must pass"' : 'usage: ralph steer <name> "what to do instead"');
+  }
+  const dir = loopDir(name);
+  const promptFile = join(dir, "PROMPT.md");
+  if (!existsSync(promptFile)) die(`no such loop: ${name}`);
+  if (hard) {
+    const prompt = read(promptFile);
+    rewrite(promptFile, putSection(prompt, HARD, appendEntry(section(prompt, HARD), text)));
+    appendFileSync(join(dir, HARD_ADDED), `${JSON.stringify(text)}\n`);
+  } else {
+    steeringEntry(promptFile, text);
+  }
+  const running = pidOf(dir) !== null;
+  const live = running && loopConf(dir).liveSteer;
+  if (live) appendFileSync(join(dir, "STEER.md"), `${hard ? HARD_STEER : ""}${text}\n`);
+  const done = `steered ${name}${hard ? " (a hard constraint)" : ""}`;
+  if (live) {
+    green(`${done} — the running iteration sees it at its next tool call, and every later one reads it from PROMPT.md`);
+  } else if (running) {
+    green(`${done} — the next iteration reads it from PROMPT.md; LIVE_STEER is off, so the one running now does not hear it`);
+  } else {
+    green(`${done} — the loop is stopped; the next ${hint("ralph", "start", name!)} reads it from PROMPT.md`);
+    if (stoppedDone(dir)) {
+      dim(
+        "  it stopped because DONE_CMD passed, and a start asks DONE_CMD again before any iteration: a steer alone does not reopen the work — give the backlog an open item, or change DONE_CMD",
+      );
+    }
+  }
+}
+
+/** The text as the newest entry of PROMPT.md's Steering section, which is made when there is none. */
+function steeringEntry(promptFile: string, text: string): void {
   // One list item however many lines the text has: its later lines indented
   // under the first, so none of them can be a heading of PROMPT.md. A `## Why`
   // in the text once ended the Steering section, and the reviewer's brief,
@@ -973,9 +1018,6 @@ function cmdSteer(name?: string, ...words: string[]): void {
   while (!/\S/.test(said[0]!)) said.shift();
   while (!/\S/.test(said.at(-1)!)) said.pop();
   const entry = said.map((l, i) => (i === 0 ? l : /\S/.test(l) ? `  ${l}` : "")).join("\n");
-  const dir = loopDir(name);
-  const promptFile = join(dir, "PROMPT.md");
-  if (!existsSync(promptFile)) die(`no such loop: ${name}`);
   const MARK = "<!-- ralph-steer -->";
   // The marker is what makes this repeatable: entries always land directly
   // under it, newest first, without re-parsing the prose around them.
@@ -995,8 +1037,18 @@ function cmdSteer(name?: string, ...words: string[]): void {
     }
   }
   rewrite(promptFile, lines.map((l) => `${l}\n`).join(""));
-  appendFileSync(join(dir, "STEER.md"), `${text}\n`);
-  green(`steered ${name} — the running iteration sees it at its next tool call, and every later one reads it from PROMPT.md`);
+}
+
+/**
+ * The loop's last run ended because DONE_CMD said the job is done: the last of
+ * its stops and iterations in ralph.log is that stop. A start asks DONE_CMD
+ * before its first iteration, so it stops again unless the work changed.
+ */
+function stoppedDone(dir: string): boolean {
+  const last = splitLines(read(join(dir, "ralph.log")))
+    .filter((l) => /^\[[^\]]*\] (stopping: |ralph stopped by signal|=== iteration )/.test(l))
+    .at(-1);
+  return last?.includes("] stopping: DONE_CMD says the job is done") ?? false;
 }
 
 /** Claude Code in the current directory, with the ralph-new skill from this checkout loaded. */
@@ -1104,7 +1156,7 @@ switch (cmd) {
     await cmdTail(args[0]);
     break;
   case "steer":
-    cmdSteer(args[0], ...args.slice(1));
+    cmdSteer(args);
     break;
   case "edit":
     await cmdEdit(args[0]);
