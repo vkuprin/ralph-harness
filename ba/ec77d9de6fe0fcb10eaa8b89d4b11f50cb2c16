@@ -1,0 +1,25 @@
+tests/helpers/index.ts
+  s_eb064f48a4cbf2::t_c6193802a30be5 376,382-383,387
+src/cli/main.ts
+  s_eb064f48a4cbf2::t_c6193802a30be5 57-59,174,176,1105
+src/lib/proc.ts
+  s_eb064f48a4cbf2::t_c6193802a30be5 9,546,553,569,576
+src/lib/trace.ts
+  s_eb064f48a4cbf2::t_c6193802a30be5 1-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "baec77d9de6fe0fcb10eaa8b89d4b11f50cb2c16",
+  "prompts": {},
+  "sessions": {
+    "s_eb064f48a4cbf2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56ea1cba-3b88-4b5f-8171-fff30913edd8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
