@@ -1,0 +1,25 @@
+src/cli/main.ts
+  s_eb064f48a4cbf2::t_dc3300756eb030 624,633-638,650-656,668,675,677,692-697,704-709
+.github/workflows/debug-windows.yml
+  s_eb064f48a4cbf2::t_ff03a3b207f3e5 1-45
+src/loop/main.ts
+  s_eb064f48a4cbf2::t_163b5f03d95c53 34-36
+tests/helpers/index.ts
+  s_eb064f48a4cbf2::t_435dc7048fa9c3 383
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "42b24bedbe3d093b25b3f4a9fd242eca33fff365",
+  "prompts": {},
+  "sessions": {
+    "s_eb064f48a4cbf2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56ea1cba-3b88-4b5f-8171-fff30913edd8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Vitaly Kuprin <vitas_s@inbox.lv>"
+    }
+  }
+}
