@@ -23,6 +23,8 @@ describe("ralph steer --hard writes a numbered list", () => {
   let prompt = "";
   let added = "";
   let oldPrompt = "";
+  let late = { code: -1, out: "", err: "" };
+  let lateUntouched = false;
 
   setup(() => {
     fx.makeRepo(app, fx.p("remote-list.git"));
@@ -36,6 +38,8 @@ describe("ralph steer --hard writes a numbered list", () => {
     fx.cli(home, ["steer", "--hard", "old", "Costs under 20 EUR"]);
     oldPrompt = read(join(old, "PROMPT.md"));
     usage = fx.cli(home, ["steer", "--hard", "list", "  "]);
+    late = fx.cli(home, ["steer", "list", "--hard", "Costs under 20 EUR"]);
+    lateUntouched = read(join(loop, "PROMPT.md")) === prompt;
   });
 
   test("the template's placeholder gives way to item 1, and the next is item 2", () => {
@@ -53,6 +57,11 @@ describe("ralph steer --hard writes a numbered list", () => {
   });
   test("a PROMPT.md without the section gets one, before the job", () => {
     expect(oldPrompt).toBe("# old\n\n## Hard constraints\n\n1. Costs under 20 EUR\n\n## The job\n\nDo the thing.\n");
+  });
+  test("--hard after the name is usage, not a steer that reads --hard", () => {
+    expect(late.code).not.toBe(0);
+    expect(late.err).toContain("usage: ralph steer");
+    expect(lateUntouched).toBe(true);
   });
   test("a hard steer of blank text is usage", () => {
     expect(usage.code).not.toBe(0);

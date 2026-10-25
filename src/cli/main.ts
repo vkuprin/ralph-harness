@@ -253,7 +253,15 @@ function loopConf(dir: string): Conf {
   const push = raw.PUSH === "pr" ? "pr" : bool(raw.PUSH);
   let work = repo;
   if (worktree && repo) work = str("WORKTREE_DIR", "") || join(dirname(repo), `${basename(repo)}-ralph-${basename(dir)}`);
-  return { repo, worktree, branch: str("BRANCH", "main"), push, merge: bool(raw.PR_MERGE), work, liveSteer: raw.LIVE_STEER !== false };
+  return {
+    repo,
+    worktree,
+    branch: str("BRANCH", "main"),
+    push,
+    merge: bool(raw.PR_MERGE),
+    work,
+    liveSteer: raw.LIVE_STEER === undefined || bool(raw.LIVE_STEER),
+  };
 }
 
 /**
@@ -977,7 +985,9 @@ function cmdSteer(args: string[]): void {
   const hard = args[0] === "--hard";
   const [name, ...words] = hard ? args.slice(1) : args;
   const text = words.join(" ");
-  if (!/\S/.test(text)) {
+  // `--hard` after the name would be steered as text, and a filter the human
+  // asked for would land as a preference the reviewer never checks.
+  if (!/\S/.test(text) || words[0] === "--hard") {
     die(hard ? 'usage: ralph steer --hard <name> "what every result must pass"' : 'usage: ralph steer <name> "what to do instead"');
   }
   const dir = loopDir(name);
