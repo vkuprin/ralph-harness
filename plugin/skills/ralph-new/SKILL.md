@@ -1,6 +1,6 @@
 ---
 name: ralph-new
-description: Set up a new ralph loop (ralph-harness) on a repository. Asks the user how it should run (where the work lands, auto-merge of its pull request, the verify gate, the reviewer, when it stops, model, plan mode, hours, notifications) with AskUserQuestion, then scaffolds it with `ralph new --set` and fills in PROMPT.md. Use when the user asks to create, set up, configure or start a ralph loop, to run ralph on a repo, or says /ralph-new.
+description: Set up a new ralph loop (ralph-harness) on a repository. Asks the user how it should run (where the work lands, auto-merge of its pull request, the verify gate, the reviewer, when it stops, model, plan mode, hours, notifications) and what every result must pass or never include (hard constraints and exclusions) with AskUserQuestion, then scaffolds it with `ralph new --set` and fills in PROMPT.md. Use when the user asks to create, set up, configure or start a ralph loop, to run ralph on a repo, or says /ralph-new.
 ---
 
 # Set up a ralph loop
@@ -140,7 +140,30 @@ If the user has not already said what the loop is for, ask in plain text:
 - what would convince them the job is done: a check or an example, not an adjective;
 - what it must never touch.
 
-## 7. Scaffold
+## 7. Hard constraints
+
+The loop never sees this conversation. Anything the user ruled out here and that
+is not written into PROMPT.md as a constraint, the loop can study, rank and
+recommend, and the reviewer, which judges against PROMPT.md, will let it through.
+So collect three lists before the backlog is written:
+
+- **Hard requirements**: a result that fails one is out, however close it comes.
+- **Exclusions**: what was already tried and rejected, and what must never be
+  recommended.
+- **Preferences**: what ranks results without filtering them.
+
+Ask with AskUserQuestion, one question per list (headers `Must pass`, `Never`,
+`Prefer`). Draw the options from what the user said in this conversation and
+from the repository, phrased as pass/fail tests, with "None" as the last option
+of each; set `multiSelect` so several can be picked. Anything else comes in through
+Other as free text.
+
+Then read the three lists back in plain text, each requirement and exclusion as
+the pass/fail line it will become, and ask with AskUserQuestion (header
+`Constraints`): "Yes, these are right (Recommended)" or "Change them". Do not
+scaffold until the answer is yes.
+
+## 8. Scaffold
 
 Map the answers to settings. `WORKTREE` stays `true`, the template's value: every
 gate needs it. So does `PR_DRAFT`: the pull request is a draft until the loop ends
@@ -197,21 +220,32 @@ Rules for this command:
 - If `ralph new` refuses, it names the setting and the reason. Fix that value and run
   it again. Nothing was created.
 
-## 8. Write PROMPT.md
+## 9. Write PROMPT.md
 
 Open `$RALPH_HOME/<name>/PROMPT.md` and replace each `<...>` placeholder:
 
 - **The job**: the outcome, in two or three sentences.
 - **Done looks like**: the check or example the user gave. The reviewer holds every
   commit against it.
-- **Direction**: what to look for, in which order, and what to leave alone.
+- **Hard constraints**: every hard requirement and every exclusion from step 7, one
+  numbered pass/fail line each ("3. Never recommends X, which was tried and
+  rejected."). The reviewer rejects a commit whose result recommends, ranks or
+  lists anything that fails one, near misses included. With none, leave the
+  placeholder. Tell the user `ralph steer --hard <name> "..."` adds one later.
+- **Direction**: what to look for, in which order, and what to leave alone. The
+  preferences from step 7 go here: they rank, they do not filter.
 - **The repository**: the test and build commands, with how long they take.
 - **Rules**: the project rules from `CLAUDE.md` and `AGENTS.md`, and anything the user
   said must never be touched.
 
 Keep every other section as it is. The harness and the agent both rely on them.
 
-## 9. Confirm and start
+Before you save, check every backlog item (the Direction list, and any item you
+put into PROGRESS.md) against the exclusions. An item that works on an excluded
+option ("if you stay with X, here is how to do it better") is dropped. Keep one
+only when the user, asked about that item by name, says to keep it.
+
+## 10. Confirm and start
 
 Show a short summary:
 
@@ -220,6 +254,7 @@ Show a short summary:
 - where the work lands, and whether and how it is merged (a draft until the loop
   ends; held while the deploy guard fails);
 - the gate, the reviewer and the stop condition;
+- the hard constraints, as numbered in PROMPT.md;
 - whether iterations plan first.
 
 Then ask with AskUserQuestion (header `Start`):

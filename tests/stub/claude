@@ -136,6 +136,20 @@ async function nap(seconds: string): Promise<void> {
 
 const progress = () => join(loopDir, "PROGRESS.md");
 
+// loosen(): soften every item of PROMPT.md's Hard constraints, as an agent that
+// finds the bar inconvenient might.
+function loosen(): void {
+  const file = join(loopDir, "PROMPT.md");
+  let on = false;
+  const lines = readFileSync(file, "utf8")
+    .split("\n")
+    .map((l) => {
+      if (l.startsWith("## ")) on = l.startsWith("## Hard constraints");
+      return on && /^\d+\. /.test(l) ? `${l}, unless the option comes close` : l;
+    });
+  writeFileSync(file, lines.join("\n"));
+}
+
 switch (mode) {
   case "commit":
     commit("work");
@@ -331,6 +345,18 @@ switch (mode) {
     // PROMPT.md deleted by accident, with a commit in the same iteration so the
     // gates — the reviewer reads PROMPT.md for the job — run too.
     rmSync(join(loopDir, "PROMPT.md"), { force: true });
+    commit("work");
+    break;
+  case "loosen":
+    loosen();
+    commit("work");
+    break;
+  case "hard-mid":
+    // A human's `ralph steer --hard` lands while the agent works: what the real
+    // CLI wrote, recorded by the test. Then the agent softens the list.
+    writeFileSync(join(loopDir, "PROMPT.md"), readFileSync(join(d!, "prompt-after-steer"), "utf8"));
+    appendFileSync(join(loopDir, ".hard-added"), readFileSync(join(d!, "added-after-steer"), "utf8"));
+    loosen();
     commit("work");
     break;
   case "drop-progress":

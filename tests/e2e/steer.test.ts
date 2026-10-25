@@ -80,8 +80,8 @@ describe("ralph steer keeps the text it was handed", () => {
     await fx.runLoop(loop, S);
   });
 
-  test("STEER.md holds the text the human typed", () => {
-    expect(steerFile.split("\n")).toContain(escText);
+  test("a loop that is not running gets nothing in STEER.md: no iteration is there to hear it", () => {
+    expect(steerFile).toBe("");
   });
   test("PROMPT.md holds the text the human typed", () => {
     expect(prompt).toContain(escText);
@@ -171,8 +171,8 @@ describe("a steer of several lines stays one entry of the Steering section", () 
     const agent = read(join(S, "prompt.agent.1"));
     for (const line of said) expect(agent).toContain(line);
   });
-  test("STEER.md holds the text as typed, for the steer hook", () => {
-    expect(steerFile).toBe(`${text}\n`);
+  test("a loop that is not running gets nothing in STEER.md", () => {
+    expect(steerFile).toBe("");
   });
   test("a steer of blank lines is no steer: usage, and PROMPT.md is left alone", () => {
     expect(blank.code).not.toBe(0);
@@ -211,5 +211,50 @@ describe("a steer delivered mid-iteration reaches the reviewer once", () => {
   });
   test("the log says a steer was delivered", () => {
     expect(read(join(loop, "ralph.log"))).toContain(`steer delivered mid-iteration: ${text}`);
+  });
+});
+
+describe("ralph steer says so when no iteration is running to hear it", () => {
+  // A loop DONE_CMD had stopped was steered, and the CLI said the running
+  // iteration would see it at its next tool call. Nothing was running, and a
+  // start would have stopped again at once.
+  const home = fx.p("home-idle");
+  const app = fx.p("app-idle");
+  let idle = { code: -1, out: "", err: "" };
+  let idleSteer = "x";
+  let idlePrompt = "";
+  let done = { code: -1, out: "", err: "" };
+  let doneSteer = "x";
+  let doneLog = "";
+
+  setup(async () => {
+    fx.makeRepo(app, fx.p("remote-idle.git"));
+    fx.makeLoop(join(home, "idle"), app, { MAX_ITER: 1 });
+    idle = fx.cli(home, ["steer", "idle", "look at the login flow first"]);
+    idleSteer = read(join(home, "idle", "STEER.md"));
+    idlePrompt = read(join(home, "idle", "PROMPT.md"));
+    const S = fx.stub("stub-idle-done", ["commit"]);
+    fx.makeLoop(join(home, "done"), app, { MAX_ITER: 3, DONE_CMD: "exit 0" });
+    await fx.runLoop(join(home, "done"), S);
+    doneLog = read(join(home, "done", "ralph.log"));
+    done = fx.cli(home, ["steer", "done", "and the signup flow"]);
+    doneSteer = read(join(home, "done", "STEER.md"));
+  });
+
+  test("a stopped loop: the next ralph start reads it, and no running iteration is claimed", () => {
+    expect(idle.code).toBe(0);
+    expect(idle.out).toContain("the loop is stopped; the next ralph start idle reads it from PROMPT.md");
+    expect(idle.out).not.toContain("running iteration");
+    expect(idle.out).not.toContain("DONE_CMD");
+  });
+  test("a stopped loop gets nothing in STEER.md, and the steer is in PROMPT.md", () => {
+    expect(idleSteer).toBe("");
+    expect(idlePrompt).toContain("look at the login flow first");
+  });
+  test("a loop DONE_CMD stopped: the steer says a start stops again unless the work changes", () => {
+    expect(doneLog).toContain("stopping: DONE_CMD says the job is done");
+    expect(done.out).toContain("the loop is stopped");
+    expect(done.out).toContain("it stopped because DONE_CMD passed");
+    expect(doneSteer).toBe("");
   });
 });

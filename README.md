@@ -227,12 +227,23 @@ ralph status
 | `ralph results <name> [n]` | last n verdicts as a table |
 | `ralph log <name> [n]` | last n log lines |
 | `ralph tail <name>` | follow the log |
-| `ralph steer <name> "text"` | redirect it, starting with the iteration in flight |
+| `ralph steer <name> "text"` | redirect it, starting with the iteration in flight if one is running |
+| `ralph steer --hard <name> "text"` | add a pass/fail test every result must meet (see below) |
 | `ralph migrate <name>` | convert an old bash-harness `config.sh` to `config.json` |
 | `ralph --version` | the installed version |
 
 A loop lives in `~/.claude/ralph/<name>/` (`$RALPH_HOME`): `config.json`,
 `PROMPT.md` (the job), `PROGRESS.md` (its memory), `ralph.log`, `results.tsv`.
+
+**Hard constraints.** Steering ranks; `## Hard constraints` in `PROMPT.md`
+filters. Each item is a numbered pass/fail test ("2. Never recommends X, which
+was tried and rejected"). The reviewer is handed them verbatim and rejects a
+commit whose result recommends, ranks or lists anything that fails one, near
+misses and fallbacks included, and "nothing passes" counts as a complete answer.
+Such a reject is recorded as `revert:constraint`. The agent cannot loosen them:
+an iteration that edits the section gets it put back, and the log says so.
+Change the list between iterations, or with `ralph steer --hard`, which also
+holds when it lands mid-iteration.
 
 ## Options
 

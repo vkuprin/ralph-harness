@@ -8,7 +8,7 @@ is one class on purpose, so an iteration reads in order.
 
 - `src/loop/main.ts`: the loop process, one per loop directory — the lock, the
   config, signals. `src/loop/loop.ts`: the iteration, the gates, sync.
-- `src/loop/{cost,limits,progress,active-hours,merge,next}.ts`: pure pieces with unit tests.
+- `src/loop/{cost,limits,progress,active-hours,merge,next,constraints}.ts`: pure pieces with unit tests.
 - `src/lib/`: `proc` (bounded runs, process groups, the freeze on a signal),
   `clock` (the one test seam into time), `config`, `files` (rewriting a file a
   human owns, through its symlink; whether two paths are one directory), `log`,
@@ -211,6 +211,15 @@ What stands in for what:
 - An iteration that ships nothing makes the loop back off, not stop (unless the
   user set `QUIET_STOP`).
 - `PROMPT.md` is re-read every iteration.
+- PROMPT.md's `## Hard constraints` is the human's, and an iteration cannot
+  change it. The agent can write in the loop directory, so `holdConstraints`
+  puts the section back after the agent exits and before the gates: what the
+  iteration was handed (`hardBefore`, read in `buildPrompt`), plus what `ralph
+  steer --hard` added while it ran, which the CLI records in `.hard-added`
+  after it writes PROMPT.md. `buildPrompt` empties that file before it reads
+  PROMPT.md; swap either order and a steer landing in between is lost. The file
+  only adds, so a write to it can tighten the list and never loosen it. A list
+  never set (the template's placeholder) is not held.
 - The prompt is bounded by the harness, not by a shape the agent writes. A file
   the agent authors may be tidied by structure it wrote (`PROGRESS_KEEP`), but
   what goes into the prompt has a bound that holds whatever it writes

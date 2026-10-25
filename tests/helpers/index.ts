@@ -372,7 +372,25 @@ export class Fx {
 
   /** The CLI, with `home` as RALPH_HOME. */
   cli(home: string | undefined, args: string[], env: Record<string, string | undefined> = {}): Ran {
-    return this.sh([cliPath(), ...args], { env: { RALPH_HOME: home, ...env } });
+    try {
+      return this.sh([cliPath(), ...args], { env: { RALPH_HOME: home, ...env } });
+    } catch (e) {
+      // A `ralph start` that never returns prints nothing on the way: what it
+      // and the loop wrote is in the loop directory, and the error is the only
+      // place a CI run keeps it.
+      const name = args.find((a, i) => i > 0 && !a.startsWith("--"));
+      if (!home || args[0] !== "start" || !name) throw e;
+      const tails = ["ralph.log", "ralph.out", "ralph.start-out"]
+        .map(
+          (f) =>
+            `--- ${f}\n${read(join(home, name, f))
+              .split("\n")
+              .slice(-40)
+              .join("\n")}`,
+        )
+        .join("\n");
+      throw new Error(`${(e as Error).message}\n${tails}`, { cause: e });
+    }
   }
 }
 

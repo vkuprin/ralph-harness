@@ -154,7 +154,23 @@ jobs:
       # Trusted publishing needs npm 11.5.1 or later.
       - run: npm install -g npm@latest
       - run: bun install --frozen-lockfile
+      # Only the run for main's head releases, and the check is the last step
+      # before Changesets. A run for an older commit, a rerun of an old run's
+      # failed jobs above all, would reset the release PR to that commit, or
+      # open one for a version already published. Should main move after this
+      # check, the run for the new head waits in the `release` group until this
+      # job ends, then sets the release PR to its own commit. A publish skipped
+      # here is made by the next run: `changeset publish` publishes what npm lacks.
+      - id: head
+        run: |
+          head=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main is at $head now, not $GITHUB_SHA: the run for $head releases, not this one"
+          fi
       - id: changesets
+        if: steps.head.outputs.current == 'true'
         uses: changesets/action@v2
         with:
           publish-script: bunx changeset publish

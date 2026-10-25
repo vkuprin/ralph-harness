@@ -17,6 +17,15 @@ adjective. "The landing page renders with the brand fonts and colours at 375 and
 1440 px", "every pricing endpoint answers in under 200 ms by scripts/bench.sh".
 The reviewer holds each commit against it.>
 
+## Hard constraints
+
+<What every result must pass: one numbered line per constraint, each a pass/fail
+test, such as "1. Runs on Windows without WSL." or "2. Never recommends option X,
+which was tried and rejected." Anything that fails one is out: not recommended,
+not ranked, not kept as a fallback or a near miss. A preference that only ranks
+results goes under Direction instead. Leave this placeholder if there are none;
+`ralph steer --hard` adds to the list.>
+
 ## Direction
 
 <For a loop that runs open-ended: what to look for, in which order, and what to
@@ -56,6 +65,9 @@ happens to find.>
 - Leave the tree clean. Scratch scripts and measurement directories get deleted
   before the commit, not gitignored.
 - Never edit the frozen files. The measurement is not yours to move.
+- Never edit the Hard constraints section; the harness puts it back. When nothing
+  passes them, say so and widen the search. Do not lower the bar, and do not fill
+  the list with the nearest misses.
 - A closed item is deleted from PROGRESS.md, not carried from entry to entry.
 - If the last three commits under "What this loop shipped recently" share a
   topic, pick a different one, unless PROGRESS.md says why this one still pays.
